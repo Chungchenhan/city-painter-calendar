@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import type { CSSProperties } from 'react'
+import type { CSSProperties, ReactNode } from 'react'
 import dayjs from 'dayjs'
 import { addDoc, collection, deleteDoc, doc, updateDoc } from 'firebase/firestore'
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage'
@@ -23,6 +23,7 @@ const TOOL_PANELS = [
 
 type ViewMode = 'month' | 'week'
 type ToolPanelId = typeof TOOL_PANELS[number]['id']
+type EventEditorIcon = 'person' | 'department' | 'calendar' | 'bell' | 'repeat' | 'link' | 'location' | 'paperclip' | 'note' | 'check'
 
 const emptyCalendar = {
   name: '',
@@ -48,6 +49,81 @@ const emptyEvent = {
 
 function toggle(list: string[], id: string) {
   return list.includes(id) ? list.filter((item) => item !== id) : [...list, id]
+}
+
+function EventRowIcon({ name }: { name: EventEditorIcon }) {
+  const paths: Record<EventEditorIcon, ReactNode> = {
+    person: (
+      <>
+        <circle cx="12" cy="7.5" r="3.5" />
+        <path d="M5 20c.8-3.6 3.2-5.4 7-5.4s6.2 1.8 7 5.4" />
+      </>
+    ),
+    department: (
+      <>
+        <path d="M4 20h16" />
+        <path d="M6 20V8l6-3 6 3v12" />
+        <path d="M10 20v-5h4v5" />
+        <path d="M9 10h.01M15 10h.01" />
+      </>
+    ),
+    calendar: (
+      <>
+        <rect x="4" y="5" width="16" height="15" rx="2" />
+        <path d="M8 3v4M16 3v4M4 10h16" />
+      </>
+    ),
+    bell: (
+      <>
+        <path d="M6 17h12" />
+        <path d="M8 17V10a4 4 0 0 1 8 0v7" />
+        <path d="M10 20a2.2 2.2 0 0 0 4 0" />
+      </>
+    ),
+    repeat: (
+      <>
+        <path d="M17 2.8 21 6.8l-4 4" />
+        <path d="M3 11V9a2.2 2.2 0 0 1 2.2-2.2H21" />
+        <path d="m7 21.2-4-4 4-4" />
+        <path d="M21 13v2a2.2 2.2 0 0 1-2.2 2.2H3" />
+      </>
+    ),
+    link: (
+      <>
+        <path d="M10 13.5a4 4 0 0 0 5.7 0l2.2-2.2a4 4 0 0 0-5.7-5.7l-1.2 1.2" />
+        <path d="M14 10.5a4 4 0 0 0-5.7 0l-2.2 2.2a4 4 0 0 0 5.7 5.7l1.2-1.2" />
+      </>
+    ),
+    location: (
+      <>
+        <path d="M19 10.2c0 5-7 10.8-7 10.8S5 15.2 5 10.2a7 7 0 0 1 14 0Z" />
+        <circle cx="12" cy="10.2" r="2.3" />
+      </>
+    ),
+    paperclip: (
+      <path d="m21 11.5-8.4 8.4a5.2 5.2 0 0 1-7.4-7.4l9-9a3.5 3.5 0 0 1 5 5l-9 9a1.8 1.8 0 1 1-2.6-2.6l8.4-8.4" />
+    ),
+    note: (
+      <>
+        <rect x="5" y="4" width="14" height="16" rx="2" />
+        <path d="M8 9h8M8 13h8M8 17h5" />
+      </>
+    ),
+    check: (
+      <>
+        <path d="m4 12 4 4L20 6" />
+        <path d="M4 19h16" />
+      </>
+    )
+  }
+
+  return (
+    <span className="row-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24" focusable="false">
+        {paths[name]}
+      </svg>
+    </span>
+  )
 }
 
 export default function CalendarPage() {
@@ -161,6 +237,10 @@ export default function CalendarPage() {
   function employeeName(id: string) {
     return employees.find((employee) => employee.id === id)?.name || '未指定'
   }
+
+  const selectedAssigneeText = eventForm.assigneeIds.length > 0
+    ? eventForm.assigneeIds.map(employeeName).join('、')
+    : '選擇同仁'
 
   function openAddCalendar() {
     setCalendarForm(emptyCalendar)
@@ -871,62 +951,13 @@ export default function CalendarPage() {
               </div>
 
               <div className="event-editor-list">
-                <div className="event-editor-row">
-                  <span className="row-icon" aria-hidden="true">■</span>
-                  <select value={eventForm.calendarId} onChange={(event) => setEventForm((form) => ({ ...form, calendarId: event.target.value }))}>
-                    <option value="">選擇行事曆</option>
-                    {visibleCalendars.map((calendar) => <option key={calendar.id} value={calendar.id}>{calendar.name}</option>)}
-                  </select>
-                </div>
-                <div className="event-editor-row">
-                  <span className="row-icon" aria-hidden="true">◎</span>
-                  <select value={eventForm.departmentId} onChange={(event) => setEventForm((form) => ({ ...form, departmentId: event.target.value }))}>
-                    <option value="">未分配部門</option>
-                    {departments.map((department) => <option key={department.id} value={department.id}>{department.name}</option>)}
-                  </select>
-                </div>
-                <div className="event-editor-row note">
-                  <span className="row-icon" aria-hidden="true">≡</span>
-                  <textarea
-                    rows={1}
-                    value={eventForm.note}
-                    onChange={(event) => {
-                      event.currentTarget.style.height = 'auto'
-                      event.currentTarget.style.height = `${event.currentTarget.scrollHeight}px`
-                      setEventForm((form) => ({ ...form, note: event.target.value }))
-                    }}
-                    placeholder="新增備註"
-                    style={{ height: eventForm.note ? undefined : 44 }}
-                  />
-                </div>
-                <div className="event-editor-row">
-                  <span className="row-icon" aria-hidden="true">⌖</span>
-                  <input value={eventForm.location} onChange={(event) => setEventForm((form) => ({ ...form, location: event.target.value }))} placeholder="新增地點" />
-                </div>
-                <div className="event-editor-row">
-                  <span className="row-icon" aria-hidden="true">⌁</span>
-                  <input type="url" value={eventForm.url} onChange={(event) => setEventForm((form) => ({ ...form, url: event.target.value }))} placeholder="新增網址" />
-                </div>
-                <div className="event-editor-row attachment">
-                  <span className="row-icon" aria-hidden="true">▧</span>
-                  <div>
-                    <strong>附件</strong>
-                    <label className="attachment-picker">
-                      <input type="file" multiple onChange={(event) => setAttachmentFiles(Array.from(event.target.files ?? []))} />
-                      選擇檔案
-                    </label>
-                    {[...eventForm.attachments.map((file) => file.name), ...attachmentFiles.map((file) => file.name)].length > 0 && (
-                      <div className="attachment-list">
-                        {eventForm.attachments.map((file) => <span key={file.path}>{file.name}</span>)}
-                        {attachmentFiles.map((file) => <span key={`${file.name}-${file.size}`}>{file.name}</span>)}
-                      </div>
-                    )}
-                  </div>
-                </div>
                 <div className="event-editor-row assignee">
-                  <span className="row-icon" aria-hidden="true">○</span>
-                  <div>
-                    <strong>指派員工</strong>
+                  <EventRowIcon name="person" />
+                  <details className="event-picker-row">
+                    <summary>
+                      <span>{selectedAssigneeText}</span>
+                      {eventForm.assigneeIds.length > 0 && <small>{eventForm.assigneeIds.length} 位同仁</small>}
+                    </summary>
                     <div className="event-assignee-grid">
                       {employees.filter((emp) => emp.status !== 'inactive').map((emp) => (
                         <label key={emp.id}>
@@ -936,7 +967,70 @@ export default function CalendarPage() {
                         </label>
                       ))}
                     </div>
+                  </details>
+                </div>
+                <div className="event-editor-row">
+                  <EventRowIcon name="department" />
+                  <select value={eventForm.departmentId} onChange={(event) => setEventForm((form) => ({ ...form, departmentId: event.target.value }))}>
+                    <option value="">不指定部門</option>
+                    {departments.map((department) => <option key={department.id} value={department.id}>{department.name}</option>)}
+                  </select>
+                </div>
+                <div className="event-editor-row">
+                  <EventRowIcon name="calendar" />
+                  <select value={eventForm.calendarId} onChange={(event) => setEventForm((form) => ({ ...form, calendarId: event.target.value }))}>
+                    <option value="">選擇行事曆</option>
+                    {visibleCalendars.map((calendar) => <option key={calendar.id} value={calendar.id}>{calendar.name}</option>)}
+                  </select>
+                </div>
+                <div className="event-editor-row">
+                  <EventRowIcon name="bell" />
+                  <button className="event-static-row" type="button">無通知</button>
+                </div>
+                <div className="event-editor-row">
+                  <EventRowIcon name="repeat" />
+                  <button className="event-static-row" type="button">無重複</button>
+                </div>
+                <div className="event-editor-row">
+                  <EventRowIcon name="link" />
+                  <input type="url" value={eventForm.url} onChange={(event) => setEventForm((form) => ({ ...form, url: event.target.value }))} placeholder="網址" />
+                </div>
+                <div className="event-editor-row">
+                  <EventRowIcon name="location" />
+                  <input value={eventForm.location} onChange={(event) => setEventForm((form) => ({ ...form, location: event.target.value }))} placeholder="地點" />
+                </div>
+                <div className="event-editor-row attachment">
+                  <EventRowIcon name="paperclip" />
+                  <div>
+                    <label className="attachment-picker">
+                      <input type="file" multiple onChange={(event) => setAttachmentFiles(Array.from(event.target.files ?? []))} />
+                      上傳檔案
+                    </label>
+                    {[...eventForm.attachments.map((file) => file.name), ...attachmentFiles.map((file) => file.name)].length > 0 && (
+                      <div className="attachment-list">
+                        {eventForm.attachments.map((file) => <span key={file.path}>{file.name}</span>)}
+                        {attachmentFiles.map((file) => <span key={`${file.name}-${file.size}`}>{file.name}</span>)}
+                      </div>
+                    )}
                   </div>
+                </div>
+                <div className="event-editor-row note">
+                  <EventRowIcon name="note" />
+                  <textarea
+                    rows={1}
+                    value={eventForm.note}
+                    onChange={(event) => {
+                      event.currentTarget.style.height = 'auto'
+                      event.currentTarget.style.height = `${event.currentTarget.scrollHeight}px`
+                      setEventForm((form) => ({ ...form, note: event.target.value }))
+                    }}
+                    placeholder="備註"
+                    style={{ height: eventForm.note ? undefined : 44 }}
+                  />
+                </div>
+                <div className="event-editor-row">
+                  <EventRowIcon name="check" />
+                  <button className="event-static-row" type="button">待辦清單</button>
                 </div>
               </div>
             </div>
