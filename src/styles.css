@@ -1377,6 +1377,7 @@ p {
 
 .event-title-input:focus,
 .event-time-editor input:focus,
+.event-editor-row > input:focus,
 .event-editor-row select:focus,
 .event-editor-row textarea:focus {
   outline: none;
@@ -1389,7 +1390,7 @@ p {
 
 .time-row {
   display: grid;
-  grid-template-columns: 86px minmax(0, 1fr) 76px;
+  grid-template-columns: 72px minmax(142px, 1fr) minmax(96px, auto);
   gap: 10px;
   align-items: center;
   margin-bottom: 10px;
@@ -1402,10 +1403,16 @@ p {
 
 .time-row input {
   min-height: 40px;
+  min-width: 0;
   border: 0;
   border-radius: 8px;
   background: #fafafa;
   color: #222;
+}
+
+.time-row input[type="time"] {
+  width: 100%;
+  min-width: 96px;
 }
 
 .event-checkbox-row {
@@ -1437,7 +1444,7 @@ p {
 
 .event-editor-row {
   display: grid;
-  grid-template-columns: 38px minmax(0, 1fr);
+  grid-template-columns: 34px minmax(0, 1fr);
   gap: 12px;
   align-items: start;
   border-bottom: 1px solid #ececec;
@@ -1445,10 +1452,15 @@ p {
 }
 
 .event-editor-row .row-icon {
+  width: 24px;
+  height: 24px;
+  display: inline-grid;
+  place-items: center;
   color: #2fca7a;
-  font-size: 22px;
-  line-height: 40px;
+  font-size: 18px;
+  line-height: 1;
   text-align: center;
+  margin-top: 8px;
 }
 
 .event-editor-row select,
@@ -1460,8 +1472,11 @@ p {
 }
 
 .event-editor-row textarea {
-  min-height: 88px;
+  min-height: 44px;
+  max-height: 260px;
   padding-top: 12px;
+  overflow: hidden;
+  line-height: 1.55;
 }
 
 .event-editor-row.assignee strong {
@@ -2004,7 +2019,8 @@ p {
   }
 
   .time-row {
-    grid-template-columns: 54px minmax(0, 1fr) 74px;
+    grid-template-columns: 48px minmax(128px, 1fr) minmax(98px, auto);
+    gap: 8px;
   }
 
   .event-assignee-grid {

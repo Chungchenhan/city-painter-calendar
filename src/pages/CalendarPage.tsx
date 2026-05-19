@@ -867,39 +867,48 @@ export default function CalendarPage() {
                 </div>
                 <div className="event-checkbox-row">
                   <label><input type="checkbox" /> 全天</label>
-                  <label><input type="checkbox" checked={!!eventForm.note} onChange={(event) => setEventForm((form) => ({ ...form, note: event.target.checked ? form.note || '備忘錄' : '' }))} /> 儲存為備忘錄</label>
                 </div>
               </div>
 
               <div className="event-editor-list">
                 <div className="event-editor-row">
-                  <span className="row-icon">▣</span>
+                  <span className="row-icon" aria-hidden="true">■</span>
                   <select value={eventForm.calendarId} onChange={(event) => setEventForm((form) => ({ ...form, calendarId: event.target.value }))}>
                     <option value="">選擇行事曆</option>
                     {visibleCalendars.map((calendar) => <option key={calendar.id} value={calendar.id}>{calendar.name}</option>)}
                   </select>
                 </div>
                 <div className="event-editor-row">
-                  <span className="row-icon">⌖</span>
+                  <span className="row-icon" aria-hidden="true">◎</span>
                   <select value={eventForm.departmentId} onChange={(event) => setEventForm((form) => ({ ...form, departmentId: event.target.value }))}>
                     <option value="">未分配部門</option>
                     {departments.map((department) => <option key={department.id} value={department.id}>{department.name}</option>)}
                   </select>
                 </div>
                 <div className="event-editor-row note">
-                  <span className="row-icon">☰</span>
-                  <textarea rows={3} value={eventForm.note} onChange={(event) => setEventForm((form) => ({ ...form, note: event.target.value }))} placeholder="新增備註" />
+                  <span className="row-icon" aria-hidden="true">≡</span>
+                  <textarea
+                    rows={1}
+                    value={eventForm.note}
+                    onChange={(event) => {
+                      event.currentTarget.style.height = 'auto'
+                      event.currentTarget.style.height = `${event.currentTarget.scrollHeight}px`
+                      setEventForm((form) => ({ ...form, note: event.target.value }))
+                    }}
+                    placeholder="新增備註"
+                    style={{ height: eventForm.note ? undefined : 44 }}
+                  />
                 </div>
                 <div className="event-editor-row">
-                  <span className="row-icon">⌖</span>
+                  <span className="row-icon" aria-hidden="true">⌖</span>
                   <input value={eventForm.location} onChange={(event) => setEventForm((form) => ({ ...form, location: event.target.value }))} placeholder="新增地點" />
                 </div>
                 <div className="event-editor-row">
-                  <span className="row-icon">🔗</span>
+                  <span className="row-icon" aria-hidden="true">⌁</span>
                   <input type="url" value={eventForm.url} onChange={(event) => setEventForm((form) => ({ ...form, url: event.target.value }))} placeholder="新增網址" />
                 </div>
                 <div className="event-editor-row attachment">
-                  <span className="row-icon">▧</span>
+                  <span className="row-icon" aria-hidden="true">▧</span>
                   <div>
                     <strong>附件</strong>
                     <label className="attachment-picker">
@@ -915,7 +924,7 @@ export default function CalendarPage() {
                   </div>
                 </div>
                 <div className="event-editor-row assignee">
-                  <span className="row-icon">♙</span>
+                  <span className="row-icon" aria-hidden="true">○</span>
                   <div>
                     <strong>指派員工</strong>
                     <div className="event-assignee-grid">
