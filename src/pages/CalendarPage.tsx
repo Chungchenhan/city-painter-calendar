@@ -603,18 +603,6 @@ export default function CalendarPage() {
     return results.filter((result) => result.status === 'rejected').length
   }
 
-  async function toggleDone(event: CalendarEvent) {
-    try {
-      await updateDoc(doc(db, 'calendarEvents', event.id), {
-        done: !event.done,
-        updatedAt: new Date().toISOString()
-      })
-      await queryClient.invalidateQueries({ queryKey: ['calendarEvents'] })
-    } catch {
-      alert('狀態更新失敗')
-    }
-  }
-
   async function deleteEvent(id: string) {
     if (!confirm('確定刪除此工作？')) return
     try {
@@ -774,7 +762,6 @@ export default function CalendarPage() {
         </div>
 
         <div className="event-detail-footer">
-          <button onClick={() => toggleDone(selectedEvent)}>{selectedEvent.done ? '恢復工作' : '標記完成'}</button>
           {isAdmin && <button onClick={() => openEditEvent(selectedEvent)}>編輯</button>}
           {isAdmin && <button className="danger" onClick={() => deleteEvent(selectedEvent.id)}>刪除</button>}
         </div>
