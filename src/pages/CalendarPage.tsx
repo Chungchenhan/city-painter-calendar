@@ -136,7 +136,6 @@ export default function CalendarPage() {
     return Array.from({ length: 7 }, (_, index) => start.add(index, 'day'))
   }, [selectedDate])
 
-  const selectedEvents = eventsByDate.get(selectedDate) ?? []
   const selectedEvent = useMemo(() => {
     if (!selectedEventId) return null
     return visibleEvents.find((event) => event.id === selectedEventId) ?? null
@@ -498,7 +497,7 @@ export default function CalendarPage() {
 
         {activeToolPanel === 'comments' && (
           <div className="panel-list">
-            {selectedEvents.filter((event) => event.note).length ? selectedEvents.filter((event) => event.note).map((event) => (
+            {visibleEvents.filter((event) => event.date === selectedDate && event.note).length ? visibleEvents.filter((event) => event.date === selectedDate && event.note).map((event) => (
               <article className="panel-note" key={event.id}>
                 <strong>{event.title}</strong>
                 <p>{event.note}</p>
@@ -510,7 +509,7 @@ export default function CalendarPage() {
         {activeToolPanel === 'photos' && (
           <div className="panel-list">
             <p className="panel-empty">目前工作尚未附加照片。可先在工作備註記錄照片需求。</p>
-            {selectedEvents.map(renderEventSummary)}
+            {visibleEvents.filter((event) => event.date === selectedDate).map(renderEventSummary)}
           </div>
         )}
 
@@ -764,31 +763,6 @@ export default function CalendarPage() {
 
       {renderToolPanel()}
       {renderEventDetailPanel()}
-
-      <section className="tt-day-dock">
-        <div className="dock-date">
-          <strong>{selectedDay.format('M/D')}</strong>
-          <span>星期{WEEKDAYS[selectedDay.day()]}</span>
-        </div>
-        <div className="dock-events">
-          {selectedEvents.length === 0 ? (
-            <span className="dock-empty">這天沒有工作</span>
-          ) : selectedEvents.slice(0, 4).map((event) => (
-            <article className={`dock-event ${event.done ? 'done' : ''} ${selectedEventId === event.id ? 'active' : ''}`} key={event.id} style={{ '--event-color': calendarColor(event.calendarId) } as CSSProperties} onClick={() => openEventDetail(event)}>
-              <button className="done-dot" onClick={(clickEvent) => { clickEvent.stopPropagation(); toggleDone(event) }} aria-label={event.done ? '恢復工作' : '完成工作'} />
-              <div>
-                <strong>{event.title}</strong>
-                <span>{event.startTime} - {event.endTime} · {departmentName(event.departmentId)}</span>
-              </div>
-              <div className="dock-actions">
-                {event.assigneeIds.length > 0 && <small>{event.assigneeIds.map(employeeName).join('、')}</small>}
-                {isAdmin && <button onClick={(clickEvent) => { clickEvent.stopPropagation(); openEditEvent(event) }}>編輯</button>}
-                {isAdmin && <button onClick={(clickEvent) => { clickEvent.stopPropagation(); deleteEvent(event.id) }}>刪除</button>}
-              </div>
-            </article>
-          ))}
-        </div>
-      </section>
 
       {isAdmin && (
         <nav className="mobile-action-bar">

@@ -479,72 +479,6 @@ textarea {
   margin-left: 4px;
 }
 
-.tt-day-dock {
-  position: fixed;
-  left: 68px;
-  right: 62px;
-  bottom: 12px;
-  z-index: 10;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 12px;
-  align-items: center;
-  pointer-events: none;
-}
-
-.dock-date,
-.dock-event,
-.dock-empty {
-  pointer-events: auto;
-  border: 1px solid #e6e6e6;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.1);
-}
-
-.dock-date {
-  min-width: 86px;
-  padding: 9px 12px;
-}
-
-.dock-date strong {
-  display: block;
-  font-size: 20px;
-}
-
-.dock-date span,
-.dock-event span,
-.dock-empty {
-  color: #777;
-  font-size: 12px;
-}
-
-.dock-events {
-  min-width: 0;
-  display: flex;
-  gap: 8px;
-  overflow: auto;
-}
-
-.dock-event {
-  min-width: 250px;
-  max-width: 340px;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 8px;
-  align-items: start;
-  border-left: 5px solid var(--event-color);
-  padding: 9px 10px;
-}
-
-.dock-event.active {
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--event-color) 28%, transparent), 0 8px 22px rgba(0, 0, 0, 0.1);
-}
-
-.dock-event.done {
-  opacity: 0.58;
-}
-
 .done-dot {
   width: 16px;
   height: 16px;
@@ -554,48 +488,6 @@ textarea {
   background: #fff;
   padding: 0;
   margin-top: 2px;
-}
-
-.dock-event strong {
-  display: block;
-  overflow: hidden;
-  color: #222;
-  font-size: 13px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.dock-actions {
-  grid-column: 1 / -1;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.dock-actions small {
-  min-width: 0;
-  overflow: hidden;
-  color: #777;
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.dock-actions button {
-  min-height: 24px;
-  border: 0;
-  background: transparent;
-  color: #2f8fca;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.dock-empty {
-  display: inline-flex;
-  align-items: center;
-  min-height: 48px;
-  padding: 0 16px;
 }
 
 .tt-calendar-drawer,
@@ -1975,16 +1867,8 @@ p {
     line-height: 18px;
   }
 
-  .tt-day-dock {
-    left: 8px;
-    right: 8px;
-    bottom: calc(136px + env(safe-area-inset-bottom, 0px));
-    grid-template-columns: 1fr;
-    pointer-events: auto;
-  }
-
   .tt-calendar-surface {
-    padding-bottom: calc(210px + env(safe-area-inset-bottom, 0px));
+    padding-bottom: calc(136px + env(safe-area-inset-bottom, 0px));
   }
 
   .tt-calendar-drawer,
@@ -2011,14 +1895,6 @@ p {
     position: sticky;
     bottom: 0;
     padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px));
-  }
-
-  .dock-date {
-    display: none;
-  }
-
-  .dock-event {
-    min-width: 86vw;
   }
 
   .topbar {
