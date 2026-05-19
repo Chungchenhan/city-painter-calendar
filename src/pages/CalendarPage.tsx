@@ -2,10 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import dayjs from 'dayjs'
 import { addDoc, collection, deleteDoc, doc, updateDoc } from 'firebase/firestore'
-import { getDownloadURL, ref, uploadBytes } from 'firebase/storage'
 import { signOut } from 'firebase/auth'
 import { useQueryClient } from '@tanstack/react-query'
-import { auth, db, storage } from '../lib/firebase'
+import { auth, db } from '../lib/firebase'
 import { useAuth } from '../contexts/AuthContext'
 import { useCalendarEvents, useCalendarGroups } from '../hooks/useCalendarData'
 import { useDepartments, useEmployees } from '../hooks/useHrData'
@@ -508,14 +507,19 @@ export default function CalendarPage() {
   }
 
   async function uploadEventAttachments(eventId: string, files: File[]) {
-    return Promise.all(files.map(async (file) => {
-      const safeName = file.name.replace(/[^\w.\-\u4e00-\u9fa5]/g, '_')
-      const path = `calendarEvents/${eventId}/${Date.now()}-${safeName}`
-      const fileRef = ref(storage, path)
-      await uploadBytes(fileRef, file)
-      const url = await getDownloadURL(fileRef)
-      return { name: file.name, url, path, type: file.type, size: file.size }
-    }))
+    const formData = new FormData()
+    formData.set('eventId', eventId)
+    files.forEach((file) => formData.append('files', file))
+
+    const response = await fetch('/api/upload-drive', {
+      method: 'POST',
+      body: formData
+    })
+    const result = await response.json().catch(() => ({}))
+    if (!response.ok) {
+      throw new Error(result.error || '附件上傳失敗')
+    }
+    return result.attachments as NonNullable<CalendarEvent['attachments']>
   }
 
   async function toggleDone(event: CalendarEvent) {

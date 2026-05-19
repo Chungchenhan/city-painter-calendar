@@ -58,6 +58,7 @@ export interface CalendarEvent {
     path: string
     type?: string
     size?: number
+    provider?: 'google-drive' | 'firebase-storage'
   }[]
   done: boolean
   createdBy?: string
