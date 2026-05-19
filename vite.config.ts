@@ -52,6 +52,13 @@ export default defineConfig({
     })
   ],
   server: {
-    hmr: { overlay: false }
+    hmr: { overlay: false },
+    proxy: {
+      '/api': {
+        target: 'https://city-painter-calendar.vercel.app',
+        changeOrigin: true,
+        secure: true
+      }
+    }
   }
 })
