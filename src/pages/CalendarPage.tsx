@@ -12,6 +12,16 @@ import type { CalendarEvent, CalendarGroup } from '../types'
 
 const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六']
 const COLORS = ['#f6b100', '#1fb6a6', '#3c82f6', '#ef6262', '#8d6df2', '#31a24c', '#f57c35', '#667085']
+const TOOL_PANELS = [
+  { id: 'comments', label: '留言', icon: '▤' },
+  { id: 'photos', label: '照片', icon: '▧' },
+  { id: 'members', label: '成員', icon: '♙' },
+  { id: 'notifications', label: '通知', icon: '⌒' },
+  { id: 'settings', label: '設定', icon: '☷' }
+] as const
+
+type ViewMode = 'month' | 'week'
+type ToolPanelId = typeof TOOL_PANELS[number]['id']
 
 const emptyCalendar = {
   name: '',
@@ -47,8 +57,13 @@ export default function CalendarPage() {
 
   const [month, setMonth] = useState(dayjs().startOf('month'))
   const [selectedDate, setSelectedDate] = useState(dayjs().format('YYYY-MM-DD'))
+  const [viewMode, setViewMode] = useState<ViewMode>('month')
   const [departmentFilter, setDepartmentFilter] = useState('')
   const [activeCalendarIds, setActiveCalendarIds] = useState<string[]>([])
+  const [showCalendarDrawer, setShowCalendarDrawer] = useState(false)
+  const [showSearchPanel, setShowSearchPanel] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [activeToolPanel, setActiveToolPanel] = useState<ToolPanelId | null>(null)
   const [showCalendarModal, setShowCalendarModal] = useState(false)
   const [showEventModal, setShowEventModal] = useState(false)
   const [editingCalendarId, setEditingCalendarId] = useState<string | null>(null)
@@ -73,16 +88,27 @@ export default function CalendarPage() {
   const visibleCalendarMap = useMemo(() => new Map(visibleCalendars.map((calendar) => [calendar.id, calendar])), [visibleCalendars])
 
   const visibleEvents = useMemo(() => {
+    const keyword = searchQuery.trim().toLowerCase()
     return events.filter((event) => {
       const calendar = visibleCalendarMap.get(event.calendarId)
       if (!calendar || !selectedCalendarIds.includes(event.calendarId)) return false
       if (departmentFilter && event.departmentId !== departmentFilter) return false
+      if (keyword) {
+        const searchable = [
+          event.title,
+          event.note ?? '',
+          departmentName(event.departmentId),
+          calendar.name,
+          ...(event.assigneeIds ?? []).map(employeeName)
+        ].join(' ').toLowerCase()
+        if (!searchable.includes(keyword)) return false
+      }
       if (isAdmin) return true
       if (employeeId && event.assigneeIds?.includes(employeeId)) return true
       if (!event.assigneeIds?.length) return true
       return false
     })
-  }, [departmentFilter, employeeId, events, isAdmin, selectedCalendarIds, visibleCalendarMap])
+  }, [departmentFilter, employeeId, events, isAdmin, searchQuery, selectedCalendarIds, visibleCalendarMap, departments, employees])
 
   const eventsByDate = useMemo(() => {
     const map = new Map<string, CalendarEvent[]>()
@@ -99,9 +125,21 @@ export default function CalendarPage() {
     return Array.from({ length: 42 }, (_, index) => start.add(index, 'day'))
   }, [month])
 
+  const weekDays = useMemo(() => {
+    const start = dayjs(selectedDate).startOf('week')
+    return Array.from({ length: 7 }, (_, index) => start.add(index, 'day'))
+  }, [selectedDate])
+
   const selectedEvents = eventsByDate.get(selectedDate) ?? []
   const loading = calendarsLoading || eventsLoading
   const selectedDay = dayjs(selectedDate)
+  const currentTitle = viewMode === 'week'
+    ? `${weekDays[0].format('M/D')} - ${weekDays[6].format('M/D')}`
+    : month.format('YYYY年M月')
+  const selectedCalendarNames = selectedCalendarIds
+    .map((id) => visibleCalendarMap.get(id)?.name)
+    .filter(Boolean)
+    .join('、') || '未選擇行事曆'
 
   function calendarColor(calendarId: string) {
     return visibleCalendarMap.get(calendarId)?.color ?? '#667085'
@@ -131,6 +169,27 @@ export default function CalendarPage() {
     })
     setEditingCalendarId(calendar.id)
     setShowCalendarModal(true)
+  }
+
+  function toggleCalendar(calendarId: string) {
+    setActiveCalendarIds((list) => toggle(list.length ? list : visibleCalendars.map((item) => item.id), calendarId))
+  }
+
+  function goToday() {
+    const today = dayjs()
+    setMonth(today.startOf('month'))
+    setSelectedDate(today.format('YYYY-MM-DD'))
+  }
+
+  function movePeriod(direction: -1 | 1) {
+    if (viewMode === 'week') {
+      const nextDate = dayjs(selectedDate).add(direction, 'week')
+      setSelectedDate(nextDate.format('YYYY-MM-DD'))
+      setMonth(nextDate.startOf('month'))
+      return
+    }
+    const nextMonth = month.add(direction, 'month')
+    setMonth(nextMonth)
   }
 
   function openAddEvent(date = selectedDate) {
@@ -278,40 +337,120 @@ export default function CalendarPage() {
     }
   }
 
+  function renderEventSummary(event: CalendarEvent) {
+    return (
+      <article className={`panel-event ${event.done ? 'done' : ''}`} key={event.id} style={{ '--event-color': calendarColor(event.calendarId) } as CSSProperties}>
+        <span />
+        <div>
+          <strong>{event.title}</strong>
+          <small>{event.date} {event.startTime} - {event.endTime} · {departmentName(event.departmentId)}</small>
+        </div>
+      </article>
+    )
+  }
+
+  function renderToolPanel() {
+    if (!activeToolPanel) return null
+    const panel = TOOL_PANELS.find((item) => item.id === activeToolPanel)
+    return (
+      <aside className="tt-floating-panel tt-tool-panel">
+        <div className="panel-head">
+          <h2>{panel?.label}</h2>
+          <button onClick={() => setActiveToolPanel(null)} aria-label="關閉面板">×</button>
+        </div>
+
+        {activeToolPanel === 'comments' && (
+          <div className="panel-list">
+            {selectedEvents.filter((event) => event.note).length ? selectedEvents.filter((event) => event.note).map((event) => (
+              <article className="panel-note" key={event.id}>
+                <strong>{event.title}</strong>
+                <p>{event.note}</p>
+              </article>
+            )) : <p className="panel-empty">目前選取日期沒有留言備註</p>}
+          </div>
+        )}
+
+        {activeToolPanel === 'photos' && (
+          <div className="panel-list">
+            <p className="panel-empty">目前工作尚未附加照片。可先在工作備註記錄照片需求。</p>
+            {selectedEvents.map(renderEventSummary)}
+          </div>
+        )}
+
+        {activeToolPanel === 'members' && (
+          <div className="panel-list">
+            {employees.filter((emp) => emp.status !== 'inactive').map((emp) => (
+              <article className="member-row" key={emp.id}>
+                <span>{emp.name.slice(0, 1)}</span>
+                <div>
+                  <strong>{emp.name}</strong>
+                  <small>{emp.departmentName || departmentName(emp.departmentId || '')}</small>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+
+        {activeToolPanel === 'notifications' && (
+          <div className="panel-list">
+            {visibleEvents.slice(0, 8).map(renderEventSummary)}
+            {visibleEvents.length === 0 && <p className="panel-empty">目前沒有符合條件的通知</p>}
+          </div>
+        )}
+
+        {activeToolPanel === 'settings' && (
+          <div className="panel-list">
+            {isAdmin && <button className="primary-btn" onClick={openAddCalendar}>新增行事曆</button>}
+            {visibleCalendars.map((calendar) => (
+              <article className="settings-calendar" key={calendar.id}>
+                <span style={{ background: calendar.color }} />
+                <div>
+                  <strong>{calendar.name}</strong>
+                  <small>{calendar.isCompanyWide ? '全公司' : '限定部門/成員'}</small>
+                </div>
+                {isAdmin && <button className="small-btn" onClick={() => openEditCalendar(calendar)}>編輯</button>}
+              </article>
+            ))}
+          </div>
+        )}
+      </aside>
+    )
+  }
+
   return (
     <div className="timetree-page">
       <header className="timetree-topbar">
         <div className="topbar-left">
-          <button className="tt-icon-button" aria-label="開啟選單">☰</button>
+          <button className="tt-icon-button" aria-label="開啟選單" onClick={() => setShowCalendarDrawer((open) => !open)}>☰</button>
           <div className="tt-logo">
             <span className="tt-logo-mark">✣</span>
             <span>TimeTree</span>
           </div>
-          <button className="tt-today" onClick={() => { setMonth(dayjs().startOf('month')); setSelectedDate(dayjs().format('YYYY-MM-DD')) }}>今天</button>
+          <button className="tt-today" onClick={goToday}>今天</button>
           <div className="tt-stepper">
-            <button onClick={() => setMonth((value) => value.subtract(1, 'month'))}>‹</button>
-            <button onClick={() => setMonth((value) => value.add(1, 'month'))}>›</button>
+            <button onClick={() => movePeriod(-1)}>‹</button>
+            <button onClick={() => movePeriod(1)}>›</button>
           </div>
-          <h1>{month.format('YYYY年M月')}</h1>
+          <h1>{currentTitle}</h1>
         </div>
         <div className="tt-view-switch">
-          <button className="active">月</button>
-          <button>週</button>
+          <button className={viewMode === 'month' ? 'active' : ''} onClick={() => setViewMode('month')}>月</button>
+          <button className={viewMode === 'week' ? 'active' : ''} onClick={() => setViewMode('week')}>週</button>
         </div>
         <div className="topbar-right">
           <select className="tt-department-select" value={departmentFilter} onChange={(event) => setDepartmentFilter(event.target.value)} aria-label="部門篩選">
             <option value="">全部</option>
             {departments.map((department) => <option value={department.id} key={department.id}>{department.name}</option>)}
           </select>
-          <button className="tt-icon-button" aria-label="搜尋">⌕</button>
+          <button className={`tt-icon-button ${showSearchPanel ? 'active' : ''}`} aria-label="搜尋" onClick={() => setShowSearchPanel((open) => !open)}>⌕</button>
           {isAdmin && <button className="tt-icon-button add" onClick={() => openAddEvent(selectedDate)} aria-label="新增工作">＋</button>}
           <button className="tt-avatar" onClick={() => signOut(auth)} title="登出">{(displayName || user?.email || 'U').slice(0, 1)}</button>
         </div>
       </header>
 
       <div className="timetree-body">
-        <aside className="tt-left-rail">
-          <button className="rail-button active" aria-label="月曆">✓</button>
+        <aside className={`tt-left-rail ${showCalendarDrawer ? 'drawer-open' : ''}`}>
+          <button className={`rail-button ${viewMode === 'month' ? 'active' : ''}`} aria-label="月曆" onClick={() => setViewMode('month')}>✓</button>
           <button className="rail-button" aria-label="行事曆設定" onClick={openAddCalendar}>＋</button>
           <div className="rail-calendars">
             {visibleCalendars.slice(0, 8).map((calendar) => {
@@ -320,7 +459,7 @@ export default function CalendarPage() {
                 <button
                   key={calendar.id}
                   className={`rail-calendar ${active ? 'active' : ''}`}
-                  onClick={() => setActiveCalendarIds((list) => toggle(list.length ? list : visibleCalendars.map((item) => item.id), calendar.id))}
+                  onClick={() => toggleCalendar(calendar.id)}
                   onDoubleClick={() => isAdmin && openEditCalendar(calendar)}
                   style={{ '--calendar-color': calendar.color } as CSSProperties}
                   title={calendar.name}
@@ -332,6 +471,49 @@ export default function CalendarPage() {
           </div>
         </aside>
 
+        {showCalendarDrawer && (
+          <aside className="tt-calendar-drawer">
+            <div className="panel-head">
+              <h2>行事曆篩選</h2>
+              <button onClick={() => setShowCalendarDrawer(false)} aria-label="關閉篩選">×</button>
+            </div>
+            <div className="drawer-section">
+              <span className="field-label">部門</span>
+              <select value={departmentFilter} onChange={(event) => setDepartmentFilter(event.target.value)}>
+                <option value="">全部部門</option>
+                {departments.map((department) => <option value={department.id} key={department.id}>{department.name}</option>)}
+              </select>
+            </div>
+            <div className="drawer-section">
+              <div className="panel-title-row">
+                <span className="field-label">行事曆</span>
+                {isAdmin && <button className="text-btn" onClick={openAddCalendar}>新增</button>}
+              </div>
+              <div className="drawer-calendar-list">
+                {visibleCalendars.map((calendar) => {
+                  const active = selectedCalendarIds.includes(calendar.id)
+                  return (
+                    <button
+                      key={calendar.id}
+                      className={active ? 'active' : ''}
+                      onClick={() => toggleCalendar(calendar.id)}
+                      style={{ '--calendar-color': calendar.color } as CSSProperties}
+                    >
+                      <span />
+                      <strong>{calendar.name}</strong>
+                      {isAdmin && <small onClick={(event) => { event.stopPropagation(); openEditCalendar(calendar) }}>設定</small>}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+            <div className="drawer-actions">
+              <button className="small-btn" onClick={() => setActiveCalendarIds([])}>全選</button>
+              {isAdmin && <button className="primary-btn" onClick={openAddCalendar}>新增行事曆</button>}
+            </div>
+          </aside>
+        )}
+
         <section className="tt-calendar-surface">
           {loading ? (
             <div className="calendar-skeleton" />
@@ -340,7 +522,7 @@ export default function CalendarPage() {
             <div className="weekday-grid">
               {WEEKDAYS.map((day) => <div key={day}>{day}</div>)}
             </div>
-            <div className="month-grid">
+            {viewMode === 'month' ? <div className="month-grid">
               {monthDays.map((day) => {
                 const date = day.format('YYYY-MM-DD')
                 const dayEvents = eventsByDate.get(date) ?? []
@@ -366,19 +548,68 @@ export default function CalendarPage() {
                   </button>
                 )
               })}
-            </div>
+            </div> : <div className="week-grid">
+              {weekDays.map((day) => {
+                const date = day.format('YYYY-MM-DD')
+                const dayEvents = eventsByDate.get(date) ?? []
+                const selected = selectedDate === date
+                const today = dayjs().format('YYYY-MM-DD') === date
+                return (
+                  <button
+                    className={`week-day ${selected ? 'selected' : ''}`}
+                    key={date}
+                    onClick={() => { setSelectedDate(date); setMonth(day.startOf('month')) }}
+                    onDoubleClick={() => isAdmin && openAddEvent(date)}
+                  >
+                    <span className={`week-date ${today ? 'today' : ''}`}>{day.format('M/D')}</span>
+                    <strong>星期{WEEKDAYS[day.day()]}</strong>
+                    <span className="week-events">
+                      {dayEvents.length === 0 ? <small>沒有工作</small> : dayEvents.map((event) => (
+                        <span className={`week-event ${event.done ? 'done' : ''}`} style={{ '--event-color': calendarColor(event.calendarId) } as CSSProperties} key={event.id}>
+                          <i />
+                          <span>{event.startTime}</span>
+                          <b>{event.title}</b>
+                        </span>
+                      ))}
+                    </span>
+                  </button>
+                )
+              })}
+            </div>}
             </>
           )}
         </section>
 
         <aside className="tt-right-rail">
-          <button title="留言">▤</button>
-          <button title="照片">▧</button>
-          <button title="成員">♙</button>
-          <button title="通知">⌒</button>
-          <button title="設定">☷</button>
+          {TOOL_PANELS.map((panel) => (
+            <button
+              key={panel.id}
+              className={activeToolPanel === panel.id ? 'active' : ''}
+              title={panel.label}
+              onClick={() => setActiveToolPanel((current) => current === panel.id ? null : panel.id)}
+            >
+              {panel.icon}
+            </button>
+          ))}
         </aside>
       </div>
+
+      {showSearchPanel && (
+        <aside className="tt-floating-panel tt-search-panel">
+          <div className="panel-head">
+            <h2>搜尋工作</h2>
+            <button onClick={() => setShowSearchPanel(false)} aria-label="關閉搜尋">×</button>
+          </div>
+          <input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="搜尋標題、備註、部門、成員" autoFocus />
+          <p className="panel-hint">{searchQuery.trim() ? `找到 ${visibleEvents.length} 筆` : `目前顯示 ${visibleEvents.length} 筆，範圍：${selectedCalendarNames}`}</p>
+          <div className="panel-list">
+            {visibleEvents.slice(0, 12).map(renderEventSummary)}
+            {visibleEvents.length === 0 && <p className="panel-empty">沒有符合條件的工作</p>}
+          </div>
+        </aside>
+      )}
+
+      {renderToolPanel()}
 
       <section className="tt-day-dock">
         <div className="dock-date">
