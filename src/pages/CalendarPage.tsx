@@ -38,6 +38,7 @@ const TOOL_PANELS = [
 type ViewMode = 'month' | 'week'
 type ToolPanelId = typeof TOOL_PANELS[number]['id']
 type EventEditorIcon = 'person' | 'department' | 'calendar' | 'bell' | 'repeat' | 'link' | 'location' | 'paperclip' | 'note' | 'check'
+type EventAttachment = NonNullable<CalendarEvent['attachments']>[number]
 
 const emptyCalendar = {
   name: '',
@@ -80,12 +81,12 @@ function reminderOffsetMinutes(reminder: CalendarEvent['reminder']) {
   return 0
 }
 
-function isImageAttachment(attachment: NonNullable<CalendarEvent['attachments']>[number]) {
+function isImageAttachment(attachment: EventAttachment) {
   if (attachment.type?.startsWith('image/')) return true
   return /\.(png|jpe?g|webp|gif)$/i.test(attachment.name)
 }
 
-function attachmentPreviewUrl(attachment: NonNullable<CalendarEvent['attachments']>[number]) {
+function attachmentPreviewUrl(attachment: EventAttachment) {
   if (!isImageAttachment(attachment)) return ''
   if (attachment.provider === 'google-drive' && attachment.path) {
     return `https://drive.google.com/thumbnail?id=${encodeURIComponent(attachment.path)}&sz=w1000`
@@ -194,6 +195,7 @@ export default function CalendarPage() {
   const [calendarForm, setCalendarForm] = useState(emptyCalendar)
   const [eventForm, setEventForm] = useState(emptyEvent)
   const [attachmentFiles, setAttachmentFiles] = useState<File[]>([])
+  const [deletedAttachments, setDeletedAttachments] = useState<EventAttachment[]>([])
   const [saving, setSaving] = useState(false)
   const noteTextareaRef = useRef<HTMLTextAreaElement | null>(null)
 
@@ -384,6 +386,7 @@ export default function CalendarPage() {
       departmentId: departmentFilter || currentEmployee?.departmentId || ''
     })
     setAttachmentFiles([])
+    setDeletedAttachments([])
     setEditingEventId(null)
     setShowEventModal(true)
   }
@@ -414,6 +417,7 @@ export default function CalendarPage() {
       attachments: event.attachments ?? []
     })
     setAttachmentFiles([])
+    setDeletedAttachments([])
     setEditingEventId(event.id)
     setShowEventModal(true)
   }
@@ -533,9 +537,14 @@ export default function CalendarPage() {
         })
       }
 
+      const deleteFailures = await deleteRemovedEventAttachments(deletedAttachments)
       setShowEventModal(false)
       setAttachmentFiles([])
+      setDeletedAttachments([])
       await refreshCalendarData()
+      if (deleteFailures > 0) {
+        alert('活動已儲存，但部分雲端附件刪除失敗，請稍後再試')
+      }
     } catch {
       alert('工作儲存失敗，請確認附件上傳權限或稍後再試')
     } finally {
@@ -557,6 +566,41 @@ export default function CalendarPage() {
       throw new Error(result.error || '附件上傳失敗')
     }
     return result.attachments as NonNullable<CalendarEvent['attachments']>
+  }
+
+  function removeExistingAttachment(file: EventAttachment) {
+    setEventForm((form) => ({
+      ...form,
+      attachments: form.attachments.filter((attachment) => attachment.path !== file.path)
+    }))
+    if (file.provider === 'google-drive' && file.path) {
+      setDeletedAttachments((attachments) => (
+        attachments.some((attachment) => attachment.path === file.path) ? attachments : [...attachments, file]
+      ))
+    }
+  }
+
+  function removePendingAttachment(index: number) {
+    setAttachmentFiles((files) => files.filter((_, fileIndex) => fileIndex !== index))
+  }
+
+  async function deleteRemovedEventAttachments(files: EventAttachment[]) {
+    const driveFiles = files.filter((file) => file.provider === 'google-drive' && file.path)
+    if (!driveFiles.length) return 0
+
+    const results = await Promise.allSettled(driveFiles.map(async (file) => {
+      const response = await fetch('/api/upload-drive', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fileId: file.path })
+      })
+      if (!response.ok) {
+        const result = await response.json().catch(() => ({}))
+        throw new Error(result.error || '附件刪除失敗')
+      }
+    }))
+
+    return results.filter((result) => result.status === 'rejected').length
   }
 
   async function toggleDone(event: CalendarEvent) {
@@ -1187,8 +1231,18 @@ export default function CalendarPage() {
                     </label>
                     {[...eventForm.attachments.map((file) => file.name), ...attachmentFiles.map((file) => file.name)].length > 0 && (
                       <div className="attachment-list">
-                        {eventForm.attachments.map((file) => <span key={file.path}>{file.name}</span>)}
-                        {attachmentFiles.map((file) => <span key={`${file.name}-${file.size}`}>{file.name}</span>)}
+                        {eventForm.attachments.map((file) => (
+                          <span key={file.path || file.url}>
+                            <span>{file.name}</span>
+                            <button type="button" aria-label={`刪除 ${file.name}`} onClick={() => removeExistingAttachment(file)}>×</button>
+                          </span>
+                        ))}
+                        {attachmentFiles.map((file, index) => (
+                          <span key={`${file.name}-${file.size}-${index}`}>
+                            <span>{file.name}</span>
+                            <button type="button" aria-label={`刪除 ${file.name}`} onClick={() => removePendingAttachment(index)}>×</button>
+                          </span>
+                        ))}
                       </div>
                     )}
                   </div>

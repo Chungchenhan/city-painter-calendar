@@ -58,6 +58,14 @@ function parseUpload(req) {
   })
 }
 
+async function parseJsonBody(req) {
+  const chunks = []
+  for await (const chunk of req) chunks.push(chunk)
+  if (!chunks.length) return {}
+  const body = Buffer.concat(chunks).toString('utf8')
+  return body ? JSON.parse(body) : {}
+}
+
 function normalizeFiles(fileField) {
   if (!fileField) return []
   return Array.isArray(fileField) ? fileField : [fileField]
@@ -105,13 +113,36 @@ async function prepareUploadFile(file) {
 }
 
 export default async function handler(req, res) {
-  if (req.method !== 'POST') {
-    res.setHeader('Allow', 'POST')
+  if (!['POST', 'DELETE'].includes(req.method || '')) {
+    res.setHeader('Allow', 'POST, DELETE')
     res.status(405).json({ error: 'Method not allowed' })
     return
   }
 
   try {
+    if (req.method === 'DELETE') {
+      const { fileId } = await parseJsonBody(req)
+      if (!fileId || typeof fileId !== 'string') {
+        res.status(400).json({ error: 'Missing fileId' })
+        return
+      }
+
+      const auth = getDriveAuth()
+      const drive = google.drive({ version: 'v3', auth })
+      try {
+        await drive.files.delete({ fileId })
+      } catch (error) {
+        if (error && typeof error === 'object' && 'code' in error && error.code === 404) {
+          res.status(200).json({ ok: true })
+          return
+        }
+        throw error
+      }
+
+      res.status(200).json({ ok: true })
+      return
+    }
+
     const { files } = await parseUpload(req)
     const uploadFiles = normalizeFiles(files.files)
     if (!uploadFiles.length) {

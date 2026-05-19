@@ -1733,16 +1733,42 @@ p {
   margin-top: 10px;
 }
 
-.attachment-list span {
+.attachment-list > span {
   max-width: 100%;
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   overflow: hidden;
   border-radius: 999px;
-  padding: 5px 9px;
+  padding: 5px 6px 5px 9px;
   background: #f2f7fb;
   color: #4b5563;
   font-size: 12px;
+}
+
+.attachment-list > span > span {
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.attachment-list button {
+  width: 22px;
+  min-width: 22px;
+  min-height: 22px;
+  border: 0;
+  border-radius: 999px;
+  background: #e8eef5;
+  color: #667085;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.attachment-list button:hover {
+  background: #fee2e2;
+  color: #b91c1c;
 }
 
 .event-assignee-grid {
