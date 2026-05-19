@@ -337,10 +337,16 @@ textarea {
   border-radius: 8px;
   padding: 8px;
   background: #fff;
+  text-align: left;
 }
 
 .week-event.done {
   opacity: 0.58;
+}
+
+.week-event.active {
+  border-color: var(--event-color);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--event-color) 24%, transparent);
 }
 
 .week-event i {
@@ -413,6 +419,7 @@ textarea {
 
 .tt-calendar-surface .event-pill {
   height: 20px;
+  border: 0;
   border-radius: 3px;
   padding: 0 5px;
   background: var(--event-color);
@@ -420,6 +427,7 @@ textarea {
   font-size: 12px;
   font-weight: 800;
   line-height: 20px;
+  text-align: left;
 }
 
 .tt-calendar-surface .event-line {
@@ -430,12 +438,21 @@ textarea {
   align-items: center;
   gap: 4px;
   overflow: hidden;
+  border: 0;
   padding-left: 14px;
+  background: transparent;
   color: #222;
   font-size: 12px;
   line-height: 20px;
   text-overflow: ellipsis;
+  text-align: left;
   white-space: nowrap;
+}
+
+.tt-calendar-surface .event-pill.active,
+.tt-calendar-surface .event-line.active {
+  outline: 2px solid color-mix(in srgb, var(--event-color) 35%, transparent);
+  outline-offset: 1px;
 }
 
 .tt-calendar-surface .event-line::before {
@@ -518,6 +535,10 @@ textarea {
   align-items: start;
   border-left: 5px solid var(--event-color);
   padding: 9px 10px;
+}
+
+.dock-event.active {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--event-color) 28%, transparent), 0 8px 22px rgba(0, 0, 0, 0.1);
 }
 
 .dock-event.done {
@@ -715,7 +736,10 @@ textarea {
   grid-template-columns: auto minmax(0, 1fr);
   gap: 9px;
   align-items: start;
+  width: 100%;
+  border: 1px solid #ececec;
   padding: 10px;
+  text-align: left;
 }
 
 .panel-event.done {
@@ -760,6 +784,193 @@ textarea {
   color: #555;
   font-size: 13px;
   line-height: 1.55;
+}
+
+.event-detail-panel {
+  position: fixed;
+  top: 58px;
+  right: 50px;
+  bottom: 0;
+  z-index: 45;
+  width: min(430px, calc(100vw - 106px));
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  border-left: 1px solid #e6e6e6;
+  background: #fff;
+  box-shadow: -10px 0 28px rgba(0, 0, 0, 0.08);
+}
+
+.event-detail-header {
+  height: 62px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid #ededed;
+  padding: 0 18px;
+}
+
+.event-detail-header strong {
+  font-size: 15px;
+}
+
+.event-detail-header div {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.event-detail-header button {
+  width: 40px;
+  min-height: 40px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: #333;
+  font-size: 24px;
+}
+
+.event-detail-body {
+  overflow: auto;
+  padding: 26px 18px 20px;
+}
+
+.event-detail-avatar {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  margin: 0 auto 22px;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.event-detail-body h2 {
+  color: #27c874;
+  font-size: 22px;
+  line-height: 1.35;
+  text-align: center;
+}
+
+.event-detail-time {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 18px;
+  margin: 28px 0 24px;
+  text-align: center;
+}
+
+.event-detail-time span {
+  display: block;
+  color: #333;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.event-detail-time strong {
+  display: block;
+  margin-top: 4px;
+  color: #222;
+  font-size: 30px;
+}
+
+.event-detail-time b {
+  color: #27c874;
+  font-size: 48px;
+  font-weight: 400;
+}
+
+.event-detail-row {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  min-height: 52px;
+  border-top: 1px solid #ededed;
+  color: #333;
+  font-size: 14px;
+}
+
+.event-detail-row > span {
+  color: #27c874;
+  font-size: 18px;
+  text-align: center;
+}
+
+.event-detail-map {
+  height: 160px;
+  display: grid;
+  align-items: end;
+  overflow: hidden;
+  border: 1px solid #e4e9ef;
+  border-radius: 8px;
+  margin: 12px 0;
+  padding: 14px;
+  background:
+    linear-gradient(90deg, rgba(73, 169, 239, 0.14) 1px, transparent 1px),
+    linear-gradient(rgba(73, 169, 239, 0.14) 1px, transparent 1px),
+    linear-gradient(135deg, #dff4ff 0%, #f8fbff 42%, #eaf6e9 100%);
+  background-size: 34px 34px, 34px 34px, auto;
+}
+
+.event-detail-map div {
+  width: fit-content;
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+}
+
+.event-detail-map strong,
+.event-detail-map small {
+  display: block;
+}
+
+.event-detail-map small {
+  margin-top: 2px;
+  color: #777;
+}
+
+.event-detail-note {
+  border-top: 1px solid #ededed;
+  padding-top: 14px;
+}
+
+.event-detail-note strong {
+  color: #333;
+  font-size: 14px;
+}
+
+.event-detail-note p {
+  margin-top: 8px;
+  color: #555;
+  line-height: 1.6;
+}
+
+.event-detail-footer {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  border-top: 1px solid #ededed;
+  padding: 12px 14px calc(12px + env(safe-area-inset-bottom, 0px));
+}
+
+.event-detail-footer button {
+  min-height: 42px;
+  border: 1px solid #e3e3e3;
+  border-radius: 8px;
+  background: #fff;
+  color: #555;
+  font-weight: 800;
+}
+
+.event-detail-footer button.danger {
+  border-color: #ffd6d6;
+  background: #fff5f5;
+  color: #c81e1e;
 }
 
 .member-row,

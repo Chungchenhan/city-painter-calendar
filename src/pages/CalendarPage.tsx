@@ -64,6 +64,7 @@ export default function CalendarPage() {
   const [showSearchPanel, setShowSearchPanel] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [activeToolPanel, setActiveToolPanel] = useState<ToolPanelId | null>(null)
+  const [selectedEventId, setSelectedEventId] = useState<string | null>(null)
   const [showCalendarModal, setShowCalendarModal] = useState(false)
   const [showEventModal, setShowEventModal] = useState(false)
   const [editingCalendarId, setEditingCalendarId] = useState<string | null>(null)
@@ -131,6 +132,10 @@ export default function CalendarPage() {
   }, [selectedDate])
 
   const selectedEvents = eventsByDate.get(selectedDate) ?? []
+  const selectedEvent = useMemo(() => {
+    if (!selectedEventId) return null
+    return visibleEvents.find((event) => event.id === selectedEventId) ?? null
+  }, [selectedEventId, visibleEvents])
   const loading = calendarsLoading || eventsLoading
   const selectedDay = dayjs(selectedDate)
   const currentTitle = viewMode === 'week'
@@ -201,6 +206,14 @@ export default function CalendarPage() {
     })
     setEditingEventId(null)
     setShowEventModal(true)
+  }
+
+  function openEventDetail(event: CalendarEvent) {
+    setSelectedDate(event.date)
+    setMonth(dayjs(event.date).startOf('month'))
+    setSelectedEventId(event.id)
+    setActiveToolPanel(null)
+    setShowSearchPanel(false)
   }
 
   function openEditEvent(event: CalendarEvent) {
@@ -317,6 +330,7 @@ export default function CalendarPage() {
     if (!confirm('確定刪除此工作？')) return
     try {
       await deleteDoc(doc(db, 'calendarEvents', id))
+      setSelectedEventId((current) => current === id ? null : current)
       await queryClient.invalidateQueries({ queryKey: ['calendarEvents'] })
     } catch {
       alert('工作刪除失敗')
@@ -339,13 +353,86 @@ export default function CalendarPage() {
 
   function renderEventSummary(event: CalendarEvent) {
     return (
-      <article className={`panel-event ${event.done ? 'done' : ''}`} key={event.id} style={{ '--event-color': calendarColor(event.calendarId) } as CSSProperties}>
+      <button className={`panel-event ${event.done ? 'done' : ''}`} key={event.id} style={{ '--event-color': calendarColor(event.calendarId) } as CSSProperties} onClick={() => openEventDetail(event)}>
         <span />
         <div>
           <strong>{event.title}</strong>
           <small>{event.date} {event.startTime} - {event.endTime} · {departmentName(event.departmentId)}</small>
         </div>
-      </article>
+      </button>
+    )
+  }
+
+  function renderEventDetailPanel() {
+    if (!selectedEvent) return null
+    const calendar = visibleCalendarMap.get(selectedEvent.calendarId)
+    const assignees = selectedEvent.assigneeIds.map(employeeName)
+    return (
+      <aside className="event-detail-panel">
+        <div className="event-detail-header">
+          <strong>活動詳情</strong>
+          <div>
+            {isAdmin && <button onClick={() => openEditEvent(selectedEvent)} aria-label="編輯活動">⋮</button>}
+            <button onClick={() => setSelectedEventId(null)} aria-label="關閉活動詳情">×</button>
+          </div>
+        </div>
+
+        <div className="event-detail-body">
+          <div className="event-detail-avatar" style={{ background: calendarColor(selectedEvent.calendarId) }}>
+            {(calendar?.name || selectedEvent.title).slice(0, 1)}
+          </div>
+          <h2>{selectedEvent.title}</h2>
+          <div className="event-detail-time">
+            <div>
+              <span>{dayjs(selectedEvent.date).format('YYYY/M/D (ddd)')}</span>
+              <strong>{selectedEvent.startTime}</strong>
+            </div>
+            <b>›</b>
+            <div>
+              <span>{dayjs(selectedEvent.date).format('YYYY/M/D (ddd)')}</span>
+              <strong>{selectedEvent.endTime}</strong>
+            </div>
+          </div>
+
+          <div className="event-detail-row">
+            <span>⏰</span>
+            <div>開始時間、1 天前</div>
+          </div>
+          <div className="event-detail-row">
+            <span>▣</span>
+            <div>{calendar?.name || '未分類行事曆'}</div>
+          </div>
+          <div className="event-detail-row">
+            <span>⌖</span>
+            <div>{departmentName(selectedEvent.departmentId)}</div>
+          </div>
+          <div className="event-detail-map">
+            <div>
+              <strong>{departmentName(selectedEvent.departmentId)}</strong>
+              <small>都市彩繪工作地點</small>
+            </div>
+          </div>
+
+          {assignees.length > 0 && (
+            <div className="event-detail-row">
+              <span>♙</span>
+              <div>{assignees.join('、')}</div>
+            </div>
+          )}
+          {selectedEvent.note && (
+            <div className="event-detail-note">
+              <strong>備註</strong>
+              <p>{selectedEvent.note}</p>
+            </div>
+          )}
+        </div>
+
+        <div className="event-detail-footer">
+          <button onClick={() => toggleDone(selectedEvent)}>{selectedEvent.done ? '恢復工作' : '標記完成'}</button>
+          {isAdmin && <button onClick={() => openEditEvent(selectedEvent)}>編輯</button>}
+          {isAdmin && <button className="danger" onClick={() => deleteEvent(selectedEvent.id)}>刪除</button>}
+        </div>
+      </aside>
     )
   }
 
@@ -538,10 +625,18 @@ export default function CalendarPage() {
                     <span className={`day-number ${today ? 'today' : ''}`}>{day.date()}</span>
                     <span className="day-events">
                       {dayEvents.slice(0, 4).map((event, index) => (
-                        <span className={index === 0 ? 'event-pill' : 'event-line'} style={{ '--event-color': calendarColor(event.calendarId) } as CSSProperties} key={event.id}>
+                        <button
+                          className={`${index === 0 ? 'event-pill' : 'event-line'} ${selectedEventId === event.id ? 'active' : ''}`}
+                          style={{ '--event-color': calendarColor(event.calendarId) } as CSSProperties}
+                          key={event.id}
+                          onClick={(clickEvent) => {
+                            clickEvent.stopPropagation()
+                            openEventDetail(event)
+                          }}
+                        >
                           {index === 0 ? `${event.title}` : `${event.title}`}
                           <small>{event.startTime}</small>
-                        </span>
+                        </button>
                       ))}
                       {dayEvents.length > 4 && <span className="more-pill">+{dayEvents.length - 4}</span>}
                     </span>
@@ -565,11 +660,19 @@ export default function CalendarPage() {
                     <strong>星期{WEEKDAYS[day.day()]}</strong>
                     <span className="week-events">
                       {dayEvents.length === 0 ? <small>沒有工作</small> : dayEvents.map((event) => (
-                        <span className={`week-event ${event.done ? 'done' : ''}`} style={{ '--event-color': calendarColor(event.calendarId) } as CSSProperties} key={event.id}>
+                        <button
+                          className={`week-event ${event.done ? 'done' : ''} ${selectedEventId === event.id ? 'active' : ''}`}
+                          style={{ '--event-color': calendarColor(event.calendarId) } as CSSProperties}
+                          key={event.id}
+                          onClick={(clickEvent) => {
+                            clickEvent.stopPropagation()
+                            openEventDetail(event)
+                          }}
+                        >
                           <i />
                           <span>{event.startTime}</span>
                           <b>{event.title}</b>
-                        </span>
+                        </button>
                       ))}
                     </span>
                   </button>
@@ -610,6 +713,7 @@ export default function CalendarPage() {
       )}
 
       {renderToolPanel()}
+      {renderEventDetailPanel()}
 
       <section className="tt-day-dock">
         <div className="dock-date">
@@ -620,16 +724,16 @@ export default function CalendarPage() {
           {selectedEvents.length === 0 ? (
             <span className="dock-empty">這天沒有工作</span>
           ) : selectedEvents.slice(0, 4).map((event) => (
-            <article className={`dock-event ${event.done ? 'done' : ''}`} key={event.id} style={{ '--event-color': calendarColor(event.calendarId) } as CSSProperties}>
-              <button className="done-dot" onClick={() => toggleDone(event)} aria-label={event.done ? '恢復工作' : '完成工作'} />
+            <article className={`dock-event ${event.done ? 'done' : ''} ${selectedEventId === event.id ? 'active' : ''}`} key={event.id} style={{ '--event-color': calendarColor(event.calendarId) } as CSSProperties} onClick={() => openEventDetail(event)}>
+              <button className="done-dot" onClick={(clickEvent) => { clickEvent.stopPropagation(); toggleDone(event) }} aria-label={event.done ? '恢復工作' : '完成工作'} />
               <div>
                 <strong>{event.title}</strong>
                 <span>{event.startTime} - {event.endTime} · {departmentName(event.departmentId)}</span>
               </div>
               <div className="dock-actions">
                 {event.assigneeIds.length > 0 && <small>{event.assigneeIds.map(employeeName).join('、')}</small>}
-                {isAdmin && <button onClick={() => openEditEvent(event)}>編輯</button>}
-                {isAdmin && <button onClick={() => deleteEvent(event.id)}>刪除</button>}
+                {isAdmin && <button onClick={(clickEvent) => { clickEvent.stopPropagation(); openEditEvent(event) }}>編輯</button>}
+                {isAdmin && <button onClick={(clickEvent) => { clickEvent.stopPropagation(); deleteEvent(event.id) }}>刪除</button>}
               </div>
             </article>
           ))}
