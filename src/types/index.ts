@@ -64,6 +64,9 @@ export interface CalendarEvent {
     optimized?: boolean
   }[]
   done: boolean
+  source?: string
+  sourceId?: string
+  sourceDate?: string
   createdBy?: string
   createdAt?: string
   updatedAt?: string

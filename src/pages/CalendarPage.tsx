@@ -94,6 +94,10 @@ function attachmentPreviewUrl(attachment: EventAttachment) {
   return attachment.url
 }
 
+function isHrReadonlyEvent(event: CalendarEvent) {
+  return event.source === 'hrLeaveRequest' || event.id.startsWith('hrLeaveRequest_')
+}
+
 function EventRowIcon({ name }: { name: EventEditorIcon }) {
   const paths: Record<EventEditorIcon, ReactNode> = {
     person: (
@@ -400,6 +404,11 @@ export default function CalendarPage() {
   }
 
   function openEditEvent(event: CalendarEvent) {
+    if (isHrReadonlyEvent(event)) {
+      alert('此活動來自 HR 後台，請至 HR 後台編輯')
+      return
+    }
+
     setEventForm({
       calendarId: event.calendarId,
       title: event.title,
@@ -500,6 +509,11 @@ export default function CalendarPage() {
   async function saveEvent() {
     if (!eventForm.calendarId || !eventForm.title.trim() || !eventForm.date) {
       alert('請填寫行事曆、標題與日期')
+      return
+    }
+    const editingEvent = editingEventId ? events.find((event) => event.id === editingEventId) : null
+    if (editingEvent && isHrReadonlyEvent(editingEvent)) {
+      alert('此活動來自 HR 後台，請至 HR 後台編輯')
       return
     }
 
@@ -603,11 +617,15 @@ export default function CalendarPage() {
     return results.filter((result) => result.status === 'rejected').length
   }
 
-  async function deleteEvent(id: string) {
+  async function deleteEvent(event: CalendarEvent) {
+    if (isHrReadonlyEvent(event)) {
+      alert('此活動來自 HR 後台，請至 HR 後台刪除')
+      return
+    }
     if (!confirm('確定刪除此工作？')) return
     try {
-      await deleteDoc(doc(db, 'calendarEvents', id))
-      setSelectedEventId((current) => current === id ? null : current)
+      await deleteDoc(doc(db, 'calendarEvents', event.id))
+      setSelectedEventId((current) => current === event.id ? null : current)
       await queryClient.invalidateQueries({ queryKey: ['calendarEvents'] })
     } catch {
       alert('工作刪除失敗')
@@ -647,12 +665,13 @@ export default function CalendarPage() {
     const reminderLabel = REMINDER_OPTIONS.find((option) => option.value === (selectedEvent.reminder ?? 'none'))?.label ?? '無通知'
     const repeatLabel = REPEAT_OPTIONS.find((option) => option.value === (selectedEvent.repeat ?? 'none'))?.label ?? '無重複'
     const locationText = selectedEvent.location?.trim()
+    const canManageEvent = isAdmin && !isHrReadonlyEvent(selectedEvent)
     return (
       <aside className="event-detail-panel">
         <div className="event-detail-header">
           <strong>活動詳情</strong>
           <div>
-            {isAdmin && <button onClick={() => openEditEvent(selectedEvent)} aria-label="編輯活動">⋮</button>}
+            {canManageEvent && <button onClick={() => openEditEvent(selectedEvent)} aria-label="編輯活動">⋮</button>}
             <button onClick={() => setSelectedEventId(null)} aria-label="關閉活動詳情">×</button>
           </div>
         </div>
@@ -761,10 +780,12 @@ export default function CalendarPage() {
           )}
         </div>
 
-        <div className="event-detail-footer">
-          {isAdmin && <button onClick={() => openEditEvent(selectedEvent)}>編輯</button>}
-          {isAdmin && <button className="danger" onClick={() => deleteEvent(selectedEvent.id)}>刪除</button>}
-        </div>
+        {canManageEvent && (
+          <div className="event-detail-footer">
+            <button onClick={() => openEditEvent(selectedEvent)}>編輯</button>
+            <button className="danger" onClick={() => deleteEvent(selectedEvent)}>刪除</button>
+          </div>
+        )}
       </aside>
     )
   }
