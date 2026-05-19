@@ -814,59 +814,74 @@ export default function CalendarPage() {
 
       {showEventModal && (
         <div className="modal-overlay">
-          <div className="modal wide">
-            <div className="modal-header">
-              <h2>{editingEventId ? '編輯工作' : '新增工作'}</h2>
+          <div className="modal event-editor-modal">
+            <div className="event-editor-header">
+              <button className="text-btn" onClick={() => setShowEventModal(false)}>取消</button>
+              <strong>{editingEventId ? '編輯活動' : '新增活動'}</strong>
+              <button className="text-btn save" onClick={saveEvent} disabled={saving}>{saving ? '儲存中' : '儲存'}</button>
               <button className="close-btn" onClick={() => setShowEventModal(false)}>×</button>
             </div>
-            <div className="modal-body">
-              <div className="two-col">
-                <label>行事曆
-                  <select value={eventForm.calendarId} onChange={(event) => setEventForm((form) => ({ ...form, calendarId: event.target.value }))}>
-                    <option value="">請選擇</option>
-                    {visibleCalendars.map((calendar) => <option key={calendar.id} value={calendar.id}>{calendar.name}</option>)}
-                  </select>
-                </label>
-                <label>部門
-                  <select value={eventForm.departmentId} onChange={(event) => setEventForm((form) => ({ ...form, departmentId: event.target.value }))}>
-                    <option value="">未分配</option>
-                    {departments.map((department) => <option key={department.id} value={department.id}>{department.name}</option>)}
-                  </select>
-                </label>
-              </div>
-              <label>工作標題
-                <input value={eventForm.title} onChange={(event) => setEventForm((form) => ({ ...form, title: event.target.value }))} />
-              </label>
-              <div className="three-col">
-                <label>日期
+            <div className="event-editor-body">
+              <input
+                className="event-title-input"
+                value={eventForm.title}
+                onChange={(event) => setEventForm((form) => ({ ...form, title: event.target.value }))}
+                placeholder="新增標題"
+                autoFocus
+              />
+
+              <div className="event-time-editor">
+                <div className="time-row">
+                  <span>開始</span>
                   <input type="date" value={eventForm.date} onChange={(event) => setEventForm((form) => ({ ...form, date: event.target.value }))} />
-                </label>
-                <label>開始
                   <input type="time" value={eventForm.startTime} onChange={(event) => setEventForm((form) => ({ ...form, startTime: event.target.value }))} />
-                </label>
-                <label>結束
+                </div>
+                <div className="time-row">
+                  <span>結束</span>
+                  <input type="date" value={eventForm.date} onChange={(event) => setEventForm((form) => ({ ...form, date: event.target.value }))} />
                   <input type="time" value={eventForm.endTime} onChange={(event) => setEventForm((form) => ({ ...form, endTime: event.target.value }))} />
-                </label>
-              </div>
-              <label>備註
-                <textarea rows={3} value={eventForm.note} onChange={(event) => setEventForm((form) => ({ ...form, note: event.target.value }))} />
-              </label>
-              <div>
-                <span className="field-label">指派員工</span>
-                <div className="employee-grid">
-                  {employees.filter((emp) => emp.status !== 'inactive').map((emp) => (
-                    <label key={emp.id}>
-                      <input type="checkbox" checked={eventForm.assigneeIds.includes(emp.id)} onChange={() => setEventForm((form) => ({ ...form, assigneeIds: toggle(form.assigneeIds, emp.id) }))} />
-                      <span>{emp.name}</span>
-                      <small>{emp.departmentName || departmentName(emp.departmentId || '')}</small>
-                    </label>
-                  ))}
+                </div>
+                <div className="event-checkbox-row">
+                  <label><input type="checkbox" /> 全天</label>
+                  <label><input type="checkbox" checked={!!eventForm.note} onChange={(event) => setEventForm((form) => ({ ...form, note: event.target.checked ? form.note || '備忘錄' : '' }))} /> 儲存為備忘錄</label>
                 </div>
               </div>
-            </div>
-            <div className="modal-footer">
-              <button className="small-btn" onClick={() => setShowEventModal(false)}>取消</button>
-              <button className="primary-btn" onClick={saveEvent} disabled={saving}>{saving ? '儲存中...' : '儲存'}</button>
+
+              <div className="event-editor-list">
+                <div className="event-editor-row">
+                  <span className="row-icon">▣</span>
+                  <select value={eventForm.calendarId} onChange={(event) => setEventForm((form) => ({ ...form, calendarId: event.target.value }))}>
+                    <option value="">選擇行事曆</option>
+                    {visibleCalendars.map((calendar) => <option key={calendar.id} value={calendar.id}>{calendar.name}</option>)}
+                  </select>
+                </div>
+                <div className="event-editor-row">
+                  <span className="row-icon">⌖</span>
+                  <select value={eventForm.departmentId} onChange={(event) => setEventForm((form) => ({ ...form, departmentId: event.target.value }))}>
+                    <option value="">未分配部門</option>
+                    {departments.map((department) => <option key={department.id} value={department.id}>{department.name}</option>)}
+                  </select>
+                </div>
+                <div className="event-editor-row note">
+                  <span className="row-icon">☰</span>
+                  <textarea rows={3} value={eventForm.note} onChange={(event) => setEventForm((form) => ({ ...form, note: event.target.value }))} placeholder="新增備註" />
+                </div>
+                <div className="event-editor-row assignee">
+                  <span className="row-icon">♙</span>
+                  <div>
+                    <strong>指派員工</strong>
+                    <div className="event-assignee-grid">
+                      {employees.filter((emp) => emp.status !== 'inactive').map((emp) => (
+                        <label key={emp.id}>
+                          <input type="checkbox" checked={eventForm.assigneeIds.includes(emp.id)} onChange={() => setEventForm((form) => ({ ...form, assigneeIds: toggle(form.assigneeIds, emp.id) }))} />
+                          <span>{emp.name}</span>
+                          <small>{emp.departmentName || departmentName(emp.departmentId || '')}</small>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </div>
