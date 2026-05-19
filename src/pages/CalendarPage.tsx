@@ -777,7 +777,9 @@ export default function CalendarPage() {
           </select>
           <button className={`tt-icon-button ${showSearchPanel ? 'active' : ''}`} aria-label="搜尋" onClick={() => setShowSearchPanel((open) => !open)}>⌕</button>
           {isAdmin && <button className="tt-icon-button add" onClick={() => openAddEvent(selectedDate)} aria-label="新增工作">＋</button>}
-          <button className="tt-avatar" onClick={() => signOut(auth)} title="登出">{(displayName || user?.email || 'U').slice(0, 1)}</button>
+          <button className="tt-avatar" onClick={() => signOut(auth)} title="登出">
+            {user?.photoURL ? <img src={user.photoURL} alt={displayName || user.email || '使用者'} referrerPolicy="no-referrer" /> : (displayName || user?.email || 'U').slice(0, 1)}
+          </button>
         </div>
       </header>
 
