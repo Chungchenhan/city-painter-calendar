@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import dayjs from 'dayjs'
-import { addDoc, collection, deleteDoc, doc, updateDoc } from 'firebase/firestore'
+import { addDoc, arrayUnion, collection, deleteDoc, doc, updateDoc } from 'firebase/firestore'
 import { signOut } from 'firebase/auth'
 import { useQueryClient } from '@tanstack/react-query'
 import { auth, db } from '../lib/firebase'
@@ -519,9 +519,8 @@ export default function CalendarPage() {
 
     setSaving(true)
     try {
-      const uploadedAttachments = attachmentFiles.length > 0
-        ? await uploadEventAttachments(editingEventId ?? crypto.randomUUID(), attachmentFiles)
-        : []
+      const pendingAttachmentFiles = [...attachmentFiles]
+      const removedAttachments = [...deletedAttachments]
       const payload = {
         calendarId: eventForm.calendarId,
         title: eventForm.title.trim(),
@@ -536,31 +535,32 @@ export default function CalendarPage() {
         todos: eventForm.todos.map((todo) => ({ ...todo, text: todo.text.trim() })).filter((todo) => todo.text),
         location: eventForm.location.trim(),
         url: eventForm.url.trim(),
-        attachments: [...eventForm.attachments, ...uploadedAttachments],
+        attachments: eventForm.attachments,
         updatedAt: new Date().toISOString()
       }
 
+      let savedEventId = editingEventId
       if (editingEventId) {
         await updateDoc(doc(db, 'calendarEvents', editingEventId), payload)
       } else {
-        await addDoc(collection(db, 'calendarEvents'), {
+        const created = await addDoc(collection(db, 'calendarEvents'), {
           ...payload,
           done: false,
           createdBy: user?.uid ?? '',
           createdAt: new Date().toISOString()
         })
+        savedEventId = created.id
       }
 
-      const deleteFailures = await deleteRemovedEventAttachments(deletedAttachments)
       setShowEventModal(false)
       setAttachmentFiles([])
       setDeletedAttachments([])
       await refreshCalendarData()
-      if (deleteFailures > 0) {
-        alert('活動已儲存，但部分雲端附件刪除失敗，請稍後再試')
+      if (savedEventId) {
+        syncEventAttachmentsInBackground(savedEventId, pendingAttachmentFiles, removedAttachments)
       }
     } catch {
-      alert('工作儲存失敗，請確認附件上傳權限或稍後再試')
+      alert('工作儲存失敗，請稍後再試')
     } finally {
       setSaving(false)
     }
@@ -580,6 +580,40 @@ export default function CalendarPage() {
       throw new Error(result.error || '附件上傳失敗')
     }
     return result.attachments as NonNullable<CalendarEvent['attachments']>
+  }
+
+  function syncEventAttachmentsInBackground(eventId: string, files: File[], removedFiles: EventAttachment[]) {
+    if (!files.length && !removedFiles.length) return
+
+    void (async () => {
+      let hasUploadFailure = false
+      let deleteFailures = 0
+
+      if (files.length) {
+        try {
+          const uploadedAttachments = await uploadEventAttachments(eventId, files)
+          if (uploadedAttachments.length) {
+            await updateDoc(doc(db, 'calendarEvents', eventId), {
+              attachments: arrayUnion(...uploadedAttachments),
+              updatedAt: new Date().toISOString()
+            })
+            await queryClient.invalidateQueries({ queryKey: ['calendarEvents'] })
+          }
+        } catch {
+          hasUploadFailure = true
+        }
+      }
+
+      if (removedFiles.length) {
+        deleteFailures = await deleteRemovedEventAttachments(removedFiles)
+      }
+
+      if (hasUploadFailure) {
+        alert('活動已儲存，但附件背景上傳失敗，請稍後重新上傳')
+      } else if (deleteFailures > 0) {
+        alert('活動已儲存，但部分雲端附件刪除失敗，請稍後再試')
+      }
+    })()
   }
 
   function removeExistingAttachment(file: EventAttachment) {
