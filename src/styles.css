@@ -384,10 +384,13 @@ textarea {
 
 .tt-calendar-surface .day-cell {
   min-height: 108px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
   border-right: 1px solid #ececec;
   border-bottom: 1px solid #ececec;
   border-radius: 0;
-  padding: 6px 3px 4px;
+  padding: 3px 3px 4px;
   background: #fff;
 }
 
@@ -410,12 +413,18 @@ textarea {
 }
 
 .tt-calendar-surface .day-number {
-  width: 25px;
-  height: 25px;
-  margin: 0 auto 5px;
+  width: 22px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  margin: 0 auto 2px;
+  border-radius: 50%;
   color: #202124;
-  font-size: 16px;
-  font-weight: 500;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 20px;
 }
 
 .tt-calendar-surface .day-number.today {
@@ -424,21 +433,34 @@ textarea {
 }
 
 .tt-calendar-surface .day-events {
-  gap: 2px;
+  display: grid;
+  gap: 1px;
   margin-top: 0;
 }
 
 .tt-calendar-surface .event-pill {
-  height: 20px;
+  height: 17px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 3px;
+  overflow: hidden;
   border: 0;
   border-radius: 3px;
-  padding: 0 5px;
+  padding: 0 4px;
   background: var(--event-color);
   color: #fff;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 800;
-  line-height: 20px;
+  line-height: 17px;
   text-align: left;
+}
+
+.tt-calendar-surface .event-pill span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tt-calendar-surface .event-line {
@@ -480,14 +502,13 @@ textarea {
 .tt-calendar-surface .event-pill small,
 .tt-calendar-surface .event-line small {
   color: inherit;
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 500;
   opacity: 0.72;
 }
 
 .tt-calendar-surface .event-pill small {
-  float: right;
-  margin-left: 4px;
+  margin-left: 2px;
 }
 
 .done-dot {
@@ -2039,11 +2060,11 @@ p {
 
   .tt-calendar-surface .month-grid {
     min-height: auto;
-    grid-auto-rows: minmax(92px, auto);
+    grid-auto-rows: minmax(96px, auto);
   }
 
   .tt-calendar-surface .day-cell {
-    min-height: 92px;
+    min-height: 96px;
   }
 
   .week-grid {
@@ -2062,16 +2083,16 @@ p {
   }
 
   .tt-calendar-surface .day-number {
-    width: 23px;
-    height: 23px;
-    font-size: 13px;
+    width: 22px;
+    height: 20px;
+    font-size: 12px;
   }
 
   .tt-calendar-surface .event-pill,
   .tt-calendar-surface .event-line {
-    height: 18px;
+    height: 16px;
     font-size: 10px;
-    line-height: 18px;
+    line-height: 16px;
   }
 
   .tt-calendar-surface {

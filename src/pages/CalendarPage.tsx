@@ -928,9 +928,9 @@ export default function CalendarPage() {
                   >
                     <span className={`day-number ${today ? 'today' : ''}`}>{day.date()}</span>
                     <span className="day-events">
-                      {dayEvents.slice(0, 4).map((event, index) => (
+                      {dayEvents.slice(0, 7).map((event) => (
                         <button
-                          className={`${index === 0 ? 'event-pill' : 'event-line'} ${selectedEventId === event.id ? 'active' : ''}`}
+                          className={`event-pill ${selectedEventId === event.id ? 'active' : ''}`}
                           style={{ '--event-color': calendarColor(event.calendarId) } as CSSProperties}
                           key={event.id}
                           onClick={(clickEvent) => {
@@ -938,11 +938,11 @@ export default function CalendarPage() {
                             openEventDetail(event)
                           }}
                         >
-                          {index === 0 ? `${event.title}` : `${event.title}`}
+                          <span>{event.title}</span>
                           <small>{event.startTime}</small>
                         </button>
                       ))}
-                      {dayEvents.length > 4 && <span className="more-pill">+{dayEvents.length - 4}</span>}
+                      {dayEvents.length > 7 && <span className="more-pill">+{dayEvents.length - 7}</span>}
                     </span>
                   </button>
                 )
