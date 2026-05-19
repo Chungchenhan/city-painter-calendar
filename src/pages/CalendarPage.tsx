@@ -772,7 +772,7 @@ export default function CalendarPage() {
               ))}
             </div>
           )}
-          {selectedEvent.note && (
+          {selectedEvent.note && !isHrReadonlyEvent(selectedEvent) && (
             <div className="event-detail-note">
               <strong>備註</strong>
               <p>{selectedEvent.note}</p>
