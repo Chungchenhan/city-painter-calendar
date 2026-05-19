@@ -16,7 +16,8 @@
     "googleapis": "^171.4.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
-    "react-router-dom": "^7.15.0"
+    "react-router-dom": "^7.15.0",
+    "sharp": "^0.34.5"
   },
   "devDependencies": {
     "@types/react": "^19.2.14",
