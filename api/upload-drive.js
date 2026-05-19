@@ -22,6 +22,24 @@ function getServiceAccountCredentials() {
   return JSON.parse(source)
 }
 
+function getDriveAuth() {
+  const clientId = process.env.GOOGLE_DRIVE_OAUTH_CLIENT_ID
+  const clientSecret = process.env.GOOGLE_DRIVE_OAUTH_CLIENT_SECRET
+  const refreshToken = process.env.GOOGLE_DRIVE_OAUTH_REFRESH_TOKEN
+
+  if (clientId && clientSecret && refreshToken) {
+    const auth = new google.auth.OAuth2(clientId, clientSecret)
+    auth.setCredentials({ refresh_token: refreshToken })
+    return auth
+  }
+
+  const credentials = getServiceAccountCredentials()
+  return new google.auth.GoogleAuth({
+    credentials,
+    scopes: ['https://www.googleapis.com/auth/drive']
+  })
+}
+
 function parseUpload(req) {
   const form = formidable({
     multiples: true,
@@ -101,11 +119,7 @@ export default async function handler(req, res) {
       return
     }
 
-    const credentials = getServiceAccountCredentials()
-    const auth = new google.auth.GoogleAuth({
-      credentials,
-      scopes: ['https://www.googleapis.com/auth/drive']
-    })
+    const auth = getDriveAuth()
     const drive = google.drive({ version: 'v3', auth })
     const folderId = process.env.GOOGLE_DRIVE_CALENDAR_FOLDER_ID || DEFAULT_DRIVE_FOLDER_ID
 
