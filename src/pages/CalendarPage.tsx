@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import dayjs from 'dayjs'
 import { addDoc, collection, deleteDoc, doc, updateDoc } from 'firebase/firestore'
@@ -183,6 +183,7 @@ export default function CalendarPage() {
   const [eventForm, setEventForm] = useState(emptyEvent)
   const [attachmentFiles, setAttachmentFiles] = useState<File[]>([])
   const [saving, setSaving] = useState(false)
+  const noteTextareaRef = useRef<HTMLTextAreaElement | null>(null)
 
   const currentEmployee = employees.find((emp) => emp.id === employeeId)
 
@@ -249,6 +250,13 @@ export default function CalendarPage() {
     })
     return () => timers.forEach((timer) => window.clearTimeout(timer))
   }, [visibleEvents])
+
+  useEffect(() => {
+    const textarea = noteTextareaRef.current
+    if (!textarea || !showEventModal) return
+    textarea.style.height = 'auto'
+    textarea.style.height = `${textarea.scrollHeight}px`
+  }, [eventForm.note, showEventModal])
 
   const monthDays = useMemo(() => {
     const start = month.startOf('month').startOf('week')
@@ -1140,6 +1148,7 @@ export default function CalendarPage() {
                 <div className="event-editor-row note">
                   <EventRowIcon name="note" />
                   <textarea
+                    ref={noteTextareaRef}
                     rows={1}
                     value={eventForm.note}
                     onChange={(event) => {
@@ -1148,7 +1157,6 @@ export default function CalendarPage() {
                       setEventForm((form) => ({ ...form, note: event.target.value }))
                     }}
                     placeholder="備註"
-                    style={{ height: eventForm.note ? undefined : 44 }}
                   />
                 </div>
                 <div className="event-editor-row">
