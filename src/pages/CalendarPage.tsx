@@ -306,6 +306,28 @@ export default function CalendarPage() {
     return employees.find((employee) => employee.id === id)?.name || '未指定'
   }
 
+  function getDepartmentEmployeeIds(departmentId: string) {
+    const department = departments.find((item) => item.id === departmentId)
+    return employees
+      .filter((employee) => employee.status !== 'inactive')
+      .filter((employee) => employee.departmentId === departmentId || Boolean(department?.name && employee.departmentName === department.name))
+      .map((employee) => employee.id)
+  }
+
+  function toggleCalendarDepartment(departmentId: string) {
+    setCalendarForm((form) => {
+      const selected = form.departmentIds.includes(departmentId)
+      const departmentEmployeeIds = getDepartmentEmployeeIds(departmentId)
+      return {
+        ...form,
+        departmentIds: selected ? form.departmentIds.filter((id) => id !== departmentId) : [...form.departmentIds, departmentId],
+        employeeIds: selected
+          ? form.employeeIds.filter((id) => !departmentEmployeeIds.includes(id))
+          : Array.from(new Set([...form.employeeIds, ...departmentEmployeeIds]))
+      }
+    })
+  }
+
   const selectedAssigneeText = eventForm.assigneeIds.length > 0
     ? eventForm.assigneeIds.map(employeeName).join('、')
     : '選擇同仁'
@@ -320,11 +342,13 @@ export default function CalendarPage() {
   }
 
   function openEditCalendar(calendar: CalendarGroup) {
+    const departmentIds = calendar.departmentIds ?? []
+    const departmentEmployeeIds = departmentIds.flatMap(getDepartmentEmployeeIds)
     setCalendarForm({
       name: calendar.name,
       color: calendar.color,
-      departmentIds: calendar.departmentIds ?? [],
-      employeeIds: calendar.employeeIds ?? [],
+      departmentIds,
+      employeeIds: Array.from(new Set([...(calendar.employeeIds ?? []), ...departmentEmployeeIds])),
       isCompanyWide: !!calendar.isCompanyWide
     })
     setEditingCalendarId(calendar.id)
@@ -1038,7 +1062,7 @@ export default function CalendarPage() {
                     <div className="check-list">
                       {departments.map((department) => (
                         <label key={department.id}>
-                          <input type="checkbox" checked={calendarForm.departmentIds.includes(department.id)} onChange={() => setCalendarForm((form) => ({ ...form, departmentIds: toggle(form.departmentIds, department.id) }))} />
+                          <input type="checkbox" checked={calendarForm.departmentIds.includes(department.id)} onChange={() => toggleCalendarDepartment(department.id)} />
                           {department.name}
                         </label>
                       ))}
