@@ -792,6 +792,14 @@ textarea {
   text-align: center;
 }
 
+.event-detail-row a {
+  overflow: hidden;
+  color: #333;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .event-detail-map {
   height: 160px;
   display: grid;
@@ -806,6 +814,12 @@ textarea {
     linear-gradient(rgba(73, 169, 239, 0.14) 1px, transparent 1px),
     linear-gradient(135deg, #dff4ff 0%, #f8fbff 42%, #eaf6e9 100%);
   background-size: 34px 34px, 34px 34px, auto;
+  color: #333;
+  text-decoration: none;
+}
+
+.event-detail-map.clickable {
+  cursor: pointer;
 }
 
 .event-detail-map div {
@@ -829,6 +843,37 @@ textarea {
 .event-detail-note {
   border-top: 1px solid #ededed;
   padding-top: 14px;
+}
+
+.event-detail-todos {
+  border-top: 1px solid #ededed;
+  padding-top: 14px;
+}
+
+.event-detail-todos strong {
+  display: block;
+  margin-bottom: 8px;
+  color: #333;
+  font-size: 14px;
+}
+
+.event-detail-todos label {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: #444;
+}
+
+.event-detail-todos input {
+  width: 16px;
+  min-height: 16px;
+}
+
+.event-detail-todos input:checked + span {
+  color: #999;
+  text-decoration: line-through;
 }
 
 .event-detail-note strong {
@@ -1557,6 +1602,49 @@ p {
   flex: 0 0 auto;
   color: #999;
   font-size: 12px;
+}
+
+.todo-editor-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.todo-editor-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) 34px;
+  gap: 8px;
+  align-items: center;
+}
+
+.todo-editor-item input[type="checkbox"] {
+  width: 18px;
+  min-height: 18px;
+}
+
+.todo-editor-item input[type="text"],
+.todo-editor-item input:not([type]) {
+  min-height: 40px;
+  min-width: 0;
+  border: 0;
+  border-radius: 8px;
+  background: #fafafa;
+}
+
+.todo-editor-item button,
+.todo-add-btn {
+  min-height: 40px;
+  border: 0;
+  border-radius: 8px;
+  background: #fafafa;
+  color: #777;
+  font-weight: 800;
+}
+
+.todo-add-btn {
+  justify-self: start;
+  padding: 0 14px;
+  color: #2fca7a;
 }
 
 .attachment-picker {

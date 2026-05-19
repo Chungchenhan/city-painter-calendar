@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import dayjs from 'dayjs'
 import { addDoc, collection, deleteDoc, doc, updateDoc } from 'firebase/firestore'
@@ -13,6 +13,21 @@ import type { CalendarEvent, CalendarGroup } from '../types'
 
 const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六']
 const COLORS = ['#f6b100', '#1fb6a6', '#3c82f6', '#ef6262', '#8d6df2', '#31a24c', '#f57c35', '#667085']
+const REMINDER_OPTIONS = [
+  { value: 'none', label: '無通知' },
+  { value: 'start', label: '活動開始時' },
+  { value: '5m', label: '5 分鐘前' },
+  { value: '15m', label: '15 分鐘前' },
+  { value: '1h', label: '1 小時前' },
+  { value: '1d', label: '1 天前' }
+] as const
+const REPEAT_OPTIONS = [
+  { value: 'none', label: '無重複' },
+  { value: 'daily', label: '每天' },
+  { value: 'weekly', label: '每週' },
+  { value: 'monthly', label: '每月' },
+  { value: 'yearly', label: '每年' }
+] as const
 const TOOL_PANELS = [
   { id: 'comments', label: '留言', icon: '▤' },
   { id: 'photos', label: '照片', icon: '▧' },
@@ -42,6 +57,9 @@ const emptyEvent = {
   departmentId: '',
   assigneeIds: [] as string[],
   note: '',
+  reminder: 'none' as CalendarEvent['reminder'],
+  repeat: 'none' as CalendarEvent['repeat'],
+  todos: [] as NonNullable<CalendarEvent['todos']>,
   location: '',
   url: '',
   attachments: [] as NonNullable<CalendarEvent['attachments']>
@@ -49,6 +67,18 @@ const emptyEvent = {
 
 function toggle(list: string[], id: string) {
   return list.includes(id) ? list.filter((item) => item !== id) : [...list, id]
+}
+
+function googleMapsDirectionUrl(location: string) {
+  return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(location)}`
+}
+
+function reminderOffsetMinutes(reminder: CalendarEvent['reminder']) {
+  if (reminder === '5m') return 5
+  if (reminder === '15m') return 15
+  if (reminder === '1h') return 60
+  if (reminder === '1d') return 1440
+  return 0
 }
 
 function EventRowIcon({ name }: { name: EventEditorIcon }) {
@@ -202,6 +232,24 @@ export default function CalendarPage() {
     return map
   }, [visibleEvents])
 
+  useEffect(() => {
+    if (!('Notification' in window) || Notification.permission !== 'granted') return
+    const timers = visibleEvents.flatMap((event) => {
+      if (!event.reminder || event.reminder === 'none') return []
+      const eventTime = dayjs(`${event.date} ${event.startTime}`)
+      const notifyTime = eventTime.subtract(reminderOffsetMinutes(event.reminder), 'minute')
+      const delay = notifyTime.diff(dayjs())
+      if (delay <= 0 || delay > 2147483647) return []
+      const timer = window.setTimeout(() => {
+        new Notification(event.title, {
+          body: `${event.date} ${event.startTime}${event.location ? ` · ${event.location}` : ''}`
+        })
+      }, delay)
+      return [timer]
+    })
+    return () => timers.forEach((timer) => window.clearTimeout(timer))
+  }, [visibleEvents])
+
   const monthDays = useMemo(() => {
     const start = month.startOf('month').startOf('week')
     return Array.from({ length: 42 }, (_, index) => start.add(index, 'day'))
@@ -241,6 +289,9 @@ export default function CalendarPage() {
   const selectedAssigneeText = eventForm.assigneeIds.length > 0
     ? eventForm.assigneeIds.map(employeeName).join('、')
     : '選擇同仁'
+  const todoSummaryText = eventForm.todos.length > 0
+    ? `${eventForm.todos.filter((todo) => todo.done).length}/${eventForm.todos.length} 已完成`
+    : '待辦清單'
 
   function openAddCalendar() {
     setCalendarForm(emptyCalendar)
@@ -311,6 +362,9 @@ export default function CalendarPage() {
       departmentId: event.departmentId,
       assigneeIds: event.assigneeIds ?? [],
       note: event.note ?? '',
+      reminder: event.reminder ?? 'none',
+      repeat: event.repeat ?? 'none',
+      todos: event.todos ?? [],
       location: event.location ?? '',
       url: event.url ?? '',
       attachments: event.attachments ?? []
@@ -325,6 +379,38 @@ export default function CalendarPage() {
       queryClient.invalidateQueries({ queryKey: ['calendarCalendars'] }),
       queryClient.invalidateQueries({ queryKey: ['calendarEvents'] })
     ])
+  }
+
+  function addTodoItem() {
+    setEventForm((form) => ({
+      ...form,
+      todos: [...form.todos, { id: crypto.randomUUID(), text: '', done: false }]
+    }))
+  }
+
+  function updateTodoItem(id: string, changes: Partial<NonNullable<CalendarEvent['todos']>[number]>) {
+    setEventForm((form) => ({
+      ...form,
+      todos: form.todos.map((todo) => todo.id === id ? { ...todo, ...changes } : todo)
+    }))
+  }
+
+  function removeTodoItem(id: string) {
+    setEventForm((form) => ({
+      ...form,
+      todos: form.todos.filter((todo) => todo.id !== id)
+    }))
+  }
+
+  async function changeReminder(reminder: CalendarEvent['reminder']) {
+    setEventForm((form) => ({ ...form, reminder }))
+    if (reminder && reminder !== 'none' && 'Notification' in window && Notification.permission === 'default') {
+      try {
+        await Notification.requestPermission()
+      } catch {
+        alert('通知權限啟用失敗，請確認瀏覽器設定')
+      }
+    }
   }
 
   async function saveCalendar() {
@@ -383,6 +469,9 @@ export default function CalendarPage() {
         departmentId: eventForm.departmentId,
         assigneeIds: eventForm.assigneeIds,
         note: eventForm.note.trim(),
+        reminder: eventForm.reminder ?? 'none',
+        repeat: eventForm.repeat ?? 'none',
+        todos: eventForm.todos.map((todo) => ({ ...todo, text: todo.text.trim() })).filter((todo) => todo.text),
         location: eventForm.location.trim(),
         url: eventForm.url.trim(),
         attachments: [...eventForm.attachments, ...uploadedAttachments],
@@ -474,6 +563,9 @@ export default function CalendarPage() {
     if (!selectedEvent) return null
     const calendar = visibleCalendarMap.get(selectedEvent.calendarId)
     const assignees = selectedEvent.assigneeIds.map(employeeName)
+    const reminderLabel = REMINDER_OPTIONS.find((option) => option.value === (selectedEvent.reminder ?? 'none'))?.label ?? '無通知'
+    const repeatLabel = REPEAT_OPTIONS.find((option) => option.value === (selectedEvent.repeat ?? 'none'))?.label ?? '無重複'
+    const locationText = selectedEvent.location?.trim()
     return (
       <aside className="event-detail-panel">
         <div className="event-detail-header">
@@ -503,7 +595,11 @@ export default function CalendarPage() {
 
           <div className="event-detail-row">
             <span>⏰</span>
-            <div>開始時間、1 天前</div>
+            <div>{reminderLabel}</div>
+          </div>
+          <div className="event-detail-row">
+            <span>↻</span>
+            <div>{repeatLabel}</div>
           </div>
           <div className="event-detail-row">
             <span>▣</span>
@@ -511,14 +607,24 @@ export default function CalendarPage() {
           </div>
           <div className="event-detail-row">
             <span>⌖</span>
-            <div>{selectedEvent.location || departmentName(selectedEvent.departmentId)}</div>
+            {locationText ? (
+              <a href={googleMapsDirectionUrl(locationText)} target="_blank" rel="noreferrer">{locationText}</a>
+            ) : (
+              <div>{departmentName(selectedEvent.departmentId)}</div>
+            )}
           </div>
-          <div className="event-detail-map">
+          <a
+            className={`event-detail-map ${locationText ? 'clickable' : ''}`}
+            href={locationText ? googleMapsDirectionUrl(locationText) : undefined}
+            target="_blank"
+            rel="noreferrer"
+            aria-disabled={!locationText}
+          >
             <div>
-              <strong>{selectedEvent.location || departmentName(selectedEvent.departmentId)}</strong>
-              <small>都市彩繪工作地點</small>
+              <strong>{locationText || departmentName(selectedEvent.departmentId)}</strong>
+              <small>{locationText ? '開啟 Google 地圖導航' : '尚未填寫地點'}</small>
             </div>
-          </div>
+          </a>
 
           {selectedEvent.url && (
             <a className="event-detail-link" href={selectedEvent.url} target="_blank" rel="noreferrer">
@@ -546,6 +652,17 @@ export default function CalendarPage() {
             <div className="event-detail-row">
               <span>♙</span>
               <div>{assignees.join('、')}</div>
+            </div>
+          )}
+          {selectedEvent.todos && selectedEvent.todos.length > 0 && (
+            <div className="event-detail-todos">
+              <strong>待辦清單</strong>
+              {selectedEvent.todos.map((todo) => (
+                <label key={todo.id}>
+                  <input type="checkbox" checked={todo.done} readOnly />
+                  <span>{todo.text}</span>
+                </label>
+              ))}
             </div>
           )}
           {selectedEvent.note && (
@@ -985,11 +1102,15 @@ export default function CalendarPage() {
                 </div>
                 <div className="event-editor-row">
                   <EventRowIcon name="bell" />
-                  <button className="event-static-row" type="button">無通知</button>
+                  <select value={eventForm.reminder} onChange={(event) => changeReminder(event.target.value as CalendarEvent['reminder'])} aria-label="通知">
+                    {REMINDER_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                  </select>
                 </div>
                 <div className="event-editor-row">
                   <EventRowIcon name="repeat" />
-                  <button className="event-static-row" type="button">無重複</button>
+                  <select value={eventForm.repeat} onChange={(event) => setEventForm((form) => ({ ...form, repeat: event.target.value as CalendarEvent['repeat'] }))} aria-label="重複">
+                    {REPEAT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                  </select>
                 </div>
                 <div className="event-editor-row">
                   <EventRowIcon name="link" />
@@ -1030,7 +1151,21 @@ export default function CalendarPage() {
                 </div>
                 <div className="event-editor-row">
                   <EventRowIcon name="check" />
-                  <button className="event-static-row" type="button">待辦清單</button>
+                  <details className="event-picker-row todo-picker">
+                    <summary>
+                      <span>{todoSummaryText}</span>
+                    </summary>
+                    <div className="todo-editor-list">
+                      {eventForm.todos.map((todo) => (
+                        <div className="todo-editor-item" key={todo.id}>
+                          <input type="checkbox" checked={todo.done} onChange={(event) => updateTodoItem(todo.id, { done: event.target.checked })} aria-label="待辦完成" />
+                          <input value={todo.text} onChange={(event) => updateTodoItem(todo.id, { text: event.target.value })} placeholder="新增待辦" />
+                          <button type="button" onClick={() => removeTodoItem(todo.id)} aria-label="刪除待辦">×</button>
+                        </div>
+                      ))}
+                      <button className="todo-add-btn" type="button" onClick={addTodoItem}>新增待辦</button>
+                    </div>
+                  </details>
                 </div>
               </div>
             </div>

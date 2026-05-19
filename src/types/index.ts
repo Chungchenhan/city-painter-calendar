@@ -43,6 +43,13 @@ export interface CalendarEvent {
   departmentId: string
   assigneeIds: string[]
   note: string
+  reminder?: 'none' | 'start' | '5m' | '15m' | '1h' | '1d'
+  repeat?: 'none' | 'daily' | 'weekly' | 'monthly' | 'yearly'
+  todos?: {
+    id: string
+    text: string
+    done: boolean
+  }[]
   location?: string
   url?: string
   attachments?: {
