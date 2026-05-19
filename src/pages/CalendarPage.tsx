@@ -80,6 +80,19 @@ function reminderOffsetMinutes(reminder: CalendarEvent['reminder']) {
   return 0
 }
 
+function isImageAttachment(attachment: NonNullable<CalendarEvent['attachments']>[number]) {
+  if (attachment.type?.startsWith('image/')) return true
+  return /\.(png|jpe?g|webp|gif)$/i.test(attachment.name)
+}
+
+function attachmentPreviewUrl(attachment: NonNullable<CalendarEvent['attachments']>[number]) {
+  if (!isImageAttachment(attachment)) return ''
+  if (attachment.provider === 'google-drive' && attachment.path) {
+    return `https://drive.google.com/thumbnail?id=${encodeURIComponent(attachment.path)}&sz=w1000`
+  }
+  return attachment.url
+}
+
 function EventRowIcon({ name }: { name: EventEditorIcon }) {
   const paths: Record<EventEditorIcon, ReactNode> = {
     person: (
@@ -648,15 +661,22 @@ export default function CalendarPage() {
           {selectedEvent.attachments && selectedEvent.attachments.length > 0 && (
             <div className="event-detail-attachments">
               <strong>附件</strong>
-              {selectedEvent.attachments.map((attachment) => (
-                <a href={attachment.url} target="_blank" rel="noreferrer" key={attachment.path}>
-                  <span>▧</span>
-                  <div>
-                    <b>{attachment.name}</b>
-                    {attachment.size && <small>{Math.ceil(attachment.size / 1024)} KB</small>}
-                  </div>
-                </a>
-              ))}
+              {selectedEvent.attachments.map((attachment) => {
+                const previewUrl = attachmentPreviewUrl(attachment)
+                return (
+                  <a className={previewUrl ? 'image-attachment' : ''} href={attachment.url} target="_blank" rel="noreferrer" key={attachment.path || attachment.url}>
+                    {previewUrl ? (
+                      <img src={previewUrl} alt={attachment.name} loading="lazy" referrerPolicy="no-referrer" />
+                    ) : (
+                      <span>▧</span>
+                    )}
+                    <div>
+                      <b>{attachment.name}</b>
+                      {attachment.size && <small>{Math.ceil(attachment.size / 1024)} KB{attachment.optimized ? ' · WebP' : ''}</small>}
+                    </div>
+                  </a>
+                )
+              })}
             </div>
           )}
 
