@@ -950,6 +950,49 @@ textarea {
   line-height: 1.6;
 }
 
+.event-detail-link,
+.event-detail-attachments a {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  min-height: 52px;
+  border-top: 1px solid #ededed;
+  color: #333;
+  text-decoration: none;
+}
+
+.event-detail-link > span,
+.event-detail-attachments a > span {
+  color: #27c874;
+  text-align: center;
+}
+
+.event-detail-link div,
+.event-detail-attachments b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.event-detail-attachments {
+  border-top: 1px solid #ededed;
+  padding-top: 14px;
+}
+
+.event-detail-attachments > strong {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 14px;
+}
+
+.event-detail-attachments small {
+  display: block;
+  margin-top: 2px;
+  color: #888;
+  font-size: 12px;
+}
+
 .event-detail-footer {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1517,7 +1560,8 @@ p {
 }
 
 .event-editor-row select,
-.event-editor-row textarea {
+.event-editor-row textarea,
+.event-editor-row > input {
   border: 0;
   border-radius: 8px;
   background: #fafafa;
@@ -1533,6 +1577,53 @@ p {
   margin-bottom: 10px;
   color: #222;
   font-size: 15px;
+}
+
+.event-editor-row.attachment strong {
+  display: block;
+  margin-bottom: 10px;
+  color: #222;
+  font-size: 15px;
+}
+
+.attachment-picker {
+  min-height: 44px;
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed #cfd6dd;
+  border-radius: 8px;
+  padding: 0 14px;
+  background: #fafafa;
+  color: #2f8fca !important;
+  font-weight: 800 !important;
+}
+
+.attachment-picker input {
+  position: absolute;
+  width: 1px;
+  min-height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.attachment-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.attachment-list span {
+  max-width: 100%;
+  overflow: hidden;
+  border-radius: 999px;
+  padding: 5px 9px;
+  background: #f2f7fb;
+  color: #4b5563;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .event-assignee-grid {

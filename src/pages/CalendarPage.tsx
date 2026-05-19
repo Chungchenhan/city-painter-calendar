@@ -2,9 +2,10 @@ import { useMemo, useState } from 'react'
 import type { CSSProperties } from 'react'
 import dayjs from 'dayjs'
 import { addDoc, collection, deleteDoc, doc, updateDoc } from 'firebase/firestore'
+import { getDownloadURL, ref, uploadBytes } from 'firebase/storage'
 import { signOut } from 'firebase/auth'
 import { useQueryClient } from '@tanstack/react-query'
-import { auth, db } from '../lib/firebase'
+import { auth, db, storage } from '../lib/firebase'
 import { useAuth } from '../contexts/AuthContext'
 import { useCalendarEvents, useCalendarGroups } from '../hooks/useCalendarData'
 import { useDepartments, useEmployees } from '../hooks/useHrData'
@@ -39,7 +40,10 @@ const emptyEvent = {
   endTime: '10:00',
   departmentId: '',
   assigneeIds: [] as string[],
-  note: ''
+  note: '',
+  location: '',
+  url: '',
+  attachments: [] as NonNullable<CalendarEvent['attachments']>
 }
 
 function toggle(list: string[], id: string) {
@@ -71,6 +75,7 @@ export default function CalendarPage() {
   const [editingEventId, setEditingEventId] = useState<string | null>(null)
   const [calendarForm, setCalendarForm] = useState(emptyCalendar)
   const [eventForm, setEventForm] = useState(emptyEvent)
+  const [attachmentFiles, setAttachmentFiles] = useState<File[]>([])
   const [saving, setSaving] = useState(false)
 
   const currentEmployee = employees.find((emp) => emp.id === employeeId)
@@ -204,6 +209,7 @@ export default function CalendarPage() {
       calendarId: visibleCalendars[0]?.id ?? '',
       departmentId: departmentFilter || currentEmployee?.departmentId || ''
     })
+    setAttachmentFiles([])
     setEditingEventId(null)
     setShowEventModal(true)
   }
@@ -225,8 +231,12 @@ export default function CalendarPage() {
       endTime: event.endTime,
       departmentId: event.departmentId,
       assigneeIds: event.assigneeIds ?? [],
-      note: event.note ?? ''
+      note: event.note ?? '',
+      location: event.location ?? '',
+      url: event.url ?? '',
+      attachments: event.attachments ?? []
     })
+    setAttachmentFiles([])
     setEditingEventId(event.id)
     setShowEventModal(true)
   }
@@ -282,6 +292,9 @@ export default function CalendarPage() {
 
     setSaving(true)
     try {
+      const uploadedAttachments = attachmentFiles.length > 0
+        ? await uploadEventAttachments(editingEventId ?? crypto.randomUUID(), attachmentFiles)
+        : []
       const payload = {
         calendarId: eventForm.calendarId,
         title: eventForm.title.trim(),
@@ -291,6 +304,9 @@ export default function CalendarPage() {
         departmentId: eventForm.departmentId,
         assigneeIds: eventForm.assigneeIds,
         note: eventForm.note.trim(),
+        location: eventForm.location.trim(),
+        url: eventForm.url.trim(),
+        attachments: [...eventForm.attachments, ...uploadedAttachments],
         updatedAt: new Date().toISOString()
       }
 
@@ -306,12 +322,24 @@ export default function CalendarPage() {
       }
 
       setShowEventModal(false)
+      setAttachmentFiles([])
       await refreshCalendarData()
     } catch {
-      alert('工作儲存失敗')
+      alert('工作儲存失敗，請確認附件上傳權限或稍後再試')
     } finally {
       setSaving(false)
     }
+  }
+
+  async function uploadEventAttachments(eventId: string, files: File[]) {
+    return Promise.all(files.map(async (file) => {
+      const safeName = file.name.replace(/[^\w.\-\u4e00-\u9fa5]/g, '_')
+      const path = `calendarEvents/${eventId}/${Date.now()}-${safeName}`
+      const fileRef = ref(storage, path)
+      await uploadBytes(fileRef, file)
+      const url = await getDownloadURL(fileRef)
+      return { name: file.name, url, path, type: file.type, size: file.size }
+    }))
   }
 
   async function toggleDone(event: CalendarEvent) {
@@ -404,14 +432,36 @@ export default function CalendarPage() {
           </div>
           <div className="event-detail-row">
             <span>⌖</span>
-            <div>{departmentName(selectedEvent.departmentId)}</div>
+            <div>{selectedEvent.location || departmentName(selectedEvent.departmentId)}</div>
           </div>
           <div className="event-detail-map">
             <div>
-              <strong>{departmentName(selectedEvent.departmentId)}</strong>
+              <strong>{selectedEvent.location || departmentName(selectedEvent.departmentId)}</strong>
               <small>都市彩繪工作地點</small>
             </div>
           </div>
+
+          {selectedEvent.url && (
+            <a className="event-detail-link" href={selectedEvent.url} target="_blank" rel="noreferrer">
+              <span>🔗</span>
+              <div>{selectedEvent.url}</div>
+            </a>
+          )}
+
+          {selectedEvent.attachments && selectedEvent.attachments.length > 0 && (
+            <div className="event-detail-attachments">
+              <strong>附件</strong>
+              {selectedEvent.attachments.map((attachment) => (
+                <a href={attachment.url} target="_blank" rel="noreferrer" key={attachment.path}>
+                  <span>▧</span>
+                  <div>
+                    <b>{attachment.name}</b>
+                    {attachment.size && <small>{Math.ceil(attachment.size / 1024)} KB</small>}
+                  </div>
+                </a>
+              ))}
+            </div>
+          )}
 
           {assignees.length > 0 && (
             <div className="event-detail-row">
@@ -865,6 +915,30 @@ export default function CalendarPage() {
                 <div className="event-editor-row note">
                   <span className="row-icon">☰</span>
                   <textarea rows={3} value={eventForm.note} onChange={(event) => setEventForm((form) => ({ ...form, note: event.target.value }))} placeholder="新增備註" />
+                </div>
+                <div className="event-editor-row">
+                  <span className="row-icon">⌖</span>
+                  <input value={eventForm.location} onChange={(event) => setEventForm((form) => ({ ...form, location: event.target.value }))} placeholder="新增地點" />
+                </div>
+                <div className="event-editor-row">
+                  <span className="row-icon">🔗</span>
+                  <input type="url" value={eventForm.url} onChange={(event) => setEventForm((form) => ({ ...form, url: event.target.value }))} placeholder="新增網址" />
+                </div>
+                <div className="event-editor-row attachment">
+                  <span className="row-icon">▧</span>
+                  <div>
+                    <strong>附件</strong>
+                    <label className="attachment-picker">
+                      <input type="file" multiple onChange={(event) => setAttachmentFiles(Array.from(event.target.files ?? []))} />
+                      選擇檔案
+                    </label>
+                    {[...eventForm.attachments.map((file) => file.name), ...attachmentFiles.map((file) => file.name)].length > 0 && (
+                      <div className="attachment-list">
+                        {eventForm.attachments.map((file) => <span key={file.path}>{file.name}</span>)}
+                        {attachmentFiles.map((file) => <span key={`${file.name}-${file.size}`}>{file.name}</span>)}
+                      </div>
+                    )}
+                  </div>
                 </div>
                 <div className="event-editor-row assignee">
                   <span className="row-icon">♙</span>

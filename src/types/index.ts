@@ -43,6 +43,15 @@ export interface CalendarEvent {
   departmentId: string
   assigneeIds: string[]
   note: string
+  location?: string
+  url?: string
+  attachments?: {
+    name: string
+    url: string
+    path: string
+    type?: string
+    size?: number
+  }[]
   done: boolean
   createdBy?: string
   createdAt?: string
