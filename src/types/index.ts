@@ -1,6 +1,7 @@
 export interface Department {
   id: string
   name: string
+  sort?: number
 }
 
 export interface Employee {

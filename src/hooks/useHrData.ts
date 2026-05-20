@@ -4,6 +4,18 @@ import { db } from '../lib/firebase'
 import { readLocalQueryCache, writeLocalQueryCache } from '../lib/localQueryCache'
 import type { Department, Employee, Shift } from '../types'
 
+function sortDepartments(rows: Department[]) {
+  return rows
+    .map((department, index) => ({ ...department, __index: index }))
+    .sort((a, b) => {
+      const sortA = typeof a.sort === 'number' ? a.sort : Number.MAX_SAFE_INTEGER
+      const sortB = typeof b.sort === 'number' ? b.sort : Number.MAX_SAFE_INTEGER
+      if (sortA !== sortB) return sortA - sortB
+      return a.__index - b.__index
+    })
+    .map(({ __index, ...department }) => department)
+}
+
 export function useEmployees() {
   return useQuery({
     queryKey: ['employees'],
@@ -23,11 +35,11 @@ export function useDepartments() {
     queryKey: ['departments'],
     queryFn: async () => {
       const snap = await getDocs(collection(db, 'departments'))
-      const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() })) as Department[]
+      const rows = sortDepartments(snap.docs.map((d) => ({ id: d.id, ...d.data() })) as Department[])
       writeLocalQueryCache('departments', rows)
       return rows
     },
-    placeholderData: () => readLocalQueryCache<Department[]>('departments'),
+    placeholderData: () => sortDepartments(readLocalQueryCache<Department[]>('departments') ?? []),
     staleTime: 5 * 60 * 1000
   })
 }

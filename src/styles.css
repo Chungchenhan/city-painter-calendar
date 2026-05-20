@@ -3221,6 +3221,12 @@ p {
     top: auto;
   }
 
+  .tt-search-panel {
+    top: 136px;
+    bottom: auto;
+    max-height: calc(100dvh - 152px - env(safe-area-inset-bottom, 0px));
+  }
+
   .tt-calendar-drawer {
     bottom: calc(136px + env(safe-area-inset-bottom, 0px));
     top: auto;

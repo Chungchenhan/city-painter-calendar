@@ -613,7 +613,6 @@ export default function CalendarPage() {
 
   const departmentCalendars = useMemo<DisplayCalendar[]>(() => (
     [...departments]
-      .sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'))
       .map((department, index) => {
         const setting = departmentCalendarSettingsMap.get(departmentCalendarDocId(department.id))
         return {
@@ -2482,7 +2481,7 @@ export default function CalendarPage() {
           </button>
         </div>
         <div className="panel-list">
-          {visibleActivityLogs.slice(0, 12).map((log) => {
+          {visibleActivityLogs.slice(0, 30).map((log) => {
             const unread = Boolean(log.createdAt && log.createdAt > lastSeenActivityAt)
             return (
               <article className={`activity-log ${log.action}${unread ? ' unread' : ''}`} key={log.id}>
