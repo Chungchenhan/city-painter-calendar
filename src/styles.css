@@ -255,6 +255,10 @@ textarea {
   box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.7);
 }
 
+.rail-calendar-label {
+  display: none;
+}
+
 .tt-calendar-surface {
   min-width: 0;
   min-height: 0;
@@ -2289,7 +2293,9 @@ p {
   color: #c81e1e;
 }
 
-.mobile-action-bar {
+.mobile-action-bar,
+.mobile-bottom-nav,
+.mobile-fab {
   display: none;
 }
 
@@ -2317,24 +2323,28 @@ p {
     min-height: 0;
     grid-template-rows: auto minmax(0, 1fr);
     overflow: hidden;
+    background: #101112;
+    color: #f4f4f4;
   }
 
   .timetree-topbar {
     position: relative;
     z-index: 20;
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr) auto;
     gap: 8px;
-    padding: 8px 10px;
+    border-bottom: 0;
+    padding: max(14px, env(safe-area-inset-top, 0px)) 14px 8px;
+    background: #101112;
   }
 
   .topbar-left,
   .topbar-right {
-    width: 100%;
+    width: auto;
   }
 
   .topbar-left {
-    display: grid;
-    grid-template-columns: 44px minmax(0, 1fr) auto;
+    display: flex;
+    min-width: 0;
     gap: 8px;
   }
 
@@ -2348,32 +2358,58 @@ p {
 
   .tt-icon-button,
   .tt-avatar {
-    width: 44px;
-    min-width: 44px;
+    width: 38px;
+    min-width: 38px;
   }
 
-  .tt-logo {
-    font-size: 20px;
-  }
-
+  .tt-logo,
+  .topbar-left > .tt-icon-button,
   .tt-today,
-  .tt-stepper {
+  .tt-stepper,
+  .tt-view-switch,
+  .topbar-right .tt-icon-button.add {
     display: none;
   }
 
-  .timetree-topbar h1 {
-    justify-self: end;
+  .tt-icon-button,
+  .tt-avatar {
+    height: 38px;
+    min-height: 38px;
+    border-color: transparent;
+    background: transparent;
+    color: #e8e8e8;
   }
 
-  .tt-view-switch {
-    justify-self: stretch;
-    width: 100%;
+  .tt-icon-button.active {
+    border-color: #2fc878;
+    background: rgba(47, 200, 120, 0.16);
+    color: #35d98a;
+  }
+
+  .timetree-topbar h1 {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin: 0;
+    color: #f7f7f7;
+    font-size: 24px;
+    line-height: 38px;
+    justify-self: start;
+  }
+
+  .timetree-topbar h1::after {
+    content: "";
+    width: 0;
+    height: 0;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 6px solid #777;
   }
 
   .topbar-right {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 44px 44px 44px;
-    gap: 8px;
+    display: flex;
+    justify-content: flex-end;
+    gap: 6px;
   }
 
   .tt-department-select {
@@ -2383,37 +2419,96 @@ p {
   .timetree-body {
     min-height: 0;
     grid-template-columns: 1fr;
-    grid-template-rows: 60px minmax(0, 1fr);
+    grid-template-rows: 50px minmax(0, 1fr);
     overflow: hidden;
+    padding-bottom: calc(70px + env(safe-area-inset-bottom, 0px));
+    background: #101112;
   }
 
   .tt-left-rail {
     position: static;
     z-index: 15;
     flex-direction: row;
-    height: 60px;
+    height: 50px;
     overflow-x: auto;
     border-right: 0;
-    border-bottom: 1px solid #e7e7e7;
-    padding: 8px 10px;
+    border-bottom: 1px solid #232323;
+    background: #101112;
+    padding: 5px 12px 7px;
+    scrollbar-width: none;
+  }
+
+  .tt-left-rail::-webkit-scrollbar {
+    display: none;
   }
 
   .rail-button,
   .rail-calendar {
-    width: 44px;
-    height: 44px;
-    min-height: 44px;
+    width: auto;
+    min-width: max-content;
+    height: 38px;
+    min-height: 38px;
   }
 
   .rail-calendars {
     display: flex;
-    gap: 8px;
+    gap: 10px;
     margin-top: 0;
   }
 
-  .tt-calendar-surface .weekday-grid div {
-    height: 38px;
+  .rail-button {
+    min-width: 38px;
+    border-radius: 999px;
+    background: #2a2a2a;
+    color: #2fc878;
+    font-size: 18px;
+  }
+
+  .rail-calendar {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    border-radius: 10px;
+    padding: 0 12px 0 7px;
+    background: rgba(255, 255, 255, 0.18);
+    color: #f2f2f2;
+    opacity: 0.58;
+    font-size: 14px;
+    box-shadow: none;
+  }
+
+  .rail-calendar.active {
+    background: color-mix(in srgb, var(--calendar-color) 78%, #383838);
+    opacity: 1;
+    box-shadow: none;
+  }
+
+  .rail-calendar-initial {
+    width: 26px;
+    height: 26px;
+    display: inline-grid;
+    place-items: center;
+    border-radius: 7px;
+    background: color-mix(in srgb, var(--calendar-color) 55%, #ffffff);
+    color: #fff;
     font-size: 13px;
+    line-height: 1;
+  }
+
+  .rail-calendar-label {
+    display: block;
+    max-width: 96px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .tt-calendar-surface .weekday-grid div {
+    height: 25px;
+    border-bottom-color: #1f1f1f;
+    background: #101112;
+    color: #6f6f6f;
+    font-size: 11px;
   }
 
   .tt-calendar-surface .month-grid {
@@ -2424,6 +2519,25 @@ p {
 
   .tt-calendar-surface .day-cell {
     min-height: 0;
+    border-right-color: #1d1d1d;
+    border-bottom-color: #1d1d1d;
+    padding: 1px 1px 2px;
+    background: #101112;
+    color: #f2f2f2;
+  }
+
+  .tt-calendar-surface .day-cell:hover {
+    background: #101112;
+  }
+
+  .tt-calendar-surface .day-cell.muted {
+    background: #101112;
+    opacity: 0.48;
+  }
+
+  .tt-calendar-surface .day-cell.selected {
+    background: #1b1b1b;
+    box-shadow: inset 0 0 0 1px #2f2f2f;
   }
 
   .week-grid {
@@ -2442,23 +2556,53 @@ p {
   }
 
   .tt-calendar-surface .day-number {
-    width: 22px;
-    height: 20px;
-    font-size: 12px;
+    width: 20px;
+    height: 17px;
+    margin-bottom: 1px;
+    color: #dddddd;
+    font-size: 11px;
+    line-height: 17px;
+  }
+
+  .tt-calendar-surface .day-number.today {
+    background: #f5f5f5;
+    color: #202124;
   }
 
   .tt-calendar-surface .event-pill,
   .tt-calendar-surface .event-line {
-    height: 16px;
-    font-size: 10px;
-    line-height: 16px;
+    height: 14px;
+    border-radius: 2px;
+    padding: 0 2px;
+    font-size: 9px;
+    line-height: 14px;
+  }
+
+  .tt-calendar-surface .event-pill small,
+  .tt-calendar-surface .event-line small {
+    display: none;
+  }
+
+  .tt-calendar-surface .day-events {
+    gap: 1px;
+  }
+
+  .more-pill {
+    height: 14px;
+    border-radius: 2px;
+    padding: 0 3px;
+    background: #211f1b;
+    color: #b8b0a0;
+    font-size: 9px;
+    line-height: 14px;
   }
 
   .tt-calendar-surface {
     min-height: 0;
     display: grid;
-    grid-template-rows: 38px minmax(0, 1fr);
+    grid-template-rows: 25px minmax(0, 1fr);
     overflow: hidden;
+    background: #101112;
     padding-bottom: 0;
   }
 
@@ -2618,5 +2762,55 @@ p {
 
   .mobile-action-bar {
     display: none;
+  }
+
+  .mobile-bottom-nav {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 35;
+    height: calc(66px + env(safe-area-inset-bottom, 0px));
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    align-items: start;
+    gap: 0;
+    padding: 9px 18px calc(9px + env(safe-area-inset-bottom, 0px));
+    border-top: 1px solid #202020;
+    background: rgba(16, 17, 18, 0.98);
+  }
+
+  .mobile-bottom-nav button {
+    min-height: 44px;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: #777;
+    font-size: 24px;
+    font-weight: 800;
+  }
+
+  .mobile-bottom-nav button.active {
+    color: #2fc878;
+  }
+
+  .mobile-fab {
+    position: fixed;
+    right: 22px;
+    bottom: calc(58px + env(safe-area-inset-bottom, 0px));
+    z-index: 42;
+    width: 58px;
+    height: 58px;
+    min-height: 58px;
+    display: grid;
+    place-items: center;
+    border: 0;
+    border-radius: 50%;
+    background: #3a3a3a;
+    color: #fff;
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.45);
+    font-size: 34px;
+    font-weight: 500;
+    line-height: 1;
   }
 }

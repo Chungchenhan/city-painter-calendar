@@ -1645,7 +1645,8 @@ export default function CalendarPage() {
                   style={{ '--calendar-color': calendar.color } as CSSProperties}
                   title={calendar.name}
                 >
-                  {calendar.name.slice(0, 1)}
+                  <span className="rail-calendar-initial">{calendar.name.slice(0, 1)}</span>
+                  <span className="rail-calendar-label">{calendar.name}</span>
                 </button>
               )
             })}
@@ -1878,11 +1879,19 @@ export default function CalendarPage() {
         </div>
       )}
 
-      {isAdmin && (
-        <nav className="mobile-action-bar">
-          <button onClick={() => openAddEvent(selectedDate)}>新增工作</button>
-        </nav>
-      )}
+      <nav className="mobile-bottom-nav" aria-label="手機底部導覽">
+        <button className={showCalendarDrawer ? 'active' : ''} onClick={() => setShowCalendarDrawer((open) => !open)} aria-label="行事曆">▦</button>
+        <button className={showSearchPanel ? 'active' : ''} onClick={() => {
+          setShowSearchPanel((open) => !open)
+          setShowNotificationsPanel(false)
+        }} aria-label="搜尋">⌕</button>
+        <button className={showNotificationsPanel ? 'active' : ''} onClick={() => {
+          setShowNotificationsPanel((open) => !open)
+          setShowSearchPanel(false)
+        }} aria-label="通知">♢</button>
+        <button onClick={selectAllCalendars} aria-label="全選行事曆">✓</button>
+      </nav>
+      {isAdmin && <button className="mobile-fab" onClick={() => openAddEvent(selectedDate)} aria-label="新增工作">＋</button>}
 
       {showCalendarModal && (
         <div className="modal-overlay">
