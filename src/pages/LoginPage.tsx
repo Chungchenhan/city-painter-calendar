@@ -1,29 +1,13 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Navigate } from 'react-router-dom'
-import { GoogleAuthProvider, getRedirectResult, signInWithPopup, signInWithRedirect } from 'firebase/auth'
+import { GoogleAuthProvider, signInWithPopup } from 'firebase/auth'
 import { auth } from '../lib/firebase'
 import { useAuth } from '../contexts/AuthContext'
-
-function isStandalonePwa() {
-  const navigatorWithStandalone = window.navigator as Navigator & { standalone?: boolean }
-  return window.matchMedia('(display-mode: standalone)').matches || navigatorWithStandalone.standalone === true
-}
-
-function shouldUseRedirectLogin() {
-  return isStandalonePwa()
-}
 
 export default function LoginPage() {
   const { user, loading } = useAuth()
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
-
-  useEffect(() => {
-    getRedirectResult(auth).catch((err) => {
-      const code = (err as { code?: string }).code
-      if (code && code !== 'auth/no-auth-event') setError(`登入失敗：${code}`)
-    })
-  }, [])
 
   if (!loading && user) return <Navigate to="/" replace />
 
@@ -32,17 +16,9 @@ export default function LoginPage() {
     setError('')
     try {
       const provider = new GoogleAuthProvider()
-      if (shouldUseRedirectLogin()) {
-        await signInWithRedirect(auth, provider)
-        return
-      }
       await signInWithPopup(auth, provider)
     } catch (err) {
       const code = (err as { code?: string }).code
-      if (code === 'auth/popup-blocked' || code === 'auth/cancelled-popup-request') {
-        await signInWithRedirect(auth, new GoogleAuthProvider())
-        return
-      }
       if (code !== 'auth/popup-closed-by-user') setError(`登入失敗：${code || '請稍後再試'}`)
     } finally {
       setSubmitting(false)
