@@ -12,6 +12,8 @@ import type { CalendarEvent, CalendarGroup } from '../types'
 
 const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六']
 const COLORS = ['#f6b100', '#1fb6a6', '#3c82f6', '#ef6262', '#8d6df2', '#31a24c', '#f57c35', '#667085']
+const DEPARTMENT_CALENDAR_PREFIX = 'department:'
+const HR_LEAVE_CALENDAR_NAME = 'HR 請假'
 const REMINDER_OPTIONS = [
   { value: 'none', label: '無通知' },
   { value: 'start', label: '活動開始時' },
@@ -39,6 +41,7 @@ type ViewMode = 'month' | 'week'
 type ToolPanelId = typeof TOOL_PANELS[number]['id']
 type EventEditorIcon = 'person' | 'department' | 'calendar' | 'bell' | 'repeat' | 'link' | 'location' | 'paperclip' | 'note' | 'check'
 type EventAttachment = NonNullable<CalendarEvent['attachments']>[number]
+type DisplayCalendar = CalendarGroup & { systemKind?: 'department' | 'hrLeave' }
 type DragActionMenu = {
   eventId: string
   targetDate: string
@@ -102,6 +105,14 @@ function attachmentPreviewUrl(attachment: EventAttachment) {
 
 function isHrReadonlyEvent(event: CalendarEvent) {
   return event.source === 'hrLeaveRequest' || event.id.startsWith('hrLeaveRequest_')
+}
+
+function departmentCalendarId(departmentId: string) {
+  return `${DEPARTMENT_CALENDAR_PREFIX}${departmentId}`
+}
+
+function departmentIdFromCalendarId(calendarId: string) {
+  return calendarId.startsWith(DEPARTMENT_CALENDAR_PREFIX) ? calendarId.slice(DEPARTMENT_CALENDAR_PREFIX.length) : ''
 }
 
 function EventRowIcon({ name }: { name: EventEditorIcon }) {
@@ -191,7 +202,6 @@ export default function CalendarPage() {
   const [month, setMonth] = useState(dayjs().startOf('month'))
   const [selectedDate, setSelectedDate] = useState(dayjs().format('YYYY-MM-DD'))
   const [viewMode, setViewMode] = useState<ViewMode>('month')
-  const [departmentFilter, setDepartmentFilter] = useState('')
   const [activeCalendarIds, setActiveCalendarIds] = useState<string[]>([])
   const [showCalendarDrawer, setShowCalendarDrawer] = useState(false)
   const [showSearchPanel, setShowSearchPanel] = useState(false)
@@ -221,25 +231,59 @@ export default function CalendarPage() {
 
   const currentEmployee = employees.find((emp) => emp.id === employeeId)
 
-  const visibleCalendars = useMemo(() => {
-    if (isAdmin) return calendars
-    return calendars.filter((calendar) => {
-      if (calendar.isCompanyWide) return true
-      if (employeeId && calendar.employeeIds?.includes(employeeId)) return true
-      if (currentEmployee?.departmentId && calendar.departmentIds?.includes(currentEmployee.departmentId)) return true
-      return Boolean(currentEmployee?.departmentName && calendar.departmentIds?.includes(currentEmployee.departmentName))
-    })
-  }, [calendars, currentEmployee?.departmentId, currentEmployee?.departmentName, employeeId, isAdmin])
+  const departmentCalendars = useMemo<DisplayCalendar[]>(() => (
+    [...departments]
+      .sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'))
+      .map((department, index) => ({
+        id: departmentCalendarId(department.id),
+        name: department.name,
+        color: COLORS[index % COLORS.length],
+        departmentIds: [department.id],
+        employeeIds: employees
+          .filter((employee) => employee.status !== 'inactive')
+          .filter((employee) => employee.departmentId === department.id || employee.departmentName === department.name)
+          .map((employee) => employee.id),
+        isCompanyWide: false,
+        systemKind: 'department'
+      }))
+  ), [departments, employees])
 
-  const selectedCalendarIds = activeCalendarIds.length > 0 ? activeCalendarIds : visibleCalendars.map((calendar) => calendar.id)
+  const hrLeaveCalendar = useMemo<DisplayCalendar | null>(() => {
+    const calendar = calendars.find((item) => item.name.trim() === HR_LEAVE_CALENDAR_NAME)
+    if (!calendar) return null
+    return { ...calendar, systemKind: 'hrLeave' }
+  }, [calendars])
+
+  const visibleCalendars = useMemo<DisplayCalendar[]>(() => {
+    const departmentList = isAdmin
+      ? departmentCalendars
+      : departmentCalendars.filter((calendar) => (
+        Boolean(currentEmployee?.departmentId && calendar.departmentIds.includes(currentEmployee.departmentId)) ||
+        Boolean(currentEmployee?.departmentName && calendar.name === currentEmployee.departmentName)
+      ))
+
+    const canViewHrLeave = hrLeaveCalendar && (
+      isAdmin ||
+      hrLeaveCalendar.isCompanyWide ||
+      Boolean(employeeId && hrLeaveCalendar.employeeIds?.includes(employeeId)) ||
+      Boolean(currentEmployee?.departmentId && hrLeaveCalendar.departmentIds?.includes(currentEmployee.departmentId)) ||
+      Boolean(currentEmployee?.departmentName && hrLeaveCalendar.departmentIds?.includes(currentEmployee.departmentName))
+    )
+
+    return canViewHrLeave ? [...departmentList, hrLeaveCalendar] : departmentList
+  }, [currentEmployee?.departmentId, currentEmployee?.departmentName, departmentCalendars, employeeId, hrLeaveCalendar, isAdmin])
+
+  const visibleCalendarIds = visibleCalendars.map((calendar) => calendar.id)
+  const activeVisibleCalendarIds = activeCalendarIds.filter((id) => visibleCalendarIds.includes(id))
+  const selectedCalendarIds = activeVisibleCalendarIds.length > 0 ? activeVisibleCalendarIds : visibleCalendarIds
   const visibleCalendarMap = useMemo(() => new Map(visibleCalendars.map((calendar) => [calendar.id, calendar])), [visibleCalendars])
+  const writableCalendars = visibleCalendars.filter((calendar) => calendar.systemKind !== 'hrLeave')
 
   const visibleEvents = useMemo(() => {
     const keyword = searchQuery.trim().toLowerCase()
     return events.filter((event) => {
-      const calendar = visibleCalendarMap.get(event.calendarId)
-      if (!calendar || !selectedCalendarIds.includes(event.calendarId)) return false
-      if (departmentFilter && event.departmentId !== departmentFilter) return false
+      const calendar = visibleCalendarMap.get(eventDisplayCalendarId(event))
+      if (!calendar || !selectedCalendarIds.includes(calendar.id)) return false
       if (keyword) {
         const searchable = [
           event.title,
@@ -255,7 +299,7 @@ export default function CalendarPage() {
       if (!event.assigneeIds?.length) return true
       return false
     })
-  }, [departmentFilter, employeeId, events, isAdmin, searchQuery, selectedCalendarIds, visibleCalendarMap, departments, employees])
+  }, [employeeId, events, isAdmin, searchQuery, selectedCalendarIds, visibleCalendarMap, departments, employees, hrLeaveCalendar])
 
   const eventsByDate = useMemo(() => {
     const map = new Map<string, CalendarEvent[]>()
@@ -366,6 +410,21 @@ export default function CalendarPage() {
     return visibleCalendarMap.get(calendarId)?.color ?? '#667085'
   }
 
+  function eventDisplayCalendarId(event: CalendarEvent) {
+    if (isHrReadonlyEvent(event)) return hrLeaveCalendar?.id ?? event.calendarId
+    if (event.calendarId.startsWith(DEPARTMENT_CALENDAR_PREFIX)) return event.calendarId
+    if (event.departmentId) return departmentCalendarId(event.departmentId)
+    return event.calendarId
+  }
+
+  function eventCalendarColor(event: CalendarEvent) {
+    return calendarColor(eventDisplayCalendarId(event))
+  }
+
+  function eventCalendarName(event: CalendarEvent) {
+    return visibleCalendarMap.get(eventDisplayCalendarId(event))?.name ?? '未分類行事曆'
+  }
+
   function departmentName(id: string) {
     return departments.find((department) => department.id === id)?.name || '未分配'
   }
@@ -424,7 +483,7 @@ export default function CalendarPage() {
   }
 
   function toggleCalendar(calendarId: string) {
-    setActiveCalendarIds((list) => toggle(list.length ? list : visibleCalendars.map((item) => item.id), calendarId))
+    setActiveCalendarIds((list) => toggle(list.length ? list.filter((id) => visibleCalendarIds.includes(id)) : visibleCalendarIds, calendarId))
   }
 
   function goToday() {
@@ -445,11 +504,15 @@ export default function CalendarPage() {
   }
 
   function openAddEvent(date = selectedDate) {
+    const defaultCalendar = writableCalendars.find((calendar) => (
+      currentEmployee?.departmentId && calendar.departmentIds.includes(currentEmployee.departmentId)
+    )) ?? writableCalendars[0]
+    const defaultDepartmentId = defaultCalendar?.departmentIds[0] ?? currentEmployee?.departmentId ?? ''
     setEventForm({
       ...emptyEvent,
       date,
-      calendarId: visibleCalendars[0]?.id ?? '',
-      departmentId: departmentFilter || currentEmployee?.departmentId || ''
+      calendarId: defaultCalendar?.id ?? '',
+      departmentId: defaultDepartmentId
     })
     setAttachmentFiles([])
     setDeletedAttachments([])
@@ -474,7 +537,7 @@ export default function CalendarPage() {
     }
 
     setEventForm({
-      calendarId: event.calendarId,
+      calendarId: eventDisplayCalendarId(event),
       title: event.title,
       date: event.date,
       startTime: event.startTime,
@@ -585,13 +648,14 @@ export default function CalendarPage() {
     try {
       const pendingAttachmentFiles = [...attachmentFiles]
       const removedAttachments = [...deletedAttachments]
+      const selectedDepartmentId = departmentIdFromCalendarId(eventForm.calendarId) || eventForm.departmentId
       const payload = {
         calendarId: eventForm.calendarId,
         title: eventForm.title.trim(),
         date: eventForm.date,
         startTime: eventForm.startTime,
         endTime: eventForm.endTime,
-        departmentId: eventForm.departmentId,
+        departmentId: selectedDepartmentId,
         assigneeIds: eventForm.assigneeIds,
         note: eventForm.note.trim(),
         reminder: eventForm.reminder ?? 'none',
@@ -867,11 +931,11 @@ export default function CalendarPage() {
 
   function renderEventSummary(event: CalendarEvent) {
     return (
-      <button className={`panel-event ${event.done ? 'done' : ''}`} key={event.id} style={{ '--event-color': calendarColor(event.calendarId) } as CSSProperties} onClick={() => openEventDetail(event)}>
+      <button className={`panel-event ${event.done ? 'done' : ''}`} key={event.id} style={{ '--event-color': eventCalendarColor(event) } as CSSProperties} onClick={() => openEventDetail(event)}>
         <span />
         <div>
           <strong>{event.title}</strong>
-          <small>{event.date} {event.startTime} - {event.endTime} · {departmentName(event.departmentId)}</small>
+          <small>{event.date} {event.startTime} - {event.endTime} · {eventCalendarName(event)}</small>
         </div>
       </button>
     )
@@ -879,7 +943,7 @@ export default function CalendarPage() {
 
   function renderEventDetailPanel() {
     if (!selectedEvent) return null
-    const calendar = visibleCalendarMap.get(selectedEvent.calendarId)
+    const calendar = visibleCalendarMap.get(eventDisplayCalendarId(selectedEvent))
     const assignees = selectedEvent.assigneeIds.map(employeeName)
     const reminderLabel = REMINDER_OPTIONS.find((option) => option.value === (selectedEvent.reminder ?? 'none'))?.label ?? '無通知'
     const repeatLabel = REPEAT_OPTIONS.find((option) => option.value === (selectedEvent.repeat ?? 'none'))?.label ?? '無重複'
@@ -896,7 +960,7 @@ export default function CalendarPage() {
         </div>
 
         <div className="event-detail-body">
-          <div className="event-detail-avatar" style={{ background: calendarColor(selectedEvent.calendarId) }}>
+          <div className="event-detail-avatar" style={{ background: eventCalendarColor(selectedEvent) }}>
             {(calendar?.name || selectedEvent.title).slice(0, 1)}
           </div>
           <h2>{selectedEvent.title}</h2>
@@ -1081,15 +1145,13 @@ export default function CalendarPage() {
 
         {activeToolPanel === 'settings' && (
           <div className="panel-list">
-            {isAdmin && <button className="primary-btn" onClick={openAddCalendar}>新增行事曆</button>}
             {visibleCalendars.map((calendar) => (
               <article className="settings-calendar" key={calendar.id}>
                 <span style={{ background: calendar.color }} />
                 <div>
                   <strong>{calendar.name}</strong>
-                  <small>{calendar.isCompanyWide ? '全公司' : '限定部門/成員'}</small>
+                  <small>{calendar.systemKind === 'hrLeave' ? 'HR 請假同步' : '依 HR 部門同步'}</small>
                 </div>
-                {isAdmin && <button className="small-btn" onClick={() => openEditCalendar(calendar)}>編輯</button>}
               </article>
             ))}
           </div>
@@ -1119,10 +1181,6 @@ export default function CalendarPage() {
           <button className={viewMode === 'week' ? 'active' : ''} onClick={() => setViewMode('week')}>週</button>
         </div>
         <div className="topbar-right">
-          <select className="tt-department-select" value={departmentFilter} onChange={(event) => setDepartmentFilter(event.target.value)} aria-label="部門篩選">
-            <option value="">全部</option>
-            {departments.map((department) => <option value={department.id} key={department.id}>{department.name}</option>)}
-          </select>
           <button className={`tt-icon-button ${showSearchPanel ? 'active' : ''}`} aria-label="搜尋" onClick={() => setShowSearchPanel((open) => !open)}>⌕</button>
           {isAdmin && <button className="tt-icon-button add" onClick={() => openAddEvent(selectedDate)} aria-label="新增工作">＋</button>}
           <button className="tt-avatar" onClick={() => signOut(auth)} title="登出">
@@ -1134,7 +1192,6 @@ export default function CalendarPage() {
       <div className="timetree-body">
         <aside className={`tt-left-rail ${showCalendarDrawer ? 'drawer-open' : ''}`}>
           <button className={`rail-button ${viewMode === 'month' ? 'active' : ''}`} aria-label="月曆" onClick={() => setViewMode('month')}>✓</button>
-          <button className="rail-button" aria-label="行事曆設定" onClick={openAddCalendar}>＋</button>
           <div className="rail-calendars">
             {visibleCalendars.slice(0, 8).map((calendar) => {
               const active = selectedCalendarIds.includes(calendar.id)
@@ -1143,7 +1200,6 @@ export default function CalendarPage() {
                   key={calendar.id}
                   className={`rail-calendar ${active ? 'active' : ''}`}
                   onClick={() => toggleCalendar(calendar.id)}
-                  onDoubleClick={() => isAdmin && openEditCalendar(calendar)}
                   style={{ '--calendar-color': calendar.color } as CSSProperties}
                   title={calendar.name}
                 >
@@ -1161,16 +1217,8 @@ export default function CalendarPage() {
               <button onClick={() => setShowCalendarDrawer(false)} aria-label="關閉篩選">×</button>
             </div>
             <div className="drawer-section">
-              <span className="field-label">部門</span>
-              <select value={departmentFilter} onChange={(event) => setDepartmentFilter(event.target.value)}>
-                <option value="">全部部門</option>
-                {departments.map((department) => <option value={department.id} key={department.id}>{department.name}</option>)}
-              </select>
-            </div>
-            <div className="drawer-section">
               <div className="panel-title-row">
                 <span className="field-label">行事曆</span>
-                {isAdmin && <button className="text-btn" onClick={openAddCalendar}>新增</button>}
               </div>
               <div className="drawer-calendar-list">
                 {visibleCalendars.map((calendar) => {
@@ -1184,7 +1232,7 @@ export default function CalendarPage() {
                     >
                       <span />
                       <strong>{calendar.name}</strong>
-                      {isAdmin && <small onClick={(event) => { event.stopPropagation(); openEditCalendar(calendar) }}>設定</small>}
+                      <small>{calendar.systemKind === 'hrLeave' ? 'HR' : '部門'}</small>
                     </button>
                   )
                 })}
@@ -1192,7 +1240,6 @@ export default function CalendarPage() {
             </div>
             <div className="drawer-actions">
               <button className="small-btn" onClick={() => setActiveCalendarIds([])}>全選</button>
-              {isAdmin && <button className="primary-btn" onClick={openAddCalendar}>新增行事曆</button>}
             </div>
           </aside>
         )}
@@ -1230,7 +1277,7 @@ export default function CalendarPage() {
                       {dayEvents.slice(0, 7).map((event) => (
                         <button
                           className={`event-pill ${selectedEventId === event.id ? 'active' : ''}`}
-                          style={{ '--event-color': calendarColor(event.calendarId) } as CSSProperties}
+                          style={{ '--event-color': eventCalendarColor(event) } as CSSProperties}
                           key={event.id}
                           draggable={eventDragAllowed(event)}
                           onDragStart={(dragEvent) => startNativeEventDrag(dragEvent, event)}
@@ -1300,7 +1347,7 @@ export default function CalendarPage() {
                       {dayEvents.length === 0 ? <small>沒有工作</small> : dayEvents.map((event) => (
                         <button
                           className={`week-event ${event.done ? 'done' : ''} ${selectedEventId === event.id ? 'active' : ''}`}
-                          style={{ '--event-color': calendarColor(event.calendarId) } as CSSProperties}
+                          style={{ '--event-color': eventCalendarColor(event) } as CSSProperties}
                           key={event.id}
                           draggable={eventDragAllowed(event)}
                           onDragStart={(dragEvent) => startNativeEventDrag(dragEvent, event)}
@@ -1371,7 +1418,6 @@ export default function CalendarPage() {
 
       {isAdmin && (
         <nav className="mobile-action-bar">
-          <button onClick={openAddCalendar}>行事曆</button>
           <button onClick={() => openAddEvent(selectedDate)}>新增工作</button>
         </nav>
       )}
@@ -1496,16 +1542,36 @@ export default function CalendarPage() {
                 </div>
                 <div className="event-editor-row">
                   <EventRowIcon name="department" />
-                  <select value={eventForm.departmentId} onChange={(event) => setEventForm((form) => ({ ...form, departmentId: event.target.value }))}>
+                  <select
+                    value={eventForm.departmentId}
+                    onChange={(event) => {
+                      const nextDepartmentId = event.target.value
+                      setEventForm((form) => ({
+                        ...form,
+                        departmentId: nextDepartmentId,
+                        calendarId: nextDepartmentId ? departmentCalendarId(nextDepartmentId) : ''
+                      }))
+                    }}
+                  >
                     <option value="">不指定部門</option>
                     {departments.map((department) => <option key={department.id} value={department.id}>{department.name}</option>)}
                   </select>
                 </div>
                 <div className="event-editor-row">
                   <EventRowIcon name="calendar" />
-                  <select value={eventForm.calendarId} onChange={(event) => setEventForm((form) => ({ ...form, calendarId: event.target.value }))}>
+                  <select
+                    value={eventForm.calendarId}
+                    onChange={(event) => {
+                      const nextCalendarId = event.target.value
+                      setEventForm((form) => ({
+                        ...form,
+                        calendarId: nextCalendarId,
+                        departmentId: departmentIdFromCalendarId(nextCalendarId) || form.departmentId
+                      }))
+                    }}
+                  >
                     <option value="">選擇行事曆</option>
-                    {visibleCalendars.map((calendar) => <option key={calendar.id} value={calendar.id}>{calendar.name}</option>)}
+                    {writableCalendars.map((calendar) => <option key={calendar.id} value={calendar.id}>{calendar.name}</option>)}
                   </select>
                 </div>
                 <div className="event-editor-row">
