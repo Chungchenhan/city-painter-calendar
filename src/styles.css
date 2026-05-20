@@ -1734,6 +1734,55 @@ p {
   white-space: nowrap;
 }
 
+.title-suggestion-menu {
+  position: absolute;
+  top: calc(100% - 6px);
+  left: 58px;
+  right: 12px;
+  z-index: 60;
+  display: grid;
+  gap: 6px;
+  max-height: 238px;
+  overflow: auto;
+  border: 1px solid #ececec;
+  border-radius: 12px;
+  padding: 8px;
+  background: #fff;
+  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.16);
+}
+
+.title-suggestion-menu button {
+  display: grid;
+  gap: 3px;
+  border: 0;
+  border-radius: 9px;
+  padding: 9px 10px;
+  background: #fafafa;
+  text-align: left;
+}
+
+.title-suggestion-menu button:hover {
+  background: #eefbf5;
+}
+
+.title-suggestion-menu strong,
+.title-suggestion-menu small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.title-suggestion-menu strong {
+  color: #222;
+  font-size: 13px;
+}
+
+.title-suggestion-menu small {
+  color: #777;
+  font-size: 12px;
+}
+
 .event-title-input {
   min-height: 70px;
   border: 0;
@@ -2513,6 +2562,11 @@ p {
 
   .title-icon-menu {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .title-suggestion-menu {
+    left: 10px;
+    right: 10px;
   }
 
   .event-time-editor,

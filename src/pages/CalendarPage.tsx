@@ -252,6 +252,7 @@ export default function CalendarPage() {
   const [showSearchPanel, setShowSearchPanel] = useState(false)
   const [showNotificationsPanel, setShowNotificationsPanel] = useState(false)
   const [showTitleIconPicker, setShowTitleIconPicker] = useState(false)
+  const [showTitleSuggestions, setShowTitleSuggestions] = useState(false)
   const [dayListDate, setDayListDate] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [activeSearchDepartmentIds, setActiveSearchDepartmentIds] = useState<string[]>([])
@@ -514,6 +515,29 @@ export default function CalendarPage() {
     }
   }, [showTitleIconPicker])
 
+  useEffect(() => {
+    if (!showTitleSuggestions) return
+
+    function closeTitleSuggestions(event: MouseEvent | TouchEvent) {
+      const target = event.target
+      if (target instanceof Element && target.closest('.event-title-row')) return
+      setShowTitleSuggestions(false)
+    }
+
+    function closeTitleSuggestionsWithEscape(event: KeyboardEvent) {
+      if (event.key === 'Escape') setShowTitleSuggestions(false)
+    }
+
+    document.addEventListener('mousedown', closeTitleSuggestions)
+    document.addEventListener('touchstart', closeTitleSuggestions)
+    document.addEventListener('keydown', closeTitleSuggestionsWithEscape)
+    return () => {
+      document.removeEventListener('mousedown', closeTitleSuggestions)
+      document.removeEventListener('touchstart', closeTitleSuggestions)
+      document.removeEventListener('keydown', closeTitleSuggestionsWithEscape)
+    }
+  }, [showTitleSuggestions])
+
   const monthDays = useMemo(() => {
     const start = month.startOf('month').startOf('week')
     return Array.from({ length: 42 }, (_, index) => start.add(index, 'day'))
@@ -680,6 +704,18 @@ export default function CalendarPage() {
     ? eventForm.calendarIds.map((id) => visibleCalendarMap.get(id)?.name).filter(Boolean).join('、')
     : '不選部門，僅指定同仁'
   const currentTitleIcon = selectedTitleIcon(eventForm.title)
+  const currentTitleText = titleWithoutKnownIcon(eventForm.title)
+  const titleSuggestions = useMemo(() => {
+    const query = currentTitleText.trim().toLowerCase()
+    if (query.length < 1) return []
+    return events
+      .filter((event) => event.id !== editingEventId)
+      .filter((event) => dayjs(event.date).isBefore(dayjs().add(1, 'day'), 'day'))
+      .filter((event) => titleWithoutKnownIcon(event.title).toLowerCase().includes(query))
+      .filter((event) => event.location?.trim() || event.url?.trim() || event.note?.trim() || event.todos?.length)
+      .sort((a, b) => `${b.date} ${b.startTime}`.localeCompare(`${a.date} ${a.startTime}`))
+      .slice(0, 6)
+  }, [currentTitleText, editingEventId, events])
   const todoSummaryText = eventForm.todos.length > 0
     ? `${eventForm.todos.filter((todo) => todo.done).length}/${eventForm.todos.length} 已完成`
     : '待辦清單'
@@ -762,6 +798,7 @@ export default function CalendarPage() {
     setDeletedAttachments([])
     setEditingEventId(null)
     setShowTitleIconPicker(false)
+    setShowTitleSuggestions(false)
     setShowEventModal(true)
   }
 
@@ -801,6 +838,7 @@ export default function CalendarPage() {
     setDeletedAttachments([])
     setEditingEventId(event.id)
     setShowTitleIconPicker(false)
+    setShowTitleSuggestions(false)
     setShowEventModal(true)
   }
 
@@ -850,6 +888,21 @@ export default function CalendarPage() {
       title: composeTitleWithIcon(icon, form.title)
     }))
     setShowTitleIconPicker(false)
+  }
+
+  function applyTitleSuggestion(event: CalendarEvent) {
+    setEventForm((form) => ({
+      ...form,
+      location: event.location ?? '',
+      url: event.url ?? '',
+      note: event.note ?? '',
+      todos: (event.todos ?? []).map((todo) => ({
+        id: crypto.randomUUID(),
+        text: todo.text,
+        done: false
+      }))
+    }))
+    setShowTitleSuggestions(false)
   }
 
   async function saveCalendar() {
@@ -1863,14 +1916,31 @@ export default function CalendarPage() {
                 </div>
                 <input
                   className="event-title-input"
-                  value={titleWithoutKnownIcon(eventForm.title)}
+                  value={currentTitleText}
                   onChange={(event) => setEventForm((form) => ({
                     ...form,
                     title: currentTitleIcon ? composeTitleWithIcon(currentTitleIcon, event.target.value) : event.target.value
                   }))}
+                  onFocus={() => setShowTitleSuggestions(true)}
                   placeholder="新增標題"
                   autoFocus
                 />
+                {showTitleSuggestions && titleSuggestions.length > 0 && (
+                  <div className="title-suggestion-menu">
+                    {titleSuggestions.map((suggestion) => (
+                      <button type="button" key={suggestion.id} onClick={() => applyTitleSuggestion(suggestion)}>
+                        <strong>{suggestion.title}</strong>
+                        <small>
+                          {suggestion.date}
+                          {suggestion.location ? ` · ${suggestion.location}` : ''}
+                          {suggestion.url ? ' · 網址' : ''}
+                          {suggestion.note ? ' · 備註' : ''}
+                          {suggestion.todos?.length ? ` · ${suggestion.todos.length} 項待辦` : ''}
+                        </small>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
 
               <div className="event-time-editor">
