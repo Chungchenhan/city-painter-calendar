@@ -349,6 +349,12 @@ textarea {
   padding: 8px;
   background: #fff;
   text-align: left;
+  cursor: grab;
+  touch-action: none;
+}
+
+.week-event:active {
+  cursor: grabbing;
 }
 
 .week-event.done {
@@ -412,6 +418,12 @@ textarea {
   box-shadow: inset 0 0 0 2px #2f2f2f;
 }
 
+.tt-calendar-surface .day-cell.drag-over,
+.week-day.drag-over {
+  background: #f0fdf6;
+  box-shadow: inset 0 0 0 2px #2fc878;
+}
+
 .tt-calendar-surface .day-number {
   width: 22px;
   height: 20px;
@@ -454,6 +466,12 @@ textarea {
   font-weight: 800;
   line-height: 17px;
   text-align: left;
+  cursor: grab;
+  touch-action: none;
+}
+
+.tt-calendar-surface .event-pill:active {
+  cursor: grabbing;
 }
 
 .tt-calendar-surface .event-pill span {
@@ -520,6 +538,57 @@ textarea {
   background: #fff;
   padding: 0;
   margin-top: 2px;
+}
+
+.event-drag-menu {
+  position: fixed;
+  z-index: 80;
+  width: 156px;
+  overflow: hidden;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 14px 36px rgba(15, 23, 42, 0.18);
+}
+
+.event-drag-menu::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: -6px;
+  width: 12px;
+  height: 12px;
+  transform: translateX(-50%) rotate(45deg);
+  background: #fff;
+  border-left: 1px solid rgba(15, 23, 42, 0.08);
+  border-top: 1px solid rgba(15, 23, 42, 0.08);
+}
+
+.event-drag-menu button {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  min-height: 42px;
+  border: 0;
+  border-bottom: 1px solid #f0f0f0;
+  background: #fff;
+  color: #444;
+  font-size: 14px;
+  font-weight: 700;
+  text-align: left;
+  padding: 0 18px;
+}
+
+.event-drag-menu button:first-child {
+  color: #20b985;
+}
+
+.event-drag-menu button:last-child {
+  border-bottom: 0;
+}
+
+.event-drag-menu button:hover {
+  background: #f8fafc;
 }
 
 .tt-calendar-drawer,

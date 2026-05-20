@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { CSSProperties, ReactNode } from 'react'
+import type { CSSProperties, DragEvent, PointerEvent, ReactNode } from 'react'
 import dayjs from 'dayjs'
 import { addDoc, arrayUnion, collection, deleteDoc, doc, updateDoc } from 'firebase/firestore'
 import { signOut } from 'firebase/auth'
@@ -39,6 +39,12 @@ type ViewMode = 'month' | 'week'
 type ToolPanelId = typeof TOOL_PANELS[number]['id']
 type EventEditorIcon = 'person' | 'department' | 'calendar' | 'bell' | 'repeat' | 'link' | 'location' | 'paperclip' | 'note' | 'check'
 type EventAttachment = NonNullable<CalendarEvent['attachments']>[number]
+type DragActionMenu = {
+  eventId: string
+  targetDate: string
+  x: number
+  y: number
+}
 
 const emptyCalendar = {
   name: '',
@@ -200,8 +206,17 @@ export default function CalendarPage() {
   const [eventForm, setEventForm] = useState(emptyEvent)
   const [attachmentFiles, setAttachmentFiles] = useState<File[]>([])
   const [deletedAttachments, setDeletedAttachments] = useState<EventAttachment[]>([])
+  const [dragActionMenu, setDragActionMenu] = useState<DragActionMenu | null>(null)
+  const [dragOverDate, setDragOverDate] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const noteTextareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const suppressEventClickRef = useRef(false)
+  const pointerDragRef = useRef<{
+    eventId: string
+    startX: number
+    startY: number
+    moved: boolean
+  } | null>(null)
 
   const currentEmployee = employees.find((emp) => emp.id === employeeId)
 
@@ -396,6 +411,7 @@ export default function CalendarPage() {
   }
 
   function openEventDetail(event: CalendarEvent) {
+    setDragActionMenu(null)
     setSelectedDate(event.date)
     setMonth(dayjs(event.date).startOf('month'))
     setSelectedEventId(event.id)
@@ -663,6 +679,127 @@ export default function CalendarPage() {
       await queryClient.invalidateQueries({ queryKey: ['calendarEvents'] })
     } catch {
       alert('工作刪除失敗')
+    }
+  }
+
+  function eventDragAllowed(event: CalendarEvent) {
+    return isAdmin && !isHrReadonlyEvent(event)
+  }
+
+  function clearEventDragState() {
+    setDragOverDate(null)
+    pointerDragRef.current = null
+  }
+
+  function openDragActionMenu(eventId: string, targetDate: string, x: number, y: number) {
+    const draggedEvent = events.find((event) => event.id === eventId)
+    if (!draggedEvent || !eventDragAllowed(draggedEvent)) return
+    setSelectedDate(targetDate)
+    setMonth(dayjs(targetDate).startOf('month'))
+    setDragActionMenu({
+      eventId,
+      targetDate,
+      x: Math.min(Math.max(x, 16), window.innerWidth - 176),
+      y: Math.min(Math.max(y, 72), window.innerHeight - 130)
+    })
+  }
+
+  function dragDateFromPoint(x: number, y: number) {
+    const element = document.elementFromPoint(x, y)?.closest<HTMLElement>('[data-calendar-date]')
+    return element?.dataset.calendarDate ?? ''
+  }
+
+  function beginPointerEventDrag(event: PointerEvent, calendarEvent: CalendarEvent) {
+    if (!eventDragAllowed(calendarEvent)) return
+    pointerDragRef.current = {
+      eventId: calendarEvent.id,
+      startX: event.clientX,
+      startY: event.clientY,
+      moved: false
+    }
+    event.currentTarget.setPointerCapture?.(event.pointerId)
+  }
+
+  function movePointerEventDrag(event: PointerEvent) {
+    const drag = pointerDragRef.current
+    if (!drag) return
+    const distance = Math.abs(event.clientX - drag.startX) + Math.abs(event.clientY - drag.startY)
+    if (distance < 8) return
+    drag.moved = true
+    const targetDate = dragDateFromPoint(event.clientX, event.clientY)
+    setDragOverDate(targetDate || null)
+  }
+
+  function endPointerEventDrag(event: PointerEvent) {
+    const drag = pointerDragRef.current
+    if (!drag) return
+    const targetDate = drag.moved ? dragDateFromPoint(event.clientX, event.clientY) : ''
+    clearEventDragState()
+    if (targetDate) {
+      suppressEventClickRef.current = true
+      openDragActionMenu(drag.eventId, targetDate, event.clientX, event.clientY)
+      window.setTimeout(() => {
+        suppressEventClickRef.current = false
+      }, 0)
+    }
+  }
+
+  function startNativeEventDrag(event: DragEvent, calendarEvent: CalendarEvent) {
+    if (!eventDragAllowed(calendarEvent)) {
+      event.preventDefault()
+      return
+    }
+    event.dataTransfer.effectAllowed = 'copyMove'
+    event.dataTransfer.setData('text/plain', calendarEvent.id)
+    setDragActionMenu(null)
+  }
+
+  function dropEventOnDate(event: DragEvent, targetDate: string) {
+    event.preventDefault()
+    event.stopPropagation()
+    const eventId = event.dataTransfer.getData('text/plain')
+    clearEventDragState()
+    if (eventId) {
+      openDragActionMenu(eventId, targetDate, event.clientX, event.clientY)
+    }
+  }
+
+  async function applyDragEventAction(action: 'move' | 'copy') {
+    if (!dragActionMenu) return
+    const sourceEvent = events.find((event) => event.id === dragActionMenu.eventId)
+    if (!sourceEvent || !eventDragAllowed(sourceEvent)) {
+      setDragActionMenu(null)
+      return
+    }
+
+    setSaving(true)
+    try {
+      if (action === 'move') {
+        await updateDoc(doc(db, 'calendarEvents', sourceEvent.id), {
+          date: dragActionMenu.targetDate,
+          updatedAt: new Date().toISOString()
+        })
+        setSelectedEventId(sourceEvent.id)
+      } else {
+        const { id: _id, createdAt: _createdAt, updatedAt: _updatedAt, ...eventPayload } = sourceEvent
+        const created = await addDoc(collection(db, 'calendarEvents'), {
+          ...eventPayload,
+          date: dragActionMenu.targetDate,
+          source: '',
+          sourceId: '',
+          sourceDate: '',
+          createdBy: user?.uid ?? sourceEvent.createdBy ?? '',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        })
+        setSelectedEventId(created.id)
+      }
+      setDragActionMenu(null)
+      await refreshCalendarData()
+    } catch {
+      alert(action === 'move' ? '活動移動失敗，請稍後再試' : '活動複製失敗，請稍後再試')
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -1007,10 +1144,17 @@ export default function CalendarPage() {
                 const today = dayjs().format('YYYY-MM-DD') === date
                 return (
                   <button
-                    className={`day-cell ${selected ? 'selected' : ''} ${day.month() !== month.month() ? 'muted' : ''}`}
+                    className={`day-cell ${selected ? 'selected' : ''} ${day.month() !== month.month() ? 'muted' : ''} ${dragOverDate === date ? 'drag-over' : ''}`}
                     key={date}
+                    data-calendar-date={date}
                     onClick={() => setSelectedDate(date)}
                     onDoubleClick={() => isAdmin && openAddEvent(date)}
+                    onDragOver={(dragEvent) => {
+                      dragEvent.preventDefault()
+                      setDragOverDate(date)
+                    }}
+                    onDragLeave={() => setDragOverDate((current) => current === date ? null : current)}
+                    onDrop={(dragEvent) => dropEventOnDate(dragEvent, date)}
                   >
                     <span className={`day-number ${today ? 'today' : ''}`}>{day.date()}</span>
                     <span className="day-events">
@@ -1019,8 +1163,16 @@ export default function CalendarPage() {
                           className={`event-pill ${selectedEventId === event.id ? 'active' : ''}`}
                           style={{ '--event-color': calendarColor(event.calendarId) } as CSSProperties}
                           key={event.id}
+                          draggable={eventDragAllowed(event)}
+                          onDragStart={(dragEvent) => startNativeEventDrag(dragEvent, event)}
+                          onDragEnd={clearEventDragState}
+                          onPointerDown={(pointerEvent) => beginPointerEventDrag(pointerEvent, event)}
+                          onPointerMove={movePointerEventDrag}
+                          onPointerUp={endPointerEventDrag}
+                          onPointerCancel={clearEventDragState}
                           onClick={(clickEvent) => {
                             clickEvent.stopPropagation()
+                            if (suppressEventClickRef.current) return
                             openEventDetail(event)
                           }}
                         >
@@ -1041,10 +1193,17 @@ export default function CalendarPage() {
                 const today = dayjs().format('YYYY-MM-DD') === date
                 return (
                   <button
-                    className={`week-day ${selected ? 'selected' : ''}`}
+                    className={`week-day ${selected ? 'selected' : ''} ${dragOverDate === date ? 'drag-over' : ''}`}
                     key={date}
+                    data-calendar-date={date}
                     onClick={() => { setSelectedDate(date); setMonth(day.startOf('month')) }}
                     onDoubleClick={() => isAdmin && openAddEvent(date)}
+                    onDragOver={(dragEvent) => {
+                      dragEvent.preventDefault()
+                      setDragOverDate(date)
+                    }}
+                    onDragLeave={() => setDragOverDate((current) => current === date ? null : current)}
+                    onDrop={(dragEvent) => dropEventOnDate(dragEvent, date)}
                   >
                     <span className={`week-date ${today ? 'today' : ''}`}>{day.format('M/D')}</span>
                     <strong>星期{WEEKDAYS[day.day()]}</strong>
@@ -1054,8 +1213,16 @@ export default function CalendarPage() {
                           className={`week-event ${event.done ? 'done' : ''} ${selectedEventId === event.id ? 'active' : ''}`}
                           style={{ '--event-color': calendarColor(event.calendarId) } as CSSProperties}
                           key={event.id}
+                          draggable={eventDragAllowed(event)}
+                          onDragStart={(dragEvent) => startNativeEventDrag(dragEvent, event)}
+                          onDragEnd={clearEventDragState}
+                          onPointerDown={(pointerEvent) => beginPointerEventDrag(pointerEvent, event)}
+                          onPointerMove={movePointerEventDrag}
+                          onPointerUp={endPointerEventDrag}
+                          onPointerCancel={clearEventDragState}
                           onClick={(clickEvent) => {
                             clickEvent.stopPropagation()
+                            if (suppressEventClickRef.current) return
                             openEventDetail(event)
                           }}
                         >
@@ -1104,6 +1271,13 @@ export default function CalendarPage() {
 
       {renderToolPanel()}
       {renderEventDetailPanel()}
+
+      {dragActionMenu && (
+        <div className="event-drag-menu" style={{ left: dragActionMenu.x, top: dragActionMenu.y } as CSSProperties}>
+          <button onClick={() => applyDragEventAction('move')} disabled={saving}>移動</button>
+          <button onClick={() => applyDragEventAction('copy')} disabled={saving}>複製</button>
+        </div>
+      )}
 
       {isAdmin && (
         <nav className="mobile-action-bar">
