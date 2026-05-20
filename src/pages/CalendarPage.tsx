@@ -67,6 +67,7 @@ const emptyEvent = {
   calendarIds: [] as string[],
   title: '',
   date: dayjs().format('YYYY-MM-DD'),
+  endDate: dayjs().format('YYYY-MM-DD'),
   startTime: '09:00',
   endTime: '10:00',
   departmentId: '',
@@ -102,6 +103,24 @@ function composeTitleWithIcon(icon: string, title: string) {
 
 function normalizeSearchText(text: string) {
   return titleWithoutKnownIcon(text).trim().toLowerCase()
+}
+
+function eventEndDate(event: Pick<CalendarEvent, 'date' | 'endDate'>) {
+  return event.endDate || event.date
+}
+
+function dateRangeBetween(startDate: string, endDate: string) {
+  const start = dayjs(startDate)
+  const end = dayjs(endDate)
+  if (!start.isValid() || !end.isValid()) return [startDate]
+  const last = end.isBefore(start, 'day') ? start : end
+  const days: string[] = []
+  let cursor = start
+  while (cursor.isSame(last, 'day') || cursor.isBefore(last, 'day')) {
+    days.push(cursor.format('YYYY-MM-DD'))
+    cursor = cursor.add(1, 'day')
+  }
+  return days
 }
 
 function googleMapsDirectionUrl(location: string) {
@@ -388,9 +407,11 @@ export default function CalendarPage() {
   const eventsByDate = useMemo(() => {
     const map = new Map<string, CalendarEvent[]>()
     visibleEvents.forEach((event) => {
-      const list = map.get(event.date) ?? []
-      list.push(event)
-      map.set(event.date, list)
+      dateRangeBetween(event.date, eventEndDate(event)).forEach((date) => {
+        const list = map.get(date) ?? []
+        list.push(event)
+        map.set(date, list)
+      })
     })
     return map
   }, [visibleEvents])
@@ -628,6 +649,7 @@ export default function CalendarPage() {
     const fields = [
       ['title', '標題'],
       ['date', '日期'],
+      ['endDate', '結束日期'],
       ['startTime', '開始時間'],
       ['endTime', '結束時間'],
       ['departmentId', '部門'],
@@ -802,6 +824,7 @@ export default function CalendarPage() {
     setEventForm({
       ...emptyEvent,
       date,
+      endDate: date,
       calendarId: defaultCalendar?.id ?? '',
       calendarIds: defaultCalendar?.id ? [defaultCalendar.id] : [],
       departmentId: defaultDepartmentId,
@@ -835,6 +858,7 @@ export default function CalendarPage() {
       calendarIds: eventDisplayCalendarIds(event),
       title: event.title,
       date: event.date,
+      endDate: eventEndDate(event),
       startTime: event.startTime,
       endTime: event.endTime,
       departmentId: event.departmentId,
@@ -980,6 +1004,7 @@ export default function CalendarPage() {
       alert('請填寫標題、日期，並選擇行事曆或指定同仁')
       return
     }
+    const normalizedEndDate = dayjs(eventForm.endDate).isBefore(dayjs(eventForm.date), 'day') ? eventForm.date : eventForm.endDate
     const editingEvent = editingEventId ? events.find((event) => event.id === editingEventId) : null
     if (editingEvent && isHrReadonlyEvent(editingEvent)) {
       alert('此活動來自 HR 後台，請至 HR 後台編輯')
@@ -999,6 +1024,7 @@ export default function CalendarPage() {
         calendarIds: selectedCalendarIds,
         title: eventTitle,
         date: eventForm.date,
+        endDate: normalizedEndDate,
         startTime: eventForm.startTime,
         endTime: eventForm.endTime,
         departmentId: selectedDepartmentId,
@@ -1334,12 +1360,13 @@ export default function CalendarPage() {
   }
 
   function renderEventSummary(event: CalendarEvent) {
+    const rangeText = eventEndDate(event) === event.date ? event.date : `${event.date} - ${eventEndDate(event)}`
     return (
       <button className={`panel-event ${event.done ? 'done' : ''}`} key={event.id} style={{ '--event-color': eventCalendarColor(event) } as CSSProperties} onClick={() => openEventDetail(event)}>
         <span />
         <div>
           <strong>{event.title}</strong>
-          <small>{event.date} {event.startTime} - {event.endTime} · {eventCalendarName(event)}</small>
+          <small>{rangeText} {event.startTime} - {event.endTime} · {eventCalendarName(event)}</small>
         </div>
       </button>
     )
@@ -1375,7 +1402,7 @@ export default function CalendarPage() {
             </div>
             <b>›</b>
             <div>
-              <span>{dayjs(selectedEvent.date).format('YYYY/M/D (ddd)')}</span>
+              <span>{dayjs(eventEndDate(selectedEvent)).format('YYYY/M/D (ddd)')}</span>
               <strong>{selectedEvent.endTime}</strong>
             </div>
           </div>
@@ -1959,12 +1986,23 @@ export default function CalendarPage() {
               <div className="event-time-editor">
                 <div className="time-row">
                   <span>開始</span>
-                  <input type="date" value={eventForm.date} onChange={(event) => setEventForm((form) => ({ ...form, date: event.target.value }))} />
+                  <input
+                    type="date"
+                    value={eventForm.date}
+                    onChange={(event) => {
+                      const nextDate = event.target.value
+                      setEventForm((form) => ({
+                        ...form,
+                        date: nextDate,
+                        endDate: dayjs(form.endDate).isBefore(dayjs(nextDate), 'day') ? nextDate : form.endDate
+                      }))
+                    }}
+                  />
                   <input type="time" value={eventForm.startTime} onChange={(event) => setEventForm((form) => ({ ...form, startTime: event.target.value }))} />
                 </div>
                 <div className="time-row">
                   <span>結束</span>
-                  <input type="date" value={eventForm.date} onChange={(event) => setEventForm((form) => ({ ...form, date: event.target.value }))} />
+                  <input type="date" value={eventForm.endDate} min={eventForm.date} onChange={(event) => setEventForm((form) => ({ ...form, endDate: event.target.value }))} />
                   <input type="time" value={eventForm.endTime} onChange={(event) => setEventForm((form) => ({ ...form, endTime: event.target.value }))} />
                 </div>
                 <div className="event-checkbox-row">

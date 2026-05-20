@@ -39,6 +39,7 @@ export interface CalendarEvent {
   calendarIds?: string[]
   title: string
   date: string
+  endDate?: string
   startTime: string
   endTime: string
   departmentId: string
