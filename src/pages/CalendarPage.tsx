@@ -326,7 +326,7 @@ export default function CalendarPage() {
 
   const visibleCalendarIds = visibleCalendars.map((calendar) => calendar.id)
   const activeVisibleCalendarIds = activeCalendarIds.filter((id) => visibleCalendarIds.includes(id))
-  const selectedCalendarIds = activeVisibleCalendarIds.length > 0 ? activeVisibleCalendarIds : visibleCalendarIds
+  const selectedCalendarIds = activeCalendarIds.length > 0 ? activeVisibleCalendarIds : visibleCalendarIds
   const allCalendarsSelected = selectedCalendarIds.length === visibleCalendarIds.length
   const visibleCalendarMap = useMemo(() => new Map(visibleCalendars.map((calendar) => [calendar.id, calendar])), [visibleCalendars])
   const writableCalendars = visibleCalendars.filter((calendar) => calendar.systemKind !== 'hrLeave')
@@ -704,7 +704,10 @@ export default function CalendarPage() {
   }
 
   function selectAllCalendars() {
-    setActiveCalendarIds([])
+    setActiveCalendarIds((ids) => {
+      const activeIds = ids.filter((id) => visibleCalendarIds.includes(id))
+      return activeIds.length === visibleCalendarIds.length ? ['__none__'] : []
+    })
   }
 
   function toggleSearchDepartment(departmentId: string) {
