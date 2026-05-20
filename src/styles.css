@@ -632,6 +632,47 @@ textarea {
   right: 124px;
 }
 
+.search-department-filter {
+  display: grid;
+  gap: 8px;
+}
+
+.search-department-filter > div:first-child {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.search-department-filter span {
+  color: #666;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.search-department-filter > div:last-child {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.search-department-filter button {
+  min-height: 32px;
+  border: 1px solid #e7e7e7;
+  border-radius: 999px;
+  padding: 0 11px;
+  background: #fff;
+  color: #555;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.search-department-filter button.active {
+  border-color: #2fca7a;
+  background: #ecfff5;
+  color: #159d5c;
+}
+
 .tt-day-list-panel {
   right: 96px;
 }

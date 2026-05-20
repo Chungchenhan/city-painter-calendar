@@ -249,6 +249,7 @@ export default function CalendarPage() {
   const [showTitleIconPicker, setShowTitleIconPicker] = useState(false)
   const [dayListDate, setDayListDate] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
+  const [activeSearchDepartmentIds, setActiveSearchDepartmentIds] = useState<string[]>([])
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null)
   const [showCalendarModal, setShowCalendarModal] = useState(false)
   const [showEventModal, setShowEventModal] = useState(false)
@@ -329,29 +330,49 @@ export default function CalendarPage() {
   const allCalendarsSelected = selectedCalendarIds.length === visibleCalendarIds.length
   const visibleCalendarMap = useMemo(() => new Map(visibleCalendars.map((calendar) => [calendar.id, calendar])), [visibleCalendars])
   const writableCalendars = visibleCalendars.filter((calendar) => calendar.systemKind !== 'hrLeave')
+  const searchDepartmentOptions = useMemo(() => {
+    const visibleDepartmentIds = new Set(
+      visibleCalendars
+        .filter((calendar) => calendar.systemKind === 'department')
+        .flatMap((calendar) => calendar.departmentIds)
+    )
+    return departments.filter((department) => visibleDepartmentIds.has(department.id))
+  }, [departments, visibleCalendars])
+  const searchDepartmentIds = searchDepartmentOptions.map((department) => department.id)
+  const activeVisibleSearchDepartmentIds = activeSearchDepartmentIds.filter((id) => searchDepartmentIds.includes(id))
+  const selectedSearchDepartmentIds = activeVisibleSearchDepartmentIds.length > 0 ? activeVisibleSearchDepartmentIds : searchDepartmentIds
+  const hasCustomSearchDepartmentFilter = activeVisibleSearchDepartmentIds.length > 0
+  const allSearchDepartmentsSelected = selectedSearchDepartmentIds.length === searchDepartmentIds.length
 
   const visibleEvents = useMemo(() => {
-    const keyword = searchQuery.trim().toLowerCase()
     return events.filter((event) => {
       const eventCalendarIds = eventDisplayCalendarIds(event)
       const eventCalendars = eventCalendarIds.map((id) => visibleCalendarMap.get(id)).filter(Boolean) as DisplayCalendar[]
       if (!eventCalendars.length || !eventCalendars.some((calendar) => selectedCalendarIds.includes(calendar.id))) return false
-      if (keyword) {
-        const searchable = [
-          event.title,
-          event.note ?? '',
-          departmentName(event.departmentId),
-          ...eventCalendars.map((calendar) => calendar.name),
-          ...(event.assigneeIds ?? []).map(employeeName)
-        ].join(' ').toLowerCase()
-        if (!searchable.includes(keyword)) return false
-      }
       if (isAdmin) return true
       if (employeeId && event.assigneeIds?.includes(employeeId)) return true
       if (!event.assigneeIds?.length) return true
       return false
     })
-  }, [employeeId, events, isAdmin, searchQuery, selectedCalendarIds, visibleCalendarMap, departments, employees, hrLeaveCalendar])
+  }, [employeeId, events, isAdmin, selectedCalendarIds, visibleCalendarMap, departments, employees, hrLeaveCalendar])
+
+  const searchEvents = useMemo(() => {
+    const keyword = searchQuery.trim().toLowerCase()
+    return visibleEvents.filter((event) => {
+      if (hasCustomSearchDepartmentFilter && event.departmentId && !selectedSearchDepartmentIds.includes(event.departmentId)) return false
+      if (hasCustomSearchDepartmentFilter && !event.departmentId) return false
+      if (!keyword) return true
+      const eventCalendars = eventDisplayCalendarIds(event).map((id) => visibleCalendarMap.get(id)).filter(Boolean) as DisplayCalendar[]
+      const searchable = [
+        event.title,
+        event.note ?? '',
+        departmentName(event.departmentId),
+        ...eventCalendars.map((calendar) => calendar.name),
+        ...(event.assigneeIds ?? []).map(employeeName)
+      ].join(' ').toLowerCase()
+      return searchable.includes(keyword)
+    })
+  }, [employees, hasCustomSearchDepartmentFilter, searchQuery, selectedSearchDepartmentIds, visibleCalendarMap, visibleEvents, departments, hrLeaveCalendar])
 
   const eventsByDate = useMemo(() => {
     const map = new Map<string, CalendarEvent[]>()
@@ -683,6 +704,14 @@ export default function CalendarPage() {
 
   function selectAllCalendars() {
     setActiveCalendarIds([])
+  }
+
+  function toggleSearchDepartment(departmentId: string) {
+    setActiveSearchDepartmentIds((ids) => toggle(ids.length ? ids : searchDepartmentIds, departmentId))
+  }
+
+  function selectAllSearchDepartments() {
+    setActiveSearchDepartmentIds([])
   }
 
   function goToday() {
@@ -1681,10 +1710,28 @@ export default function CalendarPage() {
             <button onClick={() => setShowSearchPanel(false)} aria-label="關閉搜尋">×</button>
           </div>
           <input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="搜尋標題、備註、部門、成員" autoFocus />
-          <p className="panel-hint">{searchQuery.trim() ? `找到 ${visibleEvents.length} 筆` : `目前顯示 ${visibleEvents.length} 筆，範圍：${selectedCalendarNames}`}</p>
+          <div className="search-department-filter" aria-label="部門篩選">
+            <div>
+              <span>部門</span>
+              <button className={allSearchDepartmentsSelected ? 'active' : ''} type="button" onClick={selectAllSearchDepartments}>全選</button>
+            </div>
+            <div>
+              {searchDepartmentOptions.map((department) => (
+                <button
+                  className={selectedSearchDepartmentIds.includes(department.id) ? 'active' : ''}
+                  type="button"
+                  key={department.id}
+                  onClick={() => toggleSearchDepartment(department.id)}
+                >
+                  {department.name}
+                </button>
+              ))}
+            </div>
+          </div>
+          <p className="panel-hint">{searchQuery.trim() ? `找到 ${searchEvents.length} 筆` : `目前顯示 ${searchEvents.length} 筆，範圍：${selectedCalendarNames}`}</p>
           <div className="panel-list">
-            {visibleEvents.slice(0, 12).map(renderEventSummary)}
-            {visibleEvents.length === 0 && <p className="panel-empty">沒有符合條件的工作</p>}
+            {searchEvents.slice(0, 12).map(renderEventSummary)}
+            {searchEvents.length === 0 && <p className="panel-empty">沒有符合條件的工作</p>}
           </div>
         </aside>
       )}
