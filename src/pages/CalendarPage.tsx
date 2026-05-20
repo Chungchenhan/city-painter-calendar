@@ -348,7 +348,8 @@ export default function CalendarPage() {
     return events.filter((event) => {
       const eventCalendarIds = eventDisplayCalendarIds(event)
       const eventCalendars = eventCalendarIds.map((id) => visibleCalendarMap.get(id)).filter(Boolean) as DisplayCalendar[]
-      if (!eventCalendars.length || !eventCalendars.some((calendar) => selectedCalendarIds.includes(calendar.id))) return false
+      if (!eventCalendars.length) return Boolean(employeeId && event.assigneeIds?.includes(employeeId))
+      if (!eventCalendars.some((calendar) => selectedCalendarIds.includes(calendar.id))) return false
       if (isAdmin) return true
       if (employeeId && event.assigneeIds?.includes(employeeId)) return true
       if (!event.assigneeIds?.length) return true
@@ -672,7 +673,7 @@ export default function CalendarPage() {
     : '選擇同仁'
   const selectedEventCalendarText = eventForm.calendarIds.length > 0
     ? eventForm.calendarIds.map((id) => visibleCalendarMap.get(id)?.name).filter(Boolean).join('、')
-    : '選擇行事曆'
+    : '不選部門，僅指定同仁'
   const currentTitleIcon = selectedTitleIcon(eventForm.title)
   const todoSummaryText = eventForm.todos.length > 0
     ? `${eventForm.todos.filter((todo) => todo.done).length}/${eventForm.todos.length} 已完成`
@@ -900,8 +901,9 @@ export default function CalendarPage() {
   }
 
   async function saveEvent() {
-    if (!eventForm.calendarIds.length || !eventForm.title.trim() || !eventForm.date) {
-      alert('請填寫行事曆、標題與日期')
+    const requiredAssignees = requiredAssigneeIds(eventForm.assigneeIds)
+    if ((!eventForm.calendarIds.length && !requiredAssignees.length) || !eventForm.title.trim() || !eventForm.date) {
+      alert('請填寫標題、日期，並選擇行事曆或指定同仁')
       return
     }
     const editingEvent = editingEventId ? events.find((event) => event.id === editingEventId) : null
@@ -915,7 +917,7 @@ export default function CalendarPage() {
       const pendingAttachmentFiles = [...attachmentFiles]
       const removedAttachments = [...deletedAttachments]
       const selectedCalendarIds = eventForm.calendarIds
-      const primaryCalendarId = selectedCalendarIds[0]
+      const primaryCalendarId = selectedCalendarIds[0] ?? ''
       const selectedDepartmentId = primaryDepartmentIdFromCalendarIds(selectedCalendarIds, eventForm.departmentId)
       const payload = {
         calendarId: primaryCalendarId,
@@ -925,7 +927,7 @@ export default function CalendarPage() {
         startTime: eventForm.startTime,
         endTime: eventForm.endTime,
         departmentId: selectedDepartmentId,
-        assigneeIds: requiredAssigneeIds(eventForm.assigneeIds),
+        assigneeIds: requiredAssignees,
         note: eventForm.note.trim(),
         reminder: eventForm.reminder ?? 'none',
         repeat: eventForm.repeat ?? 'none',
