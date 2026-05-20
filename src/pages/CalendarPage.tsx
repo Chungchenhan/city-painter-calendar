@@ -410,6 +410,32 @@ export default function CalendarPage() {
     }
   }, [dayListDate])
 
+  useEffect(() => {
+    if (!showSearchPanel && !showNotificationsPanel) return
+
+    function closeTopbarPanels(event: MouseEvent | TouchEvent) {
+      const target = event.target
+      if (target instanceof Element && target.closest('.tt-search-panel, .tt-notifications-panel, .topbar-panel-trigger')) return
+      setShowSearchPanel(false)
+      setShowNotificationsPanel(false)
+    }
+
+    function closeTopbarPanelsWithEscape(event: KeyboardEvent) {
+      if (event.key !== 'Escape') return
+      setShowSearchPanel(false)
+      setShowNotificationsPanel(false)
+    }
+
+    document.addEventListener('mousedown', closeTopbarPanels)
+    document.addEventListener('touchstart', closeTopbarPanels)
+    document.addEventListener('keydown', closeTopbarPanelsWithEscape)
+    return () => {
+      document.removeEventListener('mousedown', closeTopbarPanels)
+      document.removeEventListener('touchstart', closeTopbarPanels)
+      document.removeEventListener('keydown', closeTopbarPanelsWithEscape)
+    }
+  }, [showSearchPanel, showNotificationsPanel])
+
   const monthDays = useMemo(() => {
     const start = month.startOf('month').startOf('week')
     return Array.from({ length: 42 }, (_, index) => start.add(index, 'day'))
@@ -1319,10 +1345,24 @@ export default function CalendarPage() {
           <button className={viewMode === 'week' ? 'active' : ''} onClick={() => setViewMode('week')}>週</button>
         </div>
         <div className="topbar-right">
-          <button className={`tt-icon-button ${showSearchPanel ? 'active' : ''}`} aria-label="搜尋" onClick={() => setShowSearchPanel((open) => !open)}>
+          <button
+            className={`tt-icon-button topbar-panel-trigger ${showSearchPanel ? 'active' : ''}`}
+            aria-label="搜尋"
+            onClick={() => {
+              setShowSearchPanel((open) => !open)
+              setShowNotificationsPanel(false)
+            }}
+          >
             <TopbarIcon name="search" />
           </button>
-          <button className={`tt-icon-button ${showNotificationsPanel ? 'active' : ''}`} aria-label="通知" onClick={() => setShowNotificationsPanel((open) => !open)}>
+          <button
+            className={`tt-icon-button topbar-panel-trigger ${showNotificationsPanel ? 'active' : ''}`}
+            aria-label="通知"
+            onClick={() => {
+              setShowNotificationsPanel((open) => !open)
+              setShowSearchPanel(false)
+            }}
+          >
             <TopbarIcon name="bell" />
           </button>
           {isAdmin && <button className="tt-icon-button add" onClick={() => openAddEvent(selectedDate)} aria-label="新增工作">＋</button>}
