@@ -6,9 +6,9 @@ import { signOut } from 'firebase/auth'
 import { useQueryClient } from '@tanstack/react-query'
 import { auth, db } from '../lib/firebase'
 import { useAuth } from '../contexts/AuthContext'
-import { useCalendarEvents, useCalendarGroups } from '../hooks/useCalendarData'
+import { useCalendarActivityLogs, useCalendarEvents, useCalendarGroups } from '../hooks/useCalendarData'
 import { useDepartments, useEmployees } from '../hooks/useHrData'
-import type { CalendarEvent, CalendarGroup } from '../types'
+import type { CalendarActivityLog, CalendarEvent, CalendarGroup } from '../types'
 
 const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六']
 const COLORS = ['#f6b100', '#1fb6a6', '#3c82f6', '#ef6262', '#8d6df2', '#31a24c', '#f57c35', '#667085']
@@ -185,12 +185,31 @@ function EventRowIcon({ name }: { name: EventEditorIcon }) {
   )
 }
 
+function TopbarIcon({ name }: { name: 'search' | 'bell' }) {
+  return (
+    <svg className="topbar-svg-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      {name === 'search' ? (
+        <>
+          <circle cx="11" cy="11" r="6" />
+          <path d="m16 16 4 4" />
+        </>
+      ) : (
+        <>
+          <path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
+          <path d="M10 21a2.4 2.4 0 0 0 4 0" />
+        </>
+      )}
+    </svg>
+  )
+}
+
 export default function CalendarPage() {
   const queryClient = useQueryClient()
   const { user, role, employeeId, displayName } = useAuth()
   const isAdmin = role === 'admin'
   const { data: calendars = [], isLoading: calendarsLoading } = useCalendarGroups()
   const { data: events = [], isLoading: eventsLoading } = useCalendarEvents()
+  const { data: activityLogs = [] } = useCalendarActivityLogs()
   const { data: employees = [] } = useEmployees()
   const { data: departments = [] } = useDepartments()
 
@@ -316,6 +335,10 @@ export default function CalendarPage() {
     return map
   }, [visibleEvents])
 
+  const visibleActivityLogs = useMemo(() => (
+    activityLogs.filter((log) => selectedCalendarIds.includes(log.calendarId))
+  ), [activityLogs, selectedCalendarIds])
+
   useEffect(() => {
     if (!('Notification' in window) || Notification.permission !== 'granted') return
     const timers = visibleEvents.flatMap((event) => {
@@ -436,6 +459,62 @@ export default function CalendarPage() {
 
   function employeeName(id: string) {
     return employees.find((employee) => employee.id === id)?.name || '未指定'
+  }
+
+  function currentActorName() {
+    return displayName || user?.displayName || user?.email || '未命名使用者'
+  }
+
+  function valueLabel(field: string, value: unknown) {
+    if (field === 'departmentId') return value ? departmentName(String(value)) : '未分配'
+    if (field === 'calendarId') return value ? (visibleCalendarMap.get(String(value))?.name || '未分類行事曆') : '未分類行事曆'
+    if (field === 'assigneeIds') {
+      const ids = Array.isArray(value) ? value : []
+      return ids.length ? ids.map((id) => employeeName(String(id))).join('、') : '未指定'
+    }
+    if (field === 'reminder') return REMINDER_OPTIONS.find((option) => option.value === value)?.label ?? '無通知'
+    if (field === 'repeat') return REPEAT_OPTIONS.find((option) => option.value === value)?.label ?? '無重複'
+    if (field === 'todos') return Array.isArray(value) ? `${value.length} 項` : '0 項'
+    if (field === 'attachments') return Array.isArray(value) ? `${value.length} 個附件` : '0 個附件'
+    return String(value ?? '').trim() || '空白'
+  }
+
+  function eventChangeList(beforeEvent: CalendarEvent, afterEvent: Partial<CalendarEvent>) {
+    const fields = [
+      ['title', '標題'],
+      ['date', '日期'],
+      ['startTime', '開始時間'],
+      ['endTime', '結束時間'],
+      ['departmentId', '部門'],
+      ['calendarId', '行事曆'],
+      ['assigneeIds', '同仁'],
+      ['reminder', '通知'],
+      ['repeat', '重複'],
+      ['location', '地點'],
+      ['url', '網址'],
+      ['note', '備註'],
+      ['todos', '待辦清單']
+    ] as const
+
+    return fields.flatMap(([field, label]) => {
+      const before = valueLabel(field, beforeEvent[field as keyof CalendarEvent])
+      const after = valueLabel(field, afterEvent[field as keyof CalendarEvent])
+      return before === after ? [] : [{ field, label, before, after }]
+    })
+  }
+
+  async function writeActivityLog(input: Omit<CalendarActivityLog, 'id' | 'actorUid' | 'actorName' | 'createdAt'>) {
+    try {
+      await addDoc(collection(db, 'calendarActivityLogs'), {
+        ...input,
+        actorUid: user?.uid ?? '',
+        actorName: currentActorName(),
+        createdAt: new Date().toISOString()
+      })
+      await queryClient.invalidateQueries({ queryKey: ['calendarActivityLogs'] })
+    } catch {
+      // 活動紀錄失敗不應阻擋主要操作。
+    }
   }
 
   function getDepartmentEmployeeIds(departmentId: string) {
@@ -570,7 +649,8 @@ export default function CalendarPage() {
   async function refreshCalendarData() {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ['calendarCalendars'] }),
-      queryClient.invalidateQueries({ queryKey: ['calendarEvents'] })
+      queryClient.invalidateQueries({ queryKey: ['calendarEvents'] }),
+      queryClient.invalidateQueries({ queryKey: ['calendarActivityLogs'] })
     ])
   }
 
@@ -699,6 +779,20 @@ export default function CalendarPage() {
       let savedEventId = editingEventId
       if (editingEventId) {
         await updateDoc(doc(db, 'calendarEvents', editingEventId), payload)
+        if (editingEvent) {
+          const changes = eventChangeList(editingEvent, payload)
+          if (changes.length) {
+            await writeActivityLog({
+              action: 'update',
+              eventId: editingEventId,
+              eventTitle: payload.title,
+              calendarId: payload.calendarId,
+              departmentId: payload.departmentId,
+              date: payload.date,
+              changes
+            })
+          }
+        }
       } else {
         const created = await addDoc(collection(db, 'calendarEvents'), {
           ...payload,
@@ -707,6 +801,14 @@ export default function CalendarPage() {
           createdAt: new Date().toISOString()
         })
         savedEventId = created.id
+        await writeActivityLog({
+          action: 'create',
+          eventId: created.id,
+          eventTitle: payload.title,
+          calendarId: payload.calendarId,
+          departmentId: payload.departmentId,
+          date: payload.date
+        })
       }
 
       setShowEventModal(false)
@@ -816,8 +918,16 @@ export default function CalendarPage() {
     if (!confirm('確定刪除此工作？')) return
     try {
       await deleteDoc(doc(db, 'calendarEvents', event.id))
+      await writeActivityLog({
+        action: 'delete',
+        eventId: event.id,
+        eventTitle: event.title,
+        calendarId: eventDisplayCalendarId(event),
+        departmentId: event.departmentId,
+        date: event.date
+      })
       setSelectedEventId((current) => current === event.id ? null : current)
-      await queryClient.invalidateQueries({ queryKey: ['calendarEvents'] })
+      await refreshCalendarData()
     } catch {
       alert('工作刪除失敗')
     }
@@ -920,6 +1030,20 @@ export default function CalendarPage() {
           date: dragActionMenu.targetDate,
           updatedAt: new Date().toISOString()
         })
+        await writeActivityLog({
+          action: 'move',
+          eventId: sourceEvent.id,
+          eventTitle: sourceEvent.title,
+          calendarId: eventDisplayCalendarId(sourceEvent),
+          departmentId: sourceEvent.departmentId,
+          date: dragActionMenu.targetDate,
+          changes: [{
+            field: 'date',
+            label: '日期',
+            before: sourceEvent.date,
+            after: dragActionMenu.targetDate
+          }]
+        })
         setSelectedEventId(sourceEvent.id)
       } else {
         const { id: _id, createdAt: _createdAt, updatedAt: _updatedAt, ...eventPayload } = sourceEvent
@@ -932,6 +1056,20 @@ export default function CalendarPage() {
           createdBy: user?.uid ?? sourceEvent.createdBy ?? '',
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
+        })
+        await writeActivityLog({
+          action: 'copy',
+          eventId: created.id,
+          eventTitle: sourceEvent.title,
+          calendarId: eventDisplayCalendarId(sourceEvent),
+          departmentId: sourceEvent.departmentId,
+          date: dragActionMenu.targetDate,
+          changes: [{
+            field: 'date',
+            label: '日期',
+            before: sourceEvent.date,
+            after: dragActionMenu.targetDate
+          }]
         })
         setSelectedEventId(created.id)
       }
@@ -1123,6 +1261,19 @@ export default function CalendarPage() {
     )
   }
 
+  function activityLogText(log: CalendarActivityLog) {
+    if (log.action === 'create') return `${log.actorName} 新增了「${log.eventTitle}」`
+    if (log.action === 'delete') return `${log.actorName} 刪除了「${log.eventTitle}」`
+    if (log.action === 'move') return `${log.actorName} 將「${log.eventTitle}」移到 ${log.changes?.[0]?.after || log.date}`
+    if (log.action === 'copy') return `${log.actorName} 複製了「${log.eventTitle}」到 ${log.changes?.[0]?.after || log.date}`
+    const firstChange = log.changes?.[0]
+    if (firstChange) {
+      const rest = (log.changes?.length ?? 0) > 1 ? `，另有 ${(log.changes?.length ?? 1) - 1} 項變更` : ''
+      return `${log.actorName} 將「${log.eventTitle}」的${firstChange.label}從「${firstChange.before}」改成「${firstChange.after}」${rest}`
+    }
+    return `${log.actorName} 更新了「${log.eventTitle}」`
+  }
+
   function renderNotificationsPanel() {
     if (!showNotificationsPanel) return null
     return (
@@ -1132,8 +1283,16 @@ export default function CalendarPage() {
           <button onClick={() => setShowNotificationsPanel(false)} aria-label="關閉通知">×</button>
         </div>
         <div className="panel-list">
-          {visibleEvents.slice(0, 8).map(renderEventSummary)}
-          {visibleEvents.length === 0 && <p className="panel-empty">目前沒有符合條件的通知</p>}
+          {visibleActivityLogs.slice(0, 12).map((log) => (
+            <article className={`activity-log ${log.action}`} key={log.id}>
+              <span />
+              <div>
+                <strong>{activityLogText(log)}</strong>
+                <small>{dayjs(log.createdAt).format('M/D HH:mm')} · {visibleCalendarMap.get(log.calendarId)?.name || departmentName(log.departmentId)}</small>
+              </div>
+            </article>
+          ))}
+          {visibleActivityLogs.length === 0 && <p className="panel-empty">目前沒有新的活動紀錄</p>}
         </div>
       </aside>
     )
@@ -1160,8 +1319,12 @@ export default function CalendarPage() {
           <button className={viewMode === 'week' ? 'active' : ''} onClick={() => setViewMode('week')}>週</button>
         </div>
         <div className="topbar-right">
-          <button className={`tt-icon-button ${showSearchPanel ? 'active' : ''}`} aria-label="搜尋" onClick={() => setShowSearchPanel((open) => !open)}>⌕</button>
-          <button className={`tt-icon-button ${showNotificationsPanel ? 'active' : ''}`} aria-label="通知" onClick={() => setShowNotificationsPanel((open) => !open)}>⌒</button>
+          <button className={`tt-icon-button ${showSearchPanel ? 'active' : ''}`} aria-label="搜尋" onClick={() => setShowSearchPanel((open) => !open)}>
+            <TopbarIcon name="search" />
+          </button>
+          <button className={`tt-icon-button ${showNotificationsPanel ? 'active' : ''}`} aria-label="通知" onClick={() => setShowNotificationsPanel((open) => !open)}>
+            <TopbarIcon name="bell" />
+          </button>
           {isAdmin && <button className="tt-icon-button add" onClick={() => openAddEvent(selectedDate)} aria-label="新增工作">＋</button>}
           <button className="tt-avatar" onClick={() => signOut(auth)} title="登出">
             {user?.photoURL ? <img src={user.photoURL} alt={displayName || user.email || '使用者'} referrerPolicy="no-referrer" /> : (displayName || user?.email || 'U').slice(0, 1)}

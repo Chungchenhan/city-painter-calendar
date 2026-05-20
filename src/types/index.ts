@@ -71,3 +71,22 @@ export interface CalendarEvent {
   createdAt?: string
   updatedAt?: string
 }
+
+export interface CalendarActivityLog {
+  id: string
+  action: 'create' | 'update' | 'delete' | 'move' | 'copy'
+  actorUid: string
+  actorName: string
+  eventId?: string
+  eventTitle: string
+  calendarId: string
+  departmentId: string
+  date: string
+  changes?: {
+    field: string
+    label: string
+    before: string
+    after: string
+  }[]
+  createdAt: string
+}

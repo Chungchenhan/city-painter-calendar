@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
-import { collection, getDocs } from 'firebase/firestore'
+import { collection, getDocs, limit, orderBy, query } from 'firebase/firestore'
 import { db } from '../lib/firebase'
-import type { CalendarEvent, CalendarGroup } from '../types'
+import type { CalendarActivityLog, CalendarEvent, CalendarGroup } from '../types'
 
 export function useCalendarGroups() {
   return useQuery({
@@ -24,5 +24,16 @@ export function useCalendarEvents() {
       return rows.sort((a, b) => `${a.date} ${a.startTime}`.localeCompare(`${b.date} ${b.startTime}`))
     },
     staleTime: 60 * 1000
+  })
+}
+
+export function useCalendarActivityLogs() {
+  return useQuery({
+    queryKey: ['calendarActivityLogs'],
+    queryFn: async () => {
+      const snap = await getDocs(query(collection(db, 'calendarActivityLogs'), orderBy('createdAt', 'desc'), limit(40)))
+      return snap.docs.map((d) => ({ id: d.id, ...d.data() })) as CalendarActivityLog[]
+    },
+    staleTime: 30 * 1000
   })
 }

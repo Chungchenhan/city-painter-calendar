@@ -107,9 +107,20 @@ textarea {
 }
 
 .tt-icon-button {
+  display: inline-grid;
+  place-items: center;
   width: 40px;
   padding: 0;
-  font-size: 22px;
+}
+
+.topbar-svg-icon {
+  width: 19px;
+  height: 19px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .tt-icon-button.active {
@@ -743,6 +754,7 @@ textarea {
 }
 
 .panel-event,
+.activity-log,
 .member-row,
 .settings-calendar,
 .panel-note {
@@ -760,6 +772,50 @@ textarea {
   border: 1px solid #ececec;
   padding: 10px;
   text-align: left;
+}
+
+.activity-log {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 9px;
+  align-items: start;
+  padding: 12px;
+}
+
+.activity-log > span {
+  width: 10px;
+  height: 10px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: #3c82f6;
+}
+
+.activity-log.create > span,
+.activity-log.copy > span {
+  background: #2fca7a;
+}
+
+.activity-log.update > span,
+.activity-log.move > span {
+  background: #f6b100;
+}
+
+.activity-log.delete > span {
+  background: #ef6262;
+}
+
+.activity-log strong {
+  display: block;
+  color: #202124;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.activity-log small {
+  display: block;
+  margin-top: 4px;
+  color: #777;
+  font-size: 12px;
 }
 
 .panel-event.done {
