@@ -29,6 +29,20 @@ const REPEAT_OPTIONS = [
   { value: 'monthly', label: '每月' },
   { value: 'yearly', label: '每年' }
 ] as const
+const TITLE_ICON_OPTIONS = [
+  { icon: '👷', label: '施工' },
+  { icon: '📐', label: '丈量' },
+  { icon: '📦', label: '送貨' },
+  { icon: '🎪', label: '活動' },
+  { icon: '🚗', label: '場刊' },
+  { icon: '💗', label: '心健月' },
+  { icon: '👨‍🦳', label: '失智月' },
+  { icon: '💼', label: '開會' },
+  { icon: '🈵', label: '不排工作' },
+  { icon: '❌', label: '不在' },
+  { icon: '🎨', label: '設計' },
+  { icon: '🚀', label: '外包' }
+] as const
 type ViewMode = 'month' | 'week'
 type EventEditorIcon = 'person' | 'department' | 'calendar' | 'bell' | 'repeat' | 'link' | 'location' | 'paperclip' | 'note' | 'check'
 type EventAttachment = NonNullable<CalendarEvent['attachments']>[number]
@@ -68,6 +82,17 @@ const emptyEvent = {
 
 function toggle(list: string[], id: string) {
   return list.includes(id) ? list.filter((item) => item !== id) : [...list, id]
+}
+
+function titleWithoutKnownIcon(title: string) {
+  const trimmedTitle = title.trimStart()
+  const option = TITLE_ICON_OPTIONS.find((item) => trimmedTitle.startsWith(item.icon))
+  return option ? trimmedTitle.slice(option.icon.length).trimStart() : title
+}
+
+function selectedTitleIcon(title: string) {
+  const trimmedTitle = title.trimStart()
+  return TITLE_ICON_OPTIONS.find((item) => trimmedTitle.startsWith(item.icon))?.icon ?? ''
 }
 
 function googleMapsDirectionUrl(location: string) {
@@ -221,6 +246,7 @@ export default function CalendarPage() {
   const [showCalendarDrawer, setShowCalendarDrawer] = useState(false)
   const [showSearchPanel, setShowSearchPanel] = useState(false)
   const [showNotificationsPanel, setShowNotificationsPanel] = useState(false)
+  const [showTitleIconPicker, setShowTitleIconPicker] = useState(false)
   const [dayListDate, setDayListDate] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null)
@@ -438,6 +464,29 @@ export default function CalendarPage() {
     }
   }, [showSearchPanel, showNotificationsPanel])
 
+  useEffect(() => {
+    if (!showTitleIconPicker) return
+
+    function closeTitleIconPicker(event: MouseEvent | TouchEvent) {
+      const target = event.target
+      if (target instanceof Element && target.closest('.title-icon-picker')) return
+      setShowTitleIconPicker(false)
+    }
+
+    function closeTitleIconPickerWithEscape(event: KeyboardEvent) {
+      if (event.key === 'Escape') setShowTitleIconPicker(false)
+    }
+
+    document.addEventListener('mousedown', closeTitleIconPicker)
+    document.addEventListener('touchstart', closeTitleIconPicker)
+    document.addEventListener('keydown', closeTitleIconPickerWithEscape)
+    return () => {
+      document.removeEventListener('mousedown', closeTitleIconPicker)
+      document.removeEventListener('touchstart', closeTitleIconPicker)
+      document.removeEventListener('keydown', closeTitleIconPickerWithEscape)
+    }
+  }, [showTitleIconPicker])
+
   const monthDays = useMemo(() => {
     const start = month.startOf('month').startOf('week')
     return Array.from({ length: 42 }, (_, index) => start.add(index, 'day'))
@@ -603,6 +652,7 @@ export default function CalendarPage() {
   const selectedEventCalendarText = eventForm.calendarIds.length > 0
     ? eventForm.calendarIds.map((id) => visibleCalendarMap.get(id)?.name).filter(Boolean).join('、')
     : '選擇行事曆'
+  const currentTitleIcon = selectedTitleIcon(eventForm.title)
   const todoSummaryText = eventForm.todos.length > 0
     ? `${eventForm.todos.filter((todo) => todo.done).length}/${eventForm.todos.length} 已完成`
     : '待辦清單'
@@ -667,6 +717,7 @@ export default function CalendarPage() {
     setAttachmentFiles([])
     setDeletedAttachments([])
     setEditingEventId(null)
+    setShowTitleIconPicker(false)
     setShowEventModal(true)
   }
 
@@ -706,6 +757,7 @@ export default function CalendarPage() {
     setAttachmentFiles([])
     setDeletedAttachments([])
     setEditingEventId(event.id)
+    setShowTitleIconPicker(false)
     setShowEventModal(true)
   }
 
@@ -747,6 +799,14 @@ export default function CalendarPage() {
         alert('通知權限啟用失敗，請確認瀏覽器設定')
       }
     }
+  }
+
+  function chooseTitleIcon(icon: string) {
+    setEventForm((form) => ({
+      ...form,
+      title: `${icon}${titleWithoutKnownIcon(form.title).trim() ? ` ${titleWithoutKnownIcon(form.title).trim()}` : ''}`
+    }))
+    setShowTitleIconPicker(false)
   }
 
   async function saveCalendar() {
@@ -1722,13 +1782,30 @@ export default function CalendarPage() {
               <button className="close-btn" onClick={() => setShowEventModal(false)}>×</button>
             </div>
             <div className="event-editor-body">
-              <input
-                className="event-title-input"
-                value={eventForm.title}
-                onChange={(event) => setEventForm((form) => ({ ...form, title: event.target.value }))}
-                placeholder="新增標題"
-                autoFocus
-              />
+              <div className="event-title-row">
+                <div className="title-icon-picker">
+                  <button type="button" onClick={() => setShowTitleIconPicker((open) => !open)} aria-label="選擇標題圖示">
+                    {currentTitleIcon || '＋'}
+                  </button>
+                  {showTitleIconPicker && (
+                    <div className="title-icon-menu">
+                      {TITLE_ICON_OPTIONS.map((item) => (
+                        <button type="button" key={item.label} onClick={() => chooseTitleIcon(item.icon)}>
+                          <span>{item.icon}</span>
+                          <small>{item.label}</small>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <input
+                  className="event-title-input"
+                  value={eventForm.title}
+                  onChange={(event) => setEventForm((form) => ({ ...form, title: event.target.value }))}
+                  placeholder="新增標題"
+                  autoFocus
+                />
+              </div>
 
               <div className="event-time-editor">
                 <div className="time-row">
