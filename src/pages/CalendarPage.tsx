@@ -315,6 +315,29 @@ export default function CalendarPage() {
     }
   }, [dragActionMenu])
 
+  useEffect(() => {
+    if (!dayListDate) return
+
+    function closeDayList(event: MouseEvent | TouchEvent) {
+      const target = event.target
+      if (target instanceof Element && target.closest('.tt-day-list-panel, .more-pill')) return
+      setDayListDate(null)
+    }
+
+    function closeDayListWithEscape(event: KeyboardEvent) {
+      if (event.key === 'Escape') setDayListDate(null)
+    }
+
+    document.addEventListener('mousedown', closeDayList)
+    document.addEventListener('touchstart', closeDayList)
+    document.addEventListener('keydown', closeDayListWithEscape)
+    return () => {
+      document.removeEventListener('mousedown', closeDayList)
+      document.removeEventListener('touchstart', closeDayList)
+      document.removeEventListener('keydown', closeDayListWithEscape)
+    }
+  }, [dayListDate])
+
   const monthDays = useMemo(() => {
     const start = month.startOf('month').startOf('week')
     return Array.from({ length: 42 }, (_, index) => start.add(index, 'day'))
