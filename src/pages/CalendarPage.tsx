@@ -1429,19 +1429,19 @@ export default function CalendarPage() {
           </div>
 
           <div className="event-detail-row">
-            <span>⏰</span>
+            <EventRowIcon name="bell" />
             <div>{reminderLabel}</div>
           </div>
           <div className="event-detail-row">
-            <span>↻</span>
+            <EventRowIcon name="repeat" />
             <div>{repeatLabel}</div>
           </div>
           <div className="event-detail-row">
-            <span>▣</span>
+            <EventRowIcon name="calendar" />
             <div>{calendar?.name || '未分類行事曆'}</div>
           </div>
           <div className="event-detail-row">
-            <span>⌖</span>
+            <EventRowIcon name="location" />
             {locationText ? (
               <a href={googleMapsDirectionUrl(locationText)} target="_blank" rel="noreferrer">{locationText}</a>
             ) : (
@@ -1463,7 +1463,7 @@ export default function CalendarPage() {
 
           {selectedEvent.url && (
             <a className="event-detail-link" href={selectedEvent.url} target="_blank" rel="noreferrer">
-              <span>🔗</span>
+              <EventRowIcon name="link" />
               <div>{selectedEvent.url}</div>
             </a>
           )}
@@ -1492,7 +1492,7 @@ export default function CalendarPage() {
 
           {assignees.length > 0 && (
             <div className="event-detail-row">
-              <span>♙</span>
+              <EventRowIcon name="person" />
               <div>{assignees.join('、')}</div>
             </div>
           )}

@@ -1013,7 +1013,23 @@ textarea {
   font-size: 14px;
 }
 
-.event-detail-row > span {
+.event-detail-row > span,
+.event-detail-link > span {
+  justify-self: center;
+}
+
+.event-detail-row .row-icon,
+.event-detail-link .row-icon {
+  color: #27c874;
+}
+
+.event-detail-row .row-icon svg,
+.event-detail-link .row-icon svg {
+  width: 19px;
+  height: 19px;
+}
+
+.event-detail-row > span:not(.row-icon) {
   color: #27c874;
   font-size: 18px;
   text-align: center;
@@ -1129,7 +1145,6 @@ textarea {
   text-decoration: none;
 }
 
-.event-detail-link > span,
 .event-detail-attachments a > span {
   color: #27c874;
   text-align: center;
