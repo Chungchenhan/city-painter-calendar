@@ -2379,11 +2379,23 @@ p {
 
   .tt-logo,
   .topbar-left > .tt-icon-button,
-  .tt-today,
   .tt-stepper,
   .tt-view-switch,
   .topbar-right .tt-icon-button.add {
     display: none;
+  }
+
+  .tt-today {
+    order: 2;
+    min-width: 48px;
+    height: 32px;
+    min-height: 32px;
+    border-color: #e4e4e4;
+    border-radius: 999px;
+    padding: 0 10px;
+    background: #fff;
+    color: #5f6368;
+    font-size: 13px;
   }
 
   .tt-icon-button,
@@ -2402,13 +2414,14 @@ p {
   }
 
   .month-title-button {
+    order: 1;
     display: inline-flex;
     align-items: center;
     gap: 4px;
     margin: 0;
     color: #202124;
     font-size: 21px;
-    line-height: 38px;
+    line-height: 32px;
     justify-self: start;
   }
 
@@ -2467,7 +2480,7 @@ p {
   .rail-calendars {
     min-width: 0;
     display: grid;
-    grid-template-columns: repeat(6, minmax(0, 1fr));
+    grid-template-columns: repeat(8, minmax(0, 1fr));
     gap: 4px;
     margin-top: 0;
   }
@@ -2484,42 +2497,36 @@ p {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 3px;
-    border-radius: 8px;
-    padding: 0 3px;
-    background: #f1f3f4;
+    border-radius: 999px;
+    padding: 0;
+    background: transparent;
     color: #2f3437;
     opacity: 0.72;
-    font-size: 11px;
+    font-size: 12px;
     box-shadow: none;
   }
 
   .rail-calendar.active {
-    background: color-mix(in srgb, var(--calendar-color) 72%, #ffffff);
     opacity: 1;
     box-shadow: none;
   }
 
   .rail-calendar-initial {
-    width: 19px;
-    height: 19px;
+    width: 31px;
+    height: 31px;
     display: inline-grid;
     place-items: center;
-    border-radius: 5px;
-    background: color-mix(in srgb, var(--calendar-color) 55%, #ffffff);
+    border-radius: 50%;
+    background: var(--calendar-color);
     color: #fff;
-    font-size: 10px;
+    font-size: 13px;
+    font-weight: 800;
     line-height: 1;
     flex: 0 0 auto;
   }
 
   .rail-calendar-label {
-    display: block;
-    min-width: 0;
-    max-width: 34px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    display: none;
   }
 
   .tt-calendar-surface .weekday-grid div {

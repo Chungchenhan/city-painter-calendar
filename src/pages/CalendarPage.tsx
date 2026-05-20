@@ -767,7 +767,7 @@ export default function CalendarPage() {
   ), [events])
   const titleSuggestions = useMemo(() => {
     const query = normalizeSearchText(currentTitleText)
-    if (query.length < 2) return []
+    if (query.length < 1) return []
     return titleSuggestionIndex
       .filter((item) => item.event.id !== editingEventId)
       .filter((item) => item.normalizedTitle.includes(query))
@@ -985,6 +985,7 @@ export default function CalendarPage() {
   function applyTitleSuggestion(event: CalendarEvent) {
     setEventForm((form) => ({
       ...form,
+      title: event.title,
       location: event.location ?? '',
       url: event.url ?? '',
       note: event.note ?? '',
