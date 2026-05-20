@@ -2333,6 +2333,16 @@ export default function CalendarPage() {
           </div>
 
           <div className="event-detail-row">
+            <EventRowIcon name="calendar" />
+            <div>{calendarName}</div>
+          </div>
+          {assignees.length > 0 && (
+            <div className="event-detail-row">
+              <EventRowIcon name="person" />
+              <div>{assignees.join('、')}</div>
+            </div>
+          )}
+          <div className="event-detail-row">
             <EventRowIcon name="bell" />
             <div>{reminderLabel}</div>
           </div>
@@ -2340,10 +2350,12 @@ export default function CalendarPage() {
             <EventRowIcon name="repeat" />
             <div>{eventRepeatLabel}</div>
           </div>
-          <div className="event-detail-row">
-            <EventRowIcon name="calendar" />
-            <div>{calendarName}</div>
-          </div>
+          {selectedEvent.url && (
+            <a className="event-detail-link" href={selectedEvent.url} target="_blank" rel="noreferrer">
+              <EventRowIcon name="link" />
+              <div>{selectedEvent.url}</div>
+            </a>
+          )}
           {locationText && (
             <div className="event-detail-row">
               <EventRowIcon name="location" />
@@ -2361,13 +2373,6 @@ export default function CalendarPage() {
                 <strong>{locationText}</strong>
                 <small>開啟 Google 地圖導航</small>
               </div>
-            </a>
-          )}
-
-          {selectedEvent.url && (
-            <a className="event-detail-link" href={selectedEvent.url} target="_blank" rel="noreferrer">
-              <EventRowIcon name="link" />
-              <div>{selectedEvent.url}</div>
             </a>
           )}
 
@@ -2393,10 +2398,10 @@ export default function CalendarPage() {
             </div>
           )}
 
-          {assignees.length > 0 && (
-            <div className="event-detail-row">
-              <EventRowIcon name="person" />
-              <div>{assignees.join('、')}</div>
+          {selectedEvent.note && !isHrReadonlyEvent(selectedEvent) && (
+            <div className="event-detail-note">
+              <strong>備註</strong>
+              <p>{selectedEvent.note}</p>
             </div>
           )}
           {selectedEvent.todos && selectedEvent.todos.length > 0 && (
@@ -2408,12 +2413,6 @@ export default function CalendarPage() {
                   <span>{todo.text}</span>
                 </label>
               ))}
-            </div>
-          )}
-          {selectedEvent.note && !isHrReadonlyEvent(selectedEvent) && (
-            <div className="event-detail-note">
-              <strong>備註</strong>
-              <p>{selectedEvent.note}</p>
             </div>
           )}
         </div>
