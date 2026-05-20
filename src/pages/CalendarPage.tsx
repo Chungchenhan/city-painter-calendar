@@ -185,6 +185,11 @@ function departmentIdFromCalendarId(calendarId: string) {
   return calendarId.startsWith(DEPARTMENT_CALENDAR_PREFIX) ? calendarId.slice(DEPARTMENT_CALENDAR_PREFIX.length) : ''
 }
 
+function formatChineseDate(date: string) {
+  const value = dayjs(date)
+  return `${value.format('YYYY/M/D')} (${WEEKDAYS[value.day()]})`
+}
+
 function EventRowIcon({ name }: { name: EventEditorIcon }) {
   const paths: Record<EventEditorIcon, ReactNode> = {
     person: (
@@ -1456,6 +1461,7 @@ export default function CalendarPage() {
   function renderEventDetailPanel() {
     if (!selectedEvent) return null
     const calendar = visibleCalendarMap.get(eventDisplayCalendarId(selectedEvent))
+    const calendarName = calendar?.name || eventCalendarName(selectedEvent) || '未分類行事曆'
     const assignees = selectedEvent.assigneeIds.map(employeeName)
     const reminderLabel = REMINDER_OPTIONS.find((option) => option.value === (selectedEvent.reminder ?? 'none'))?.label ?? '無通知'
     const repeatLabel = REPEAT_OPTIONS.find((option) => option.value === (selectedEvent.repeat ?? 'none'))?.label ?? '無重複'
@@ -1473,17 +1479,17 @@ export default function CalendarPage() {
 
         <div className="event-detail-body">
           <div className="event-detail-avatar" style={{ background: eventCalendarColor(selectedEvent) }}>
-            {(calendar?.name || selectedEvent.title).slice(0, 1)}
+            {calendarName}
           </div>
           <h2>{selectedEvent.title}</h2>
           <div className="event-detail-time">
             <div>
-              <span>{dayjs(selectedEvent.date).format('YYYY/M/D (ddd)')}</span>
+              <span>{formatChineseDate(selectedEvent.date)}</span>
               <strong>{selectedEvent.startTime}</strong>
             </div>
             <b>›</b>
             <div>
-              <span>{dayjs(eventEndDate(selectedEvent)).format('YYYY/M/D (ddd)')}</span>
+              <span>{formatChineseDate(eventEndDate(selectedEvent))}</span>
               <strong>{selectedEvent.endTime}</strong>
             </div>
           </div>
@@ -1498,7 +1504,7 @@ export default function CalendarPage() {
           </div>
           <div className="event-detail-row">
             <EventRowIcon name="calendar" />
-            <div>{calendar?.name || '未分類行事曆'}</div>
+            <div>{calendarName}</div>
           </div>
           <div className="event-detail-row">
             <EventRowIcon name="location" />
