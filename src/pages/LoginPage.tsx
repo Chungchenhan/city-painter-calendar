@@ -4,6 +4,15 @@ import { GoogleAuthProvider, getRedirectResult, signInWithPopup, signInWithRedir
 import { auth } from '../lib/firebase'
 import { useAuth } from '../contexts/AuthContext'
 
+function isStandalonePwa() {
+  const navigatorWithStandalone = window.navigator as Navigator & { standalone?: boolean }
+  return window.matchMedia('(display-mode: standalone)').matches || navigatorWithStandalone.standalone === true
+}
+
+function shouldUseRedirectLogin() {
+  return isStandalonePwa() || /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
+}
+
 export default function LoginPage() {
   const { user, loading } = useAuth()
   const [error, setError] = useState('')
@@ -23,14 +32,17 @@ export default function LoginPage() {
     setError('')
     try {
       const provider = new GoogleAuthProvider()
-      const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
-      if (isMobile) {
+      if (shouldUseRedirectLogin()) {
         await signInWithRedirect(auth, provider)
         return
       }
       await signInWithPopup(auth, provider)
     } catch (err) {
       const code = (err as { code?: string }).code
+      if (code === 'auth/popup-blocked' || code === 'auth/cancelled-popup-request') {
+        await signInWithRedirect(auth, new GoogleAuthProvider())
+        return
+      }
       if (code !== 'auth/popup-closed-by-user') setError(`登入失敗：${code || '請稍後再試'}`)
     } finally {
       setSubmitting(false)
