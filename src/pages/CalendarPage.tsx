@@ -29,16 +29,7 @@ const REPEAT_OPTIONS = [
   { value: 'monthly', label: '每月' },
   { value: 'yearly', label: '每年' }
 ] as const
-const TOOL_PANELS = [
-  { id: 'comments', label: '留言', icon: '▤' },
-  { id: 'photos', label: '照片', icon: '▧' },
-  { id: 'members', label: '成員', icon: '♙' },
-  { id: 'notifications', label: '通知', icon: '⌒' },
-  { id: 'settings', label: '設定', icon: '☷' }
-] as const
-
 type ViewMode = 'month' | 'week'
-type ToolPanelId = typeof TOOL_PANELS[number]['id']
 type EventEditorIcon = 'person' | 'department' | 'calendar' | 'bell' | 'repeat' | 'link' | 'location' | 'paperclip' | 'note' | 'check'
 type EventAttachment = NonNullable<CalendarEvent['attachments']>[number]
 type DisplayCalendar = CalendarGroup & { systemKind?: 'department' | 'hrLeave' }
@@ -205,9 +196,9 @@ export default function CalendarPage() {
   const [activeCalendarIds, setActiveCalendarIds] = useState<string[]>([])
   const [showCalendarDrawer, setShowCalendarDrawer] = useState(false)
   const [showSearchPanel, setShowSearchPanel] = useState(false)
+  const [showNotificationsPanel, setShowNotificationsPanel] = useState(false)
   const [dayListDate, setDayListDate] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
-  const [activeToolPanel, setActiveToolPanel] = useState<ToolPanelId | null>(null)
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null)
   const [showCalendarModal, setShowCalendarModal] = useState(false)
   const [showEventModal, setShowEventModal] = useState(false)
@@ -526,7 +517,7 @@ export default function CalendarPage() {
     setSelectedDate(event.date)
     setMonth(dayjs(event.date).startOf('month'))
     setSelectedEventId(event.id)
-    setActiveToolPanel(null)
+    setShowNotificationsPanel(false)
     setShowSearchPanel(false)
   }
 
@@ -1094,68 +1085,18 @@ export default function CalendarPage() {
     )
   }
 
-  function renderToolPanel() {
-    if (!activeToolPanel) return null
-    const panel = TOOL_PANELS.find((item) => item.id === activeToolPanel)
+  function renderNotificationsPanel() {
+    if (!showNotificationsPanel) return null
     return (
-      <aside className="tt-floating-panel tt-tool-panel">
+      <aside className="tt-floating-panel tt-notifications-panel">
         <div className="panel-head">
-          <h2>{panel?.label}</h2>
-          <button onClick={() => setActiveToolPanel(null)} aria-label="關閉面板">×</button>
+          <h2>通知</h2>
+          <button onClick={() => setShowNotificationsPanel(false)} aria-label="關閉通知">×</button>
         </div>
-
-        {activeToolPanel === 'comments' && (
-          <div className="panel-list">
-            {visibleEvents.filter((event) => event.date === selectedDate && event.note).length ? visibleEvents.filter((event) => event.date === selectedDate && event.note).map((event) => (
-              <article className="panel-note" key={event.id}>
-                <strong>{event.title}</strong>
-                <p>{event.note}</p>
-              </article>
-            )) : <p className="panel-empty">目前選取日期沒有留言備註</p>}
-          </div>
-        )}
-
-        {activeToolPanel === 'photos' && (
-          <div className="panel-list">
-            <p className="panel-empty">目前工作尚未附加照片。可先在工作備註記錄照片需求。</p>
-            {visibleEvents.filter((event) => event.date === selectedDate).map(renderEventSummary)}
-          </div>
-        )}
-
-        {activeToolPanel === 'members' && (
-          <div className="panel-list">
-            {employees.filter((emp) => emp.status !== 'inactive').map((emp) => (
-              <article className="member-row" key={emp.id}>
-                <span>{emp.name.slice(0, 1)}</span>
-                <div>
-                  <strong>{emp.name}</strong>
-                  <small>{emp.departmentName || departmentName(emp.departmentId || '')}</small>
-                </div>
-              </article>
-            ))}
-          </div>
-        )}
-
-        {activeToolPanel === 'notifications' && (
-          <div className="panel-list">
-            {visibleEvents.slice(0, 8).map(renderEventSummary)}
-            {visibleEvents.length === 0 && <p className="panel-empty">目前沒有符合條件的通知</p>}
-          </div>
-        )}
-
-        {activeToolPanel === 'settings' && (
-          <div className="panel-list">
-            {visibleCalendars.map((calendar) => (
-              <article className="settings-calendar" key={calendar.id}>
-                <span style={{ background: calendar.color }} />
-                <div>
-                  <strong>{calendar.name}</strong>
-                  <small>{calendar.systemKind === 'hrLeave' ? 'HR 請假同步' : '依 HR 部門同步'}</small>
-                </div>
-              </article>
-            ))}
-          </div>
-        )}
+        <div className="panel-list">
+          {visibleEvents.slice(0, 8).map(renderEventSummary)}
+          {visibleEvents.length === 0 && <p className="panel-empty">目前沒有符合條件的通知</p>}
+        </div>
       </aside>
     )
   }
@@ -1182,6 +1123,7 @@ export default function CalendarPage() {
         </div>
         <div className="topbar-right">
           <button className={`tt-icon-button ${showSearchPanel ? 'active' : ''}`} aria-label="搜尋" onClick={() => setShowSearchPanel((open) => !open)}>⌕</button>
+          <button className={`tt-icon-button ${showNotificationsPanel ? 'active' : ''}`} aria-label="通知" onClick={() => setShowNotificationsPanel((open) => !open)}>⌒</button>
           {isAdmin && <button className="tt-icon-button add" onClick={() => openAddEvent(selectedDate)} aria-label="新增工作">＋</button>}
           <button className="tt-avatar" onClick={() => signOut(auth)} title="登出">
             {user?.photoURL ? <img src={user.photoURL} alt={displayName || user.email || '使用者'} referrerPolicy="no-referrer" /> : (displayName || user?.email || 'U').slice(0, 1)}
@@ -1376,18 +1318,6 @@ export default function CalendarPage() {
           )}
         </section>
 
-        <aside className="tt-right-rail">
-          {TOOL_PANELS.map((panel) => (
-            <button
-              key={panel.id}
-              className={activeToolPanel === panel.id ? 'active' : ''}
-              title={panel.label}
-              onClick={() => setActiveToolPanel((current) => current === panel.id ? null : panel.id)}
-            >
-              {panel.icon}
-            </button>
-          ))}
-        </aside>
       </div>
 
       {showSearchPanel && (
@@ -1405,7 +1335,7 @@ export default function CalendarPage() {
         </aside>
       )}
 
-      {renderToolPanel()}
+      {renderNotificationsPanel()}
       {renderDayListPanel()}
       {renderEventDetailPanel()}
 
