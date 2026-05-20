@@ -267,6 +267,7 @@ export default function CalendarPage() {
   const visibleCalendarIds = visibleCalendars.map((calendar) => calendar.id)
   const activeVisibleCalendarIds = activeCalendarIds.filter((id) => visibleCalendarIds.includes(id))
   const selectedCalendarIds = activeVisibleCalendarIds.length > 0 ? activeVisibleCalendarIds : visibleCalendarIds
+  const allCalendarsSelected = selectedCalendarIds.length === visibleCalendarIds.length
   const visibleCalendarMap = useMemo(() => new Map(visibleCalendars.map((calendar) => [calendar.id, calendar])), [visibleCalendars])
   const writableCalendars = visibleCalendars.filter((calendar) => calendar.systemKind !== 'hrLeave')
 
@@ -475,6 +476,10 @@ export default function CalendarPage() {
 
   function toggleCalendar(calendarId: string) {
     setActiveCalendarIds((list) => toggle(list.length ? list.filter((id) => visibleCalendarIds.includes(id)) : visibleCalendarIds, calendarId))
+  }
+
+  function selectAllCalendars() {
+    setActiveCalendarIds([])
   }
 
   function goToday() {
@@ -1133,7 +1138,7 @@ export default function CalendarPage() {
 
       <div className="timetree-body">
         <aside className={`tt-left-rail ${showCalendarDrawer ? 'drawer-open' : ''}`}>
-          <button className={`rail-button ${viewMode === 'month' ? 'active' : ''}`} aria-label="月曆" onClick={() => setViewMode('month')}>✓</button>
+          <button className={`rail-button ${allCalendarsSelected ? 'active' : ''}`} aria-label="全選所有行事曆" title="全選所有行事曆" onClick={selectAllCalendars}>✓</button>
           <div className="rail-calendars">
             {visibleCalendars.slice(0, 8).map((calendar) => {
               const active = selectedCalendarIds.includes(calendar.id)
@@ -1181,7 +1186,7 @@ export default function CalendarPage() {
               </div>
             </div>
             <div className="drawer-actions">
-              <button className="small-btn" onClick={() => setActiveCalendarIds([])}>全選</button>
+              <button className="small-btn" onClick={selectAllCalendars}>全選</button>
             </div>
           </aside>
         )}
