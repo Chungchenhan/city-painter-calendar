@@ -77,6 +77,7 @@ export default defineConfig({
         skipWaiting: true,
         clientsClaim: true,
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+        navigateFallbackDenylist: [/^\/__\/auth\//, /^\/api\//],
         runtimeCaching: [
           {
             urlPattern: /^https:\/\/(firestore|identitytoolkit|securetoken)\.googleapis\.com\/.*/i,
@@ -88,7 +89,7 @@ export default defineConfig({
             }
           },
           {
-            urlPattern: ({ request }) => request.mode === 'navigate',
+            urlPattern: ({ request, url }) => request.mode === 'navigate' && !url.pathname.startsWith('/__/auth/') && !url.pathname.startsWith('/api/'),
             handler: 'NetworkFirst',
             options: {
               cacheName: 'pages',
