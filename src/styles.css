@@ -300,6 +300,7 @@ textarea {
   border-radius: 0;
   padding: 12px 10px;
   background: #fff;
+  cursor: default;
   text-align: left;
 }
 
@@ -351,12 +352,12 @@ textarea {
   padding: 8px;
   background: #fff;
   text-align: left;
-  cursor: grab;
+  cursor: pointer;
   touch-action: none;
 }
 
 .week-event:active {
-  cursor: grabbing;
+  cursor: pointer;
 }
 
 .week-event.done {
@@ -400,6 +401,7 @@ textarea {
   border-radius: 0;
   padding: 3px 3px 4px;
   background: #fff;
+  cursor: default;
 }
 
 .tt-calendar-surface .day-cell:hover {
@@ -468,12 +470,12 @@ textarea {
   font-weight: 800;
   line-height: 17px;
   text-align: left;
-  cursor: grab;
+  cursor: pointer;
   touch-action: none;
 }
 
 .tt-calendar-surface .event-pill:active {
-  cursor: grabbing;
+  cursor: pointer;
 }
 
 .tt-calendar-surface .event-pill span {
