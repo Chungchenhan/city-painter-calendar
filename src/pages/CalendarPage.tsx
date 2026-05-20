@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { CSSProperties, DragEvent, PointerEvent, ReactNode } from 'react'
+import type { CSSProperties, DragEvent, PointerEvent, ReactNode, TouchEvent as ReactTouchEvent } from 'react'
 import dayjs from 'dayjs'
 import { addDoc, arrayUnion, collection, deleteDoc, doc, setDoc, updateDoc } from 'firebase/firestore'
 import { signOut } from 'firebase/auth'
@@ -313,6 +313,8 @@ export default function CalendarPage() {
   const [dragOverDate, setDragOverDate] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const noteTextareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const monthInputRef = useRef<HTMLInputElement | null>(null)
+  const calendarTouchStartRef = useRef<{ x: number; y: number } | null>(null)
   const suppressEventClickRef = useRef(false)
   const pointerDragRef = useRef<{
     eventId: string
@@ -834,6 +836,38 @@ export default function CalendarPage() {
     }
     const nextMonth = month.add(direction, 'month')
     setMonth(nextMonth)
+  }
+
+  function openMonthPicker() {
+    const input = monthInputRef.current
+    if (!input) return
+    const pickerInput = input as HTMLInputElement & { showPicker?: () => void }
+    pickerInput.showPicker?.()
+    input.focus()
+  }
+
+  function changeMonth(value: string) {
+    const nextMonth = dayjs(`${value}-01`)
+    if (!nextMonth.isValid()) return
+    setMonth(nextMonth.startOf('month'))
+    setSelectedDate(nextMonth.startOf('month').format('YYYY-MM-DD'))
+  }
+
+  function handleCalendarTouchStart(event: ReactTouchEvent<HTMLElement>) {
+    const touch = event.touches[0]
+    if (!touch) return
+    calendarTouchStartRef.current = { x: touch.clientX, y: touch.clientY }
+  }
+
+  function handleCalendarTouchEnd(event: ReactTouchEvent<HTMLElement>) {
+    const start = calendarTouchStartRef.current
+    calendarTouchStartRef.current = null
+    const touch = event.changedTouches[0]
+    if (!start || !touch) return
+    const deltaX = touch.clientX - start.x
+    const deltaY = touch.clientY - start.y
+    if (Math.abs(deltaX) < 56 || Math.abs(deltaX) < Math.abs(deltaY) * 1.25) return
+    movePeriod(deltaX < 0 ? 1 : -1)
   }
 
   function openAddEvent(date = selectedDate) {
@@ -1597,7 +1631,17 @@ export default function CalendarPage() {
             <button onClick={() => movePeriod(-1)}>‹</button>
             <button onClick={() => movePeriod(1)}>›</button>
           </div>
-          <h1>{currentTitle}</h1>
+          <button className="month-title-button" type="button" onClick={openMonthPicker} aria-label="切換月份">
+            {currentTitle}
+          </button>
+          <input
+            className="month-picker-input"
+            ref={monthInputRef}
+            type="month"
+            value={month.format('YYYY-MM')}
+            onChange={(event) => changeMonth(event.target.value)}
+            aria-label="選擇月份"
+          />
         </div>
         <div className="tt-view-switch">
           <button className={viewMode === 'month' ? 'active' : ''} onClick={() => setViewMode('month')}>月</button>
@@ -1701,7 +1745,7 @@ export default function CalendarPage() {
           </aside>
         )}
 
-        <section className="tt-calendar-surface">
+        <section className="tt-calendar-surface" onTouchStart={handleCalendarTouchStart} onTouchEnd={handleCalendarTouchEnd}>
           {loading ? (
             <div className="calendar-skeleton" />
           ) : (
@@ -1878,20 +1922,6 @@ export default function CalendarPage() {
           <button onClick={() => applyDragEventAction('copy')} disabled={saving}>複製</button>
         </div>
       )}
-
-      <nav className="mobile-bottom-nav" aria-label="手機底部導覽">
-        <button className={showCalendarDrawer ? 'active' : ''} onClick={() => setShowCalendarDrawer((open) => !open)} aria-label="行事曆">▦</button>
-        <button className={showSearchPanel ? 'active' : ''} onClick={() => {
-          setShowSearchPanel((open) => !open)
-          setShowNotificationsPanel(false)
-        }} aria-label="搜尋">⌕</button>
-        <button className={showNotificationsPanel ? 'active' : ''} onClick={() => {
-          setShowNotificationsPanel((open) => !open)
-          setShowSearchPanel(false)
-        }} aria-label="通知">♢</button>
-        <button onClick={selectAllCalendars} aria-label="全選行事曆">✓</button>
-      </nav>
-      {isAdmin && <button className="mobile-fab" onClick={() => openAddEvent(selectedDate)} aria-label="新增工作">＋</button>}
 
       {showCalendarModal && (
         <div className="modal-overlay">
