@@ -95,6 +95,11 @@ function selectedTitleIcon(title: string) {
   return TITLE_ICON_OPTIONS.find((item) => trimmedTitle.startsWith(item.icon))?.icon ?? ''
 }
 
+function composeTitleWithIcon(icon: string, title: string) {
+  const cleanTitle = titleWithoutKnownIcon(title).trim()
+  return `${icon}${cleanTitle ? ` ${cleanTitle}` : ''}`
+}
+
 function googleMapsDirectionUrl(location: string) {
   return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(location)}`
 }
@@ -842,7 +847,7 @@ export default function CalendarPage() {
   function chooseTitleIcon(icon: string) {
     setEventForm((form) => ({
       ...form,
-      title: `${icon}${titleWithoutKnownIcon(form.title).trim() ? ` ${titleWithoutKnownIcon(form.title).trim()}` : ''}`
+      title: composeTitleWithIcon(icon, form.title)
     }))
     setShowTitleIconPicker(false)
   }
@@ -922,10 +927,11 @@ export default function CalendarPage() {
       const selectedCalendarIds = eventForm.calendarIds
       const primaryCalendarId = selectedCalendarIds[0] ?? ''
       const selectedDepartmentId = primaryDepartmentIdFromCalendarIds(selectedCalendarIds, eventForm.departmentId)
+      const eventTitle = currentTitleIcon ? composeTitleWithIcon(currentTitleIcon, eventForm.title) : eventForm.title.trim()
       const payload = {
         calendarId: primaryCalendarId,
         calendarIds: selectedCalendarIds,
-        title: eventForm.title.trim(),
+        title: eventTitle,
         date: eventForm.date,
         startTime: eventForm.startTime,
         endTime: eventForm.endTime,
@@ -1857,8 +1863,11 @@ export default function CalendarPage() {
                 </div>
                 <input
                   className="event-title-input"
-                  value={eventForm.title}
-                  onChange={(event) => setEventForm((form) => ({ ...form, title: event.target.value }))}
+                  value={titleWithoutKnownIcon(eventForm.title)}
+                  onChange={(event) => setEventForm((form) => ({
+                    ...form,
+                    title: currentTitleIcon ? composeTitleWithIcon(currentTitleIcon, event.target.value) : event.target.value
+                  }))}
                   placeholder="新增標題"
                   autoFocus
                 />
