@@ -10,7 +10,7 @@ function isStandalonePwa() {
 }
 
 function shouldUseRedirectLogin() {
-  return isStandalonePwa() || /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
+  return isStandalonePwa()
 }
 
 export default function LoginPage() {
