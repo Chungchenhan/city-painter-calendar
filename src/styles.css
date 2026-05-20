@@ -2,6 +2,13 @@
   box-sizing: border-box;
 }
 
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+}
+
 body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", sans-serif;
@@ -36,11 +43,14 @@ textarea {
 }
 
 .app-shell {
-  min-height: 100dvh;
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .timetree-page {
-  min-height: 100dvh;
+  height: 100dvh;
+  min-height: 0;
   display: grid;
   grid-template-rows: 58px minmax(0, 1fr);
   overflow: hidden;
@@ -125,6 +135,7 @@ textarea {
 }
 
 .tt-icon-button {
+  position: relative;
   display: inline-grid;
   place-items: center;
   width: 40px;
@@ -149,6 +160,23 @@ textarea {
 
 .tt-icon-button.add {
   font-size: 24px;
+}
+
+.notification-dot {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  min-width: 18px;
+  height: 18px;
+  display: inline-grid;
+  place-items: center;
+  border: 2px solid #fff;
+  border-radius: 999px;
+  padding: 0 4px;
+  background: #ef6262;
+  color: #fff;
+  font-size: 10px;
+  line-height: 1;
 }
 
 .tt-today {
@@ -230,7 +258,7 @@ textarea {
   top: calc(100% + 8px);
   right: 0;
   z-index: 60;
-  min-width: 132px;
+  min-width: 176px;
   overflow: hidden;
   border: 1px solid #e6e6e6;
   border-radius: 8px;
@@ -314,7 +342,9 @@ textarea {
 .tt-calendar-surface {
   min-width: 0;
   min-height: 0;
-  overflow: auto;
+  display: grid;
+  grid-template-rows: 60px minmax(0, 1fr);
+  overflow: hidden;
 }
 
 .tt-calendar-surface .weekday-grid {
@@ -335,18 +365,20 @@ textarea {
 }
 
 .tt-calendar-surface .month-grid {
-  min-height: calc(100dvh - 118px);
-  grid-auto-rows: minmax(108px, 1fr);
+  height: 100%;
+  min-height: 0;
+  grid-auto-rows: minmax(0, 1fr);
 }
 
 .week-grid {
-  min-height: calc(100dvh - 118px);
+  height: 100%;
+  min-height: 0;
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
 }
 
 .week-day {
-  min-height: 540px;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -448,7 +480,7 @@ textarea {
 }
 
 .tt-calendar-surface .day-cell {
-  min-height: 108px;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   align-items: stretch;
@@ -520,14 +552,20 @@ textarea {
   border: 0;
   border-radius: 3px;
   padding: 0 4px;
-  background: var(--event-color);
-  color: #fff;
+  background: transparent;
+  color: var(--event-color);
   font-size: 11px;
   font-weight: 800;
   line-height: 17px;
   text-align: left;
   cursor: pointer;
   touch-action: none;
+}
+
+.tt-calendar-surface .event-pill.all-day {
+  grid-template-columns: minmax(0, 1fr);
+  background: var(--event-color);
+  color: #fff;
 }
 
 .tt-calendar-surface .event-pill:active {
@@ -691,15 +729,37 @@ textarea {
 }
 
 .search-department-filter {
-  display: grid;
-  gap: 8px;
+  min-width: 0;
 }
 
-.search-department-filter > div:first-child {
+.search-department-filter summary {
+  min-height: 38px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  border: 1px solid #ececec;
+  border-radius: 10px;
+  padding: 0 12px;
+  background: #fafafa;
+  cursor: pointer;
+  list-style: none;
+}
+
+.search-department-filter summary::-webkit-details-marker {
+  display: none;
+}
+
+.search-department-filter summary::after {
+  content: "›";
+  flex: 0 0 auto;
+  color: #999;
+  font-size: 22px;
+  line-height: 1;
+}
+
+.search-department-filter[open] summary::after {
+  transform: rotate(90deg);
 }
 
 .search-department-filter span {
@@ -708,20 +768,31 @@ textarea {
   font-weight: 800;
 }
 
-.search-department-filter > div:last-child {
+.search-department-filter b {
+  min-width: 0;
+  margin-left: auto;
+  overflow: hidden;
+  color: #2fca7a;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-department-menu {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 5px;
+  padding: 8px 2px 2px;
 }
 
 .search-department-filter button {
-  min-height: 32px;
+  min-height: 28px;
   border: 1px solid #e7e7e7;
   border-radius: 999px;
-  padding: 0 11px;
+  padding: 0 9px;
   background: #fff;
   color: #555;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 800;
 }
 
@@ -770,6 +841,274 @@ textarea {
 .panel-list {
   display: grid;
   gap: 8px;
+}
+
+.notification-enable-card {
+  display: grid;
+  gap: 8px;
+  border: 1px solid #d9f4e7;
+  border-radius: 10px;
+  margin-bottom: 10px;
+  padding: 12px;
+  background: #f2fff8;
+}
+
+.notification-enable-card strong {
+  color: #202124;
+  font-size: 14px;
+}
+
+.notification-enable-card small {
+  color: #666;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.notification-enable-card button {
+  min-height: 40px;
+  border: 0;
+  border-radius: 8px;
+  background: #2fca7a;
+  color: #fff;
+  font-weight: 800;
+}
+
+.notification-startup-modal {
+  width: min(430px, 100%);
+  border-radius: 8px;
+}
+
+.notification-prompt-body {
+  display: grid;
+  gap: 10px;
+}
+
+.notification-prompt-body strong {
+  color: #202124;
+  font-size: 18px;
+}
+
+.notification-prompt-body p {
+  margin: 0;
+  color: #666;
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+.notification-settings-modal {
+  width: min(480px, 100%);
+  border-radius: 8px;
+}
+
+.notification-settings-body {
+  display: grid;
+  gap: 12px;
+}
+
+.notification-status-card {
+  display: grid;
+  gap: 6px;
+  border: 1px solid #d9f4e7;
+  border-radius: 10px;
+  padding: 12px;
+  background: #f6fff9;
+}
+
+.notification-status-card strong {
+  color: #202124;
+  font-size: 15px;
+}
+
+.notification-status-card span,
+.notification-status-card small {
+  color: #666;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.notification-permission-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 10px;
+  align-items: center;
+  border: 1px solid #ececec;
+  border-radius: 10px;
+  padding: 12px;
+  background: #fff;
+}
+
+.notification-permission-card span {
+  color: #666;
+  font-size: 13px;
+}
+
+.notification-permission-card strong {
+  color: #202124;
+  font-size: 14px;
+}
+
+.notification-permission-card small {
+  grid-column: 1 / -1;
+  color: #777;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.notification-permission-card.granted {
+  border-color: #d9f4e7;
+  background: #f6fff9;
+}
+
+.notification-permission-card.granted strong {
+  color: #20a464;
+}
+
+.notification-permission-card.denied {
+  border-color: #ffd9d9;
+  background: #fff7f7;
+}
+
+.notification-permission-card.denied strong {
+  color: #d64545;
+}
+
+.notification-permission-card.default strong,
+.notification-permission-card.unsupported strong {
+  color: #b77900;
+}
+
+.notification-settings-section {
+  display: grid;
+  gap: 10px;
+  border: 1px solid #ececec;
+  border-radius: 10px;
+  padding: 12px;
+  background: #fff;
+}
+
+.notification-section-head {
+  display: grid;
+  gap: 4px;
+  padding-bottom: 2px;
+}
+
+.notification-section-head strong {
+  color: #202124;
+  font-size: 15px;
+}
+
+.notification-section-head small {
+  color: #777;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.notification-setting-row,
+.notification-lead-row {
+  display: grid;
+  align-items: center;
+  gap: 12px;
+  border-radius: 10px;
+  background: #fafafa;
+}
+
+.notification-setting-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 10px 12px;
+}
+
+.notification-setting-row.compact {
+  min-height: 58px;
+}
+
+.notification-setting-row span {
+  display: grid;
+  gap: 4px;
+}
+
+.notification-setting-row strong {
+  color: #202124;
+  font-size: 14px;
+}
+
+.notification-setting-row small {
+  color: #777;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.notification-setting-row input[type="checkbox"] {
+  width: 20px;
+  min-height: 20px;
+  accent-color: #2fca7a;
+}
+
+.notification-lead-row {
+  grid-template-columns: minmax(0, 1fr) 82px auto;
+  padding: 10px 12px;
+  color: #555;
+  font-size: 14px;
+}
+
+.notification-lead-row input {
+  min-height: 40px;
+  border: 0;
+  border-radius: 8px;
+  background: #fafafa;
+  color: #202124;
+  text-align: center;
+  font-weight: 700;
+}
+
+.title-icon-settings-modal {
+  width: min(520px, 100%);
+  border-radius: 8px;
+}
+
+.title-icon-settings-body {
+  display: grid;
+  gap: 10px;
+}
+
+.title-icon-setting-row {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr) 40px;
+  align-items: center;
+  gap: 10px;
+}
+
+.title-icon-setting-row input {
+  min-height: 44px;
+  min-width: 0;
+  border: 0;
+  border-radius: 8px;
+  background: #fafafa;
+  color: #202124;
+  font-weight: 700;
+}
+
+.title-icon-symbol-input {
+  padding: 0;
+  text-align: center;
+  font-size: 22px;
+}
+
+.title-icon-setting-row button,
+.title-icon-add-row {
+  min-height: 40px;
+  border: 0;
+  border-radius: 8px;
+  background: #f6f7f8;
+  color: #555;
+  font-weight: 800;
+}
+
+.title-icon-setting-row button {
+  font-size: 20px;
+}
+
+.title-icon-add-row {
+  color: #2fca7a;
 }
 
 .drawer-calendar-item {
@@ -881,26 +1220,17 @@ textarea {
   padding: 12px;
 }
 
+.activity-log.unread {
+  border-color: #f7d98b;
+  background: #fff8df;
+}
+
 .activity-log > span {
   width: 10px;
   height: 10px;
   margin-top: 5px;
   border-radius: 50%;
   background: #3c82f6;
-}
-
-.activity-log.create > span,
-.activity-log.copy > span {
-  background: #2fca7a;
-}
-
-.activity-log.update > span,
-.activity-log.move > span {
-  background: #f6b100;
-}
-
-.activity-log.delete > span {
-  background: #ef6262;
 }
 
 .activity-log strong {
@@ -1025,7 +1355,7 @@ textarea {
 }
 
 .event-detail-body h2 {
-  color: #27c874;
+  color: var(--event-color, #27c874);
   font-size: 22px;
   line-height: 1.35;
   text-align: center;
@@ -1055,7 +1385,7 @@ textarea {
 }
 
 .event-detail-time b {
-  color: #27c874;
+  color: var(--event-color, #27c874);
   font-size: 48px;
   font-weight: 400;
 }
@@ -1078,17 +1408,22 @@ textarea {
 
 .event-detail-row .row-icon,
 .event-detail-link .row-icon {
-  color: #27c874;
+  color: var(--event-color, #27c874);
 }
 
 .event-detail-row .row-icon svg,
 .event-detail-link .row-icon svg {
   width: 19px;
   height: 19px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .event-detail-row > span:not(.row-icon) {
-  color: #27c874;
+  color: var(--event-color, #27c874);
   font-size: 18px;
   text-align: center;
 }
@@ -1204,7 +1539,7 @@ textarea {
 }
 
 .event-detail-attachments a > span {
-  color: #27c874;
+  color: var(--event-color, #27c874);
   text-align: center;
 }
 
@@ -1987,8 +2322,18 @@ p {
   text-align: left;
 }
 
+.event-static-row.selected {
+  color: #222;
+}
+
 .event-static-row:focus {
   outline: none;
+}
+
+.event-repeat-button {
+  justify-content: flex-start;
+  border: 0;
+  cursor: pointer;
 }
 
 .event-editor-row textarea {
@@ -2082,6 +2427,147 @@ p {
   border: 0;
   border-radius: 8px;
   background: #fafafa;
+}
+
+.repeat-overlay {
+  z-index: 90;
+}
+
+.repeat-modal {
+  width: min(360px, calc(100vw - 28px));
+  border-radius: 6px;
+}
+
+.repeat-option-list {
+  display: grid;
+  background: #fff;
+}
+
+.repeat-option-list button {
+  min-height: 50px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 24px;
+  align-items: center;
+  gap: 12px;
+  border: 0;
+  border-bottom: 1px solid #f0f0f0;
+  padding: 0 20px;
+  background: #fff;
+  color: #222;
+  font-size: 15px;
+  text-align: left;
+}
+
+.repeat-option-list button:first-child {
+  background: #f3f3f3;
+  font-weight: 800;
+}
+
+.repeat-option-list button:last-child {
+  border-bottom: 0;
+}
+
+.repeat-option-list button i {
+  width: 13px;
+  height: 13px;
+  border: 1.5px solid #aaa;
+  border-radius: 50%;
+}
+
+.repeat-option-list button.selected i {
+  border: 3px solid #2fca7a;
+}
+
+.repeat-custom-modal {
+  width: min(440px, calc(100vw - 28px));
+  border-radius: 10px;
+}
+
+.repeat-custom-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 34px 40px 22px;
+}
+
+.repeat-custom-header .row-icon {
+  width: 22px;
+  height: 22px;
+  display: inline-grid;
+  place-items: center;
+  color: #2fca7a;
+}
+
+.repeat-custom-header .row-icon svg {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.9;
+}
+
+.repeat-custom-header strong {
+  font-size: 20px;
+}
+
+.repeat-custom-body {
+  display: grid;
+  gap: 28px;
+  padding: 20px 40px 28px;
+}
+
+.repeat-interval-row {
+  display: grid;
+  grid-template-columns: auto 68px 94px;
+  align-items: center;
+  gap: 8px;
+}
+
+.repeat-interval-row input,
+.repeat-interval-row select,
+.repeat-end-group input[type="date"],
+.repeat-end-group input[type="number"] {
+  min-height: 42px;
+  border: 0;
+  border-radius: 8px;
+  background: #fafafa;
+  color: #222;
+  text-align: center;
+}
+
+.repeat-end-group {
+  display: grid;
+  gap: 14px;
+}
+
+.repeat-end-group > strong {
+  margin-bottom: 4px;
+  color: #333;
+  font-size: 15px;
+}
+
+.repeat-end-group label {
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: 22px 62px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: #222;
+  font-size: 15px;
+}
+
+.repeat-end-group input[type="radio"] {
+  width: 16px;
+  min-height: 16px;
+  accent-color: #2fca7a;
+}
+
+.repeat-end-group input:disabled {
+  color: #bbb;
+  opacity: 0.7;
 }
 
 .todo-editor-item button,
@@ -2614,9 +3100,27 @@ p {
     padding: 12px;
   }
 
-  .week-event {
+.week-event {
     min-height: 54px;
-  }
+}
+
+.week-event.timed {
+  border-left-width: 0;
+  color: var(--event-color);
+}
+
+.week-event.timed b,
+.week-event.timed span {
+  color: var(--event-color);
+}
+
+.week-event.timed i {
+  display: none;
+}
+
+.week-event.all-day {
+  background: color-mix(in srgb, var(--event-color) 10%, #fff);
+}
 
   .tt-calendar-surface .day-number {
     width: 20px;
@@ -2854,6 +3358,29 @@ p {
 
   .event-assignee-grid {
     grid-template-columns: 1fr;
+  }
+
+  .repeat-modal,
+  .repeat-custom-modal,
+  .notification-startup-modal,
+  .notification-settings-modal,
+  .title-icon-settings-modal {
+    width: 100%;
+    max-height: calc(100dvh - 16px);
+  }
+
+  .repeat-custom-header,
+  .repeat-custom-body {
+    padding-left: 28px;
+    padding-right: 28px;
+  }
+
+  .repeat-interval-row {
+    grid-template-columns: auto 68px minmax(74px, 1fr);
+  }
+
+  .notification-lead-row {
+    grid-template-columns: minmax(0, 1fr) 72px auto;
   }
 
   .mobile-action-bar {

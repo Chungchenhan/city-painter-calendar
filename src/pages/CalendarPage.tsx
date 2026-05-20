@@ -1,19 +1,28 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, DragEvent, PointerEvent, ReactNode, TouchEvent as ReactTouchEvent } from 'react'
 import dayjs from 'dayjs'
-import { addDoc, arrayUnion, collection, deleteDoc, doc, setDoc, updateDoc } from 'firebase/firestore'
+import { addDoc, arrayUnion, collection, deleteDoc, doc, getDoc, getDocs, query, setDoc, updateDoc, where } from 'firebase/firestore'
 import { signOut } from 'firebase/auth'
 import { useQueryClient } from '@tanstack/react-query'
 import { auth, db } from '../lib/firebase'
+import { readLocalQueryCache, updateLocalQueryCache } from '../lib/localQueryCache'
 import { useAuth } from '../contexts/AuthContext'
 import { useCalendarActivityLogs, useCalendarEvents, useCalendarGroups } from '../hooks/useCalendarData'
-import { useDepartments, useEmployees } from '../hooks/useHrData'
-import type { CalendarActivityLog, CalendarEvent, CalendarGroup } from '../types'
+import { useDepartments, useEmployees, useShifts } from '../hooks/useHrData'
+import type { CalendarActivityLog, CalendarEvent, CalendarGroup, PunchLog, UserNotificationSettings } from '../types'
 
 const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六']
 const COLORS = ['#f6b100', '#1fb6a6', '#3c82f6', '#ef6262', '#8d6df2', '#31a24c', '#f57c35', '#667085']
 const DEPARTMENT_CALENDAR_PREFIX = 'department:'
 const HR_LEAVE_CALENDAR_NAME = 'HR 請假'
+const ACTIVITY_NOTIFICATION_SEEN_KEY = 'cityPainterCalendarActivitySeenAt'
+const DEFAULT_USER_NOTIFICATION_SETTINGS: UserNotificationSettings = {
+  shiftStartEnabled: true,
+  shiftEndEnabled: false,
+  punchInEnabled: false,
+  punchOutEnabled: false,
+  punchLeadMinutes: 0
+}
 const REMINDER_OPTIONS = [
   { value: 'none', label: '無通知' },
   { value: 'start', label: '活動開始時' },
@@ -22,14 +31,12 @@ const REMINDER_OPTIONS = [
   { value: '1h', label: '1 小時前' },
   { value: '1d', label: '1 天前' }
 ] as const
-const REPEAT_OPTIONS = [
-  { value: 'none', label: '無重複' },
-  { value: 'daily', label: '每天' },
-  { value: 'weekly', label: '每週' },
-  { value: 'monthly', label: '每月' },
-  { value: 'yearly', label: '每年' }
-] as const
-const TITLE_ICON_OPTIONS = [
+type TitleIconOption = {
+  icon: string
+  label: string
+}
+
+const DEFAULT_TITLE_ICON_OPTIONS: TitleIconOption[] = [
   { icon: '👷', label: '施工' },
   { icon: '📐', label: '丈量' },
   { icon: '📦', label: '送貨' },
@@ -42,11 +49,32 @@ const TITLE_ICON_OPTIONS = [
   { icon: '❌', label: '不在' },
   { icon: '🎨', label: '設計' },
   { icon: '🚀', label: '外包' }
-] as const
+]
 type ViewMode = 'month' | 'week'
 type EventEditorIcon = 'person' | 'department' | 'calendar' | 'bell' | 'repeat' | 'link' | 'location' | 'paperclip' | 'note' | 'check'
+type RecurrenceEditScope = 'single' | 'future' | 'all'
 type EventAttachment = NonNullable<CalendarEvent['attachments']>[number]
 type DisplayCalendar = CalendarGroup & { systemKind?: 'department' | 'hrLeave' }
+type EventForm = {
+  calendarId: string
+  calendarIds: string[]
+  title: string
+  date: string
+  endDate: string
+  startTime: string
+  endTime: string
+  allDay: boolean
+  departmentId: string
+  assigneeIds: string[]
+  note: string
+  reminder: CalendarEvent['reminder']
+  repeat: CalendarEvent['repeat']
+  repeatCustom: NonNullable<CalendarEvent['repeatCustom']>
+  todos: NonNullable<CalendarEvent['todos']>
+  location: string
+  url: string
+  attachments: NonNullable<CalendarEvent['attachments']>
+}
 type DragActionMenu = {
   eventId: string
   targetDate: string
@@ -62,7 +90,7 @@ const emptyCalendar = {
   isCompanyWide: false
 }
 
-const emptyEvent = {
+const emptyEvent: EventForm = {
   calendarId: '',
   calendarIds: [] as string[],
   title: '',
@@ -70,11 +98,19 @@ const emptyEvent = {
   endDate: dayjs().format('YYYY-MM-DD'),
   startTime: '09:00',
   endTime: '10:00',
+  allDay: false,
   departmentId: '',
   assigneeIds: [] as string[],
   note: '',
   reminder: 'none' as CalendarEvent['reminder'],
   repeat: 'none' as CalendarEvent['repeat'],
+  repeatCustom: {
+    interval: 1,
+    frequency: 'day' as const,
+    ends: 'never' as const,
+    until: dayjs().add(1, 'month').format('YYYY-MM-DD'),
+    count: 1
+  },
   todos: [] as NonNullable<CalendarEvent['todos']>,
   location: '',
   url: '',
@@ -85,28 +121,40 @@ function toggle(list: string[], id: string) {
   return list.includes(id) ? list.filter((item) => item !== id) : [...list, id]
 }
 
-function titleWithoutKnownIcon(title: string) {
+function titleWithoutKnownIcon(title: string, options: TitleIconOption[] = DEFAULT_TITLE_ICON_OPTIONS) {
   const trimmedTitle = title.trimStart()
-  const option = TITLE_ICON_OPTIONS.find((item) => trimmedTitle.startsWith(item.icon))
+  const option = options.find((item) => trimmedTitle.startsWith(item.icon))
   return option ? trimmedTitle.slice(option.icon.length).trimStart() : title
 }
 
-function selectedTitleIcon(title: string) {
+function selectedTitleIcon(title: string, options: TitleIconOption[] = DEFAULT_TITLE_ICON_OPTIONS) {
   const trimmedTitle = title.trimStart()
-  return TITLE_ICON_OPTIONS.find((item) => trimmedTitle.startsWith(item.icon))?.icon ?? ''
+  return options.find((item) => trimmedTitle.startsWith(item.icon))?.icon ?? ''
 }
 
-function composeTitleWithIcon(icon: string, title: string) {
-  const cleanTitle = titleWithoutKnownIcon(title).trim()
+function composeTitleWithIcon(icon: string, title: string, options: TitleIconOption[] = DEFAULT_TITLE_ICON_OPTIONS) {
+  const cleanTitle = titleWithoutKnownIcon(title, options).trim()
   return `${icon}${cleanTitle ? ` ${cleanTitle}` : ''}`
 }
 
-function normalizeSearchText(text: string) {
-  return titleWithoutKnownIcon(text).trim().toLowerCase()
+function normalizeSearchText(text: string, options: TitleIconOption[] = DEFAULT_TITLE_ICON_OPTIONS) {
+  return titleWithoutKnownIcon(text, options).trim().toLowerCase()
 }
 
 function eventEndDate(event: Pick<CalendarEvent, 'date' | 'endDate'>) {
   return event.endDate || event.date
+}
+
+function shiftedEventDateRange(event: Pick<CalendarEvent, 'date' | 'endDate'>, nextStartDate: string) {
+  const sourceStart = dayjs(event.date)
+  const sourceEnd = dayjs(eventEndDate(event))
+  const targetStart = dayjs(nextStartDate)
+  if (!sourceStart.isValid() || !sourceEnd.isValid() || !targetStart.isValid()) {
+    return { date: nextStartDate, endDate: nextStartDate }
+  }
+  const durationDays = Math.max(0, sourceEnd.diff(sourceStart, 'day'))
+  const nextEndDate = targetStart.add(durationDays, 'day').format('YYYY-MM-DD')
+  return { date: nextStartDate, endDate: nextEndDate }
 }
 
 function dateRangeBetween(startDate: string, endDate: string) {
@@ -144,8 +192,22 @@ function eventSuggestionMeta(event: CalendarEvent) {
   return parts.join(' · ')
 }
 
+function mapsDestinationQuery(location: string) {
+  const value = location.trim()
+  const compact = value.replace(/\s+/g, '').replace(/１８２/g, '182')
+  if (compact === '高雄市三民區民族一路182號') return '高雄市三民區正興里民族一路182號'
+  return value
+}
+
 function googleMapsDirectionUrl(location: string) {
-  return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(location)}`
+  return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(mapsDestinationQuery(location))}`
+}
+
+function compareDayEvents(a: CalendarEvent, b: CalendarEvent) {
+  if (!!a.allDay !== !!b.allDay) return a.allDay ? -1 : 1
+  const timeCompare = (a.startTime || '').localeCompare(b.startTime || '')
+  if (timeCompare !== 0) return timeCompare
+  return (a.title || '').localeCompare(b.title || '', 'zh-Hant')
 }
 
 function reminderOffsetMinutes(reminder: CalendarEvent['reminder']) {
@@ -154,6 +216,17 @@ function reminderOffsetMinutes(reminder: CalendarEvent['reminder']) {
   if (reminder === '1h') return 60
   if (reminder === '1d') return 1440
   return 0
+}
+
+function clampNotificationLeadMinutes(value: unknown) {
+  const minutes = Number(value)
+  if (!Number.isFinite(minutes)) return 0
+  return Math.max(0, Math.min(240, Math.round(minutes)))
+}
+
+function todayShiftTime(date: string, time: string, fallbackTime: string) {
+  const value = dayjs(`${date} ${time || fallbackTime}`)
+  return value.isValid() ? value : dayjs(`${date} ${fallbackTime}`)
 }
 
 function isImageAttachment(attachment: EventAttachment) {
@@ -167,6 +240,33 @@ function attachmentPreviewUrl(attachment: EventAttachment) {
     return `https://drive.google.com/thumbnail?id=${encodeURIComponent(attachment.path)}&sz=w1000`
   }
   return attachment.url
+}
+
+async function setLocalBadge(count: number) {
+  const nav = navigator as Navigator & {
+    setAppBadge?: (contents?: number) => Promise<void>
+    clearAppBadge?: () => Promise<void>
+  }
+  try {
+    if (count > 0 && nav.setAppBadge) await nav.setAppBadge(count)
+    if (count <= 0 && nav.clearAppBadge) await nav.clearAppBadge()
+  } catch {
+    // Badge API 不支援時忽略，不影響通知功能。
+  }
+}
+
+async function showLocalNotification(title: string, options: NotificationOptions) {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return
+  if ('serviceWorker' in navigator) {
+    try {
+      const registration = await navigator.serviceWorker.ready
+      await registration.showNotification(title, options)
+      return
+    } catch {
+      // Service Worker 尚未就緒時改用一般瀏覽器通知。
+    }
+  }
+  new Notification(title, options)
 }
 
 function isHrReadonlyEvent(event: CalendarEvent) {
@@ -188,6 +288,156 @@ function departmentIdFromCalendarId(calendarId: string) {
 function formatChineseDate(date: string) {
   const value = dayjs(date)
   return `${value.format('YYYY/M/D')} (${WEEKDAYS[value.day()]})`
+}
+
+function formatDateLabel(date: string) {
+  const value = dayjs(date)
+  return value.isValid() ? value.format('YYYY年M月D日') : ''
+}
+
+function monthlyWeekdayLabel(date: string) {
+  const value = dayjs(date)
+  if (!value.isValid()) return '每月第幾個星期'
+  return `每月第${Math.ceil(value.date() / 7)}星期${WEEKDAYS[value.day()]}`
+}
+
+function repeatPresetOptions(date: string) {
+  const value = dayjs(date)
+  const weekday = value.isValid() ? WEEKDAYS[value.day()] : ''
+  const dayOfMonth = value.isValid() ? value.date() : ''
+  return [
+    { value: 'none', label: '無重複' },
+    { value: 'daily', label: '每天' },
+    { value: 'weekly', label: `每週星期${weekday || '-'}` },
+    { value: 'weekdays', label: '每週平日（週一至週五）' },
+    { value: 'monthlyNthWeekday', label: monthlyWeekdayLabel(date) },
+    { value: 'monthlyDay', label: `每月${dayOfMonth || '-'}日` },
+    { value: 'yearly', label: '每年' },
+    { value: 'custom', label: '自訂' }
+  ] as const
+}
+
+function customRepeatLabel(custom: CalendarEvent['repeatCustom']) {
+  if (!custom) return '自訂'
+  const frequencyLabel = { day: '天', week: '週', month: '月', year: '年' }[custom.frequency]
+  const base = `每 ${Math.max(1, custom.interval || 1)} ${frequencyLabel}`
+  if (custom.ends === 'until' && custom.until) return `${base}，直到 ${formatDateLabel(custom.until)}`
+  if (custom.ends === 'count') return `${base}，${Math.max(1, custom.count || 1)} 次`
+  return `${base}，無結束`
+}
+
+function repeatLabel(repeat: CalendarEvent['repeat'], date: string, custom?: CalendarEvent['repeatCustom']) {
+  if (repeat === 'custom') return customRepeatLabel(custom)
+  const normalizedRepeat = repeat === 'monthly' ? 'monthlyDay' : (repeat ?? 'none')
+  return repeatPresetOptions(date).find((option) => option.value === normalizedRepeat)?.label ?? '無重複'
+}
+
+function isRepeatingEvent(event: CalendarEvent) {
+  return Boolean(event.repeat && event.repeat !== 'none')
+}
+
+function recurrenceRootId(event: CalendarEvent) {
+  return event.recurrenceParentId || event.id
+}
+
+function recurrenceSourceDate(event: CalendarEvent) {
+  return event.recurrenceSourceDate || event.date
+}
+
+function isRecurrenceOccurrence(event: CalendarEvent) {
+  return Boolean(event.recurrenceParentId)
+}
+
+function nthWeekdayDate(month: dayjs.Dayjs, sourceDate: dayjs.Dayjs) {
+  const nth = Math.ceil(sourceDate.date() / 7)
+  const weekday = sourceDate.day()
+  let cursor = month.startOf('month')
+  while (cursor.day() !== weekday) cursor = cursor.add(1, 'day')
+  const candidate = cursor.add(nth - 1, 'week')
+  return candidate.month() === month.month() ? candidate : null
+}
+
+function monthlyDayDate(month: dayjs.Dayjs, sourceDate: dayjs.Dayjs) {
+  return month.date(Math.min(sourceDate.date(), month.daysInMonth()))
+}
+
+function addRepeatStep(current: dayjs.Dayjs, event: CalendarEvent) {
+  const repeat = event.repeat === 'monthly' ? 'monthlyDay' : event.repeat
+  if (repeat === 'daily') return current.add(1, 'day')
+  if (repeat === 'weekly') return current.add(1, 'week')
+  if (repeat === 'weekdays') {
+    let next = current.add(1, 'day')
+    while (next.day() === 0 || next.day() === 6) next = next.add(1, 'day')
+    return next
+  }
+  if (repeat === 'monthlyDay') return monthlyDayDate(current.add(1, 'month').startOf('month'), dayjs(event.date))
+  if (repeat === 'monthlyNthWeekday') return nthWeekdayDate(current.add(1, 'month').startOf('month'), dayjs(event.date)) ?? current.add(1, 'month')
+  if (repeat === 'yearly') return current.add(1, 'year')
+  if (repeat === 'custom') {
+    const custom = event.repeatCustom ?? { interval: 1, frequency: 'day' as const, ends: 'never' as const }
+    return current.add(Math.max(1, custom.interval || 1), custom.frequency)
+  }
+  return current.add(100, 'year')
+}
+
+function repeatEndLimit(event: CalendarEvent) {
+  const dates = [event.repeatUntil]
+  if (event.repeat === 'custom' && event.repeatCustom?.ends === 'until') dates.push(event.repeatCustom.until)
+  const valid = dates
+    .filter(Boolean)
+    .map((date) => dayjs(date))
+    .filter((date) => date.isValid())
+    .sort((a, b) => a.valueOf() - b.valueOf())
+  return valid[0] ?? null
+}
+
+function expandRecurringEvents(events: CalendarEvent[], startDate: string, endDate: string) {
+  const rangeStart = dayjs(startDate)
+  const rangeEnd = dayjs(endDate)
+  const expanded: CalendarEvent[] = []
+  events.forEach((event) => {
+    if (!isRepeatingEvent(event)) {
+      if (event.date <= endDate && eventEndDate(event) >= startDate) expanded.push(event)
+      return
+    }
+
+    const sourceStart = dayjs(event.date)
+    const sourceEnd = dayjs(eventEndDate(event))
+    if (!sourceStart.isValid() || !sourceEnd.isValid()) return
+    const durationDays = Math.max(0, sourceEnd.diff(sourceStart, 'day'))
+    const endLimit = repeatEndLimit(event)
+    const exceptions = new Set(event.repeatExceptions ?? [])
+    const countLimit = event.repeat === 'custom' && event.repeatCustom?.ends === 'count'
+      ? Math.max(1, event.repeatCustom.count || 1)
+      : Infinity
+    let cursor = sourceStart
+    let count = 0
+    let guard = 0
+
+    while (guard < 1200 && count < countLimit) {
+      guard += 1
+      if (endLimit && cursor.isAfter(endLimit, 'day')) break
+      if (cursor.isAfter(rangeEnd, 'day')) break
+      const occurrenceDate = cursor.format('YYYY-MM-DD')
+      if (!exceptions.has(occurrenceDate)) {
+        count += 1
+        const occurrenceEnd = cursor.add(durationDays, 'day').format('YYYY-MM-DD')
+        if (occurrenceDate <= endDate && occurrenceEnd >= startDate) {
+          expanded.push({
+            ...event,
+            id: occurrenceDate === event.date ? event.id : `${event.id}__repeat__${occurrenceDate}`,
+            date: occurrenceDate,
+            endDate: occurrenceEnd,
+            recurrenceParentId: occurrenceDate === event.date ? undefined : event.id,
+            recurrenceOriginalDate: event.date,
+            recurrenceSourceDate: occurrenceDate
+          })
+        }
+      }
+      cursor = addRepeatStep(cursor, event)
+    }
+  })
+  return expanded.sort(compareDayEvents)
 }
 
 function EventRowIcon({ name }: { name: EventEditorIcon }) {
@@ -287,30 +537,49 @@ export default function CalendarPage() {
   const queryClient = useQueryClient()
   const { user, role, employeeId, displayName } = useAuth()
   const isAdmin = role === 'admin'
+  const [month, setMonth] = useState(dayjs().startOf('month'))
   const { data: calendars = [], isLoading: calendarsLoading } = useCalendarGroups()
-  const { data: events = [], isLoading: eventsLoading } = useCalendarEvents()
+  const { data: events = [], isLoading: eventsLoading } = useCalendarEvents(month.format('YYYY-MM'))
   const { data: activityLogs = [] } = useCalendarActivityLogs()
   const { data: employees = [] } = useEmployees()
   const { data: departments = [] } = useDepartments()
+  const { data: shifts = [] } = useShifts()
 
-  const [month, setMonth] = useState(dayjs().startOf('month'))
   const [selectedDate, setSelectedDate] = useState(dayjs().format('YYYY-MM-DD'))
   const [viewMode, setViewMode] = useState<ViewMode>('month')
+  const [calendarSelectionMode, setCalendarSelectionMode] = useState<'all' | 'none' | 'custom'>('all')
   const [activeCalendarIds, setActiveCalendarIds] = useState<string[]>([])
   const [showCalendarDrawer, setShowCalendarDrawer] = useState(false)
   const [showSearchPanel, setShowSearchPanel] = useState(false)
   const [showNotificationsPanel, setShowNotificationsPanel] = useState(false)
   const [showAccountMenu, setShowAccountMenu] = useState(false)
+  const [showStartupNotificationPrompt, setShowStartupNotificationPrompt] = useState(false)
+  const [showNotificationSettings, setShowNotificationSettings] = useState(false)
+  const [showTitleIconSettings, setShowTitleIconSettings] = useState(false)
   const [showTitleIconPicker, setShowTitleIconPicker] = useState(false)
   const [showTitleSuggestions, setShowTitleSuggestions] = useState(false)
+  const [showRepeatPicker, setShowRepeatPicker] = useState(false)
+  const [showRepeatCustomModal, setShowRepeatCustomModal] = useState(false)
   const [dayListDate, setDayListDate] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [activeSearchDepartmentIds, setActiveSearchDepartmentIds] = useState<string[]>([])
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>(() => (
+    'Notification' in window ? Notification.permission : 'denied'
+  ))
+  const [notificationSettings, setNotificationSettings] = useState<UserNotificationSettings>(DEFAULT_USER_NOTIFICATION_SETTINGS)
+  const [savingNotificationSettings, setSavingNotificationSettings] = useState(false)
+  const [titleIconOptions, setTitleIconOptions] = useState<TitleIconOption[]>(DEFAULT_TITLE_ICON_OPTIONS)
+  const [titleIconDraft, setTitleIconDraft] = useState<TitleIconOption[]>(DEFAULT_TITLE_ICON_OPTIONS)
+  const [savingTitleIcons, setSavingTitleIcons] = useState(false)
+  const [lastSeenActivityAt, setLastSeenActivityAt] = useState(() => localStorage.getItem(ACTIVITY_NOTIFICATION_SEEN_KEY) || '')
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null)
   const [showCalendarModal, setShowCalendarModal] = useState(false)
   const [showEventModal, setShowEventModal] = useState(false)
   const [editingCalendarId, setEditingCalendarId] = useState<string | null>(null)
   const [editingEventId, setEditingEventId] = useState<string | null>(null)
+  const [recurrenceEditMode, setRecurrenceEditMode] = useState<{ scope: RecurrenceEditScope, source: CalendarEvent } | null>(null)
+  const [recurrenceEditCandidate, setRecurrenceEditCandidate] = useState<CalendarEvent | null>(null)
+  const [recurrenceDeleteCandidate, setRecurrenceDeleteCandidate] = useState<CalendarEvent | null>(null)
   const [calendarForm, setCalendarForm] = useState(emptyCalendar)
   const [eventForm, setEventForm] = useState(emptyEvent)
   const [attachmentFiles, setAttachmentFiles] = useState<File[]>([])
@@ -328,10 +597,15 @@ export default function CalendarPage() {
     startY: number
     moved: boolean
   } | null>(null)
+  const seenActivityLogIdsRef = useRef<Set<string> | null>(null)
 
   const currentEmployee = employees.find((emp) => emp.id === employeeId)
   const currentEmployeeDepartmentName = currentEmployee?.departmentName || departments.find((department) => department.id === currentEmployee?.departmentId)?.name || ''
   const canManageCalendarColors = currentEmployeeDepartmentName === '管理部'
+  const currentShift = shifts.find((shift) => (
+    Boolean(currentEmployee?.shiftId && shift.id === currentEmployee.shiftId) ||
+    Boolean(currentEmployee?.shiftName && shift.name === currentEmployee.shiftName)
+  ))
 
   const departmentCalendarSettingsMap = useMemo(() => (
     new Map(calendars.map((calendar) => [calendar.id, calendar]))
@@ -384,7 +658,11 @@ export default function CalendarPage() {
 
   const visibleCalendarIds = visibleCalendars.map((calendar) => calendar.id)
   const activeVisibleCalendarIds = activeCalendarIds.filter((id) => visibleCalendarIds.includes(id))
-  const selectedCalendarIds = activeCalendarIds.length > 0 ? activeVisibleCalendarIds : visibleCalendarIds
+  const selectedCalendarIds = calendarSelectionMode === 'all'
+    ? visibleCalendarIds
+    : calendarSelectionMode === 'none'
+      ? []
+      : activeVisibleCalendarIds
   const allCalendarsSelected = selectedCalendarIds.length === visibleCalendarIds.length
   const visibleCalendarMap = useMemo(() => new Map(visibleCalendars.map((calendar) => [calendar.id, calendar])), [visibleCalendars])
   const writableCalendars = visibleCalendars.filter((calendar) => calendar.systemKind !== 'hrLeave')
@@ -402,7 +680,7 @@ export default function CalendarPage() {
   const hasCustomSearchDepartmentFilter = activeVisibleSearchDepartmentIds.length > 0
   const allSearchDepartmentsSelected = selectedSearchDepartmentIds.length === searchDepartmentIds.length
 
-  const visibleEvents = useMemo(() => {
+  const visibleSourceEvents = useMemo(() => {
     return events.filter((event) => {
       const eventCalendarIds = eventDisplayCalendarIds(event)
       const eventCalendars = eventCalendarIds.map((id) => visibleCalendarMap.get(id)).filter(Boolean) as DisplayCalendar[]
@@ -415,23 +693,26 @@ export default function CalendarPage() {
     })
   }, [employeeId, events, isAdmin, selectedCalendarIds, visibleCalendarMap, departments, employees, hrLeaveCalendar])
 
+  const visibleEvents = useMemo(() => {
+    const rangeStart = month.subtract(1, 'month').startOf('month').format('YYYY-MM-DD')
+    const rangeEnd = month.add(1, 'month').endOf('month').format('YYYY-MM-DD')
+    return expandRecurringEvents(visibleSourceEvents, rangeStart, rangeEnd)
+  }, [month, visibleSourceEvents])
+
   const searchEvents = useMemo(() => {
     const keyword = searchQuery.trim().toLowerCase()
     return visibleEvents.filter((event) => {
       if (hasCustomSearchDepartmentFilter && event.departmentId && !selectedSearchDepartmentIds.includes(event.departmentId)) return false
       if (hasCustomSearchDepartmentFilter && !event.departmentId) return false
       if (!keyword) return true
-      const eventCalendars = eventDisplayCalendarIds(event).map((id) => visibleCalendarMap.get(id)).filter(Boolean) as DisplayCalendar[]
       const searchable = [
-        event.title,
+        eventDisplayTitle(event),
         event.note ?? '',
-        departmentName(event.departmentId),
-        ...eventCalendars.map((calendar) => calendar.name),
-        ...(event.assigneeIds ?? []).map(employeeName)
+        event.location ?? ''
       ].join(' ').toLowerCase()
       return searchable.includes(keyword)
     })
-  }, [employees, hasCustomSearchDepartmentFilter, searchQuery, selectedSearchDepartmentIds, visibleCalendarMap, visibleEvents, departments, hrLeaveCalendar])
+  }, [employees, hasCustomSearchDepartmentFilter, searchQuery, selectedSearchDepartmentIds, visibleEvents])
 
   const eventsByDate = useMemo(() => {
     const map = new Map<string, CalendarEvent[]>()
@@ -442,30 +723,222 @@ export default function CalendarPage() {
         map.set(date, list)
       })
     })
+    map.forEach((list) => list.sort(compareDayEvents))
     return map
   }, [visibleEvents])
 
+  function canReceiveActivityLog(log: CalendarActivityLog) {
+    const assigneeIds = log.assigneeIds ?? []
+    if (assigneeIds.length) return Boolean(employeeId && assigneeIds.includes(employeeId))
+    if (!log.departmentId) return true
+    return Boolean(
+      currentEmployee?.departmentId === log.departmentId ||
+      currentEmployee?.departmentName === departmentName(log.departmentId)
+    )
+  }
+
   const visibleActivityLogs = useMemo(() => (
-    activityLogs.filter((log) => selectedCalendarIds.includes(log.calendarId))
-  ), [activityLogs, selectedCalendarIds])
+    activityLogs
+      .filter((log) => selectedCalendarIds.includes(log.calendarId))
+      .filter(canReceiveActivityLog)
+  ), [activityLogs, currentEmployee?.departmentId, currentEmployee?.departmentName, employeeId, selectedCalendarIds])
+  const unreadActivityCount = useMemo(() => (
+    visibleActivityLogs.filter((log) => log.createdAt && log.createdAt > lastSeenActivityAt).length
+  ), [lastSeenActivityAt, visibleActivityLogs])
+
+  const hasTodayLeave = useMemo(() => {
+    if (!employeeId) return false
+    const today = dayjs().format('YYYY-MM-DD')
+    return events.some((event) => (
+      isHrReadonlyEvent(event) &&
+      event.assigneeIds?.includes(employeeId) &&
+      dateRangeBetween(event.date, eventEndDate(event)).includes(today)
+    ))
+  }, [employeeId, events])
+
+  const canSendCalendarNotificationAt = useCallback((time: dayjs.Dayjs) => {
+    if (!employeeId || !currentShift || hasTodayLeave) return false
+    const date = time.format('YYYY-MM-DD')
+    const shiftStart = todayShiftTime(date, currentShift.startTime, '09:00')
+    let shiftEnd = todayShiftTime(date, currentShift.endTime, '18:00')
+    if (shiftEnd.isBefore(shiftStart)) shiftEnd = shiftEnd.add(1, 'day')
+    const isDuringShift = (time.isSame(shiftStart) || time.isAfter(shiftStart)) && time.isBefore(shiftEnd)
+    const isAfterShift = time.isSame(shiftEnd) || time.isAfter(shiftEnd)
+    return (notificationSettings.shiftStartEnabled && isDuringShift) || (notificationSettings.shiftEndEnabled && isAfterShift)
+  }, [currentShift, employeeId, hasTodayLeave, notificationSettings.shiftEndEnabled, notificationSettings.shiftStartEnabled])
+
+  useEffect(() => {
+    if (!user?.uid) {
+      setNotificationSettings(DEFAULT_USER_NOTIFICATION_SETTINGS)
+      return
+    }
+    const uid = user.uid
+    let cancelled = false
+    async function loadNotificationSettings() {
+      try {
+        const snap = await getDoc(doc(db, 'calendarNotificationSettings', uid))
+        if (cancelled) return
+        setNotificationSettings({
+          ...DEFAULT_USER_NOTIFICATION_SETTINGS,
+          ...(snap.exists() ? snap.data() : {})
+        } as UserNotificationSettings)
+      } catch {
+        if (!cancelled) setNotificationSettings(DEFAULT_USER_NOTIFICATION_SETTINGS)
+      }
+    }
+    void loadNotificationSettings()
+    return () => {
+      cancelled = true
+    }
+  }, [user?.uid])
+
+  useEffect(() => {
+    if (!user?.uid || !('Notification' in window) || Notification.permission === 'granted') return
+    setShowStartupNotificationPrompt(true)
+  }, [user?.uid])
+
+  useEffect(() => {
+    let cancelled = false
+    async function loadTitleIconOptions() {
+      try {
+        const snap = await getDoc(doc(db, 'calendarSettings', 'titleIcons'))
+        const options = snap.exists() ? (snap.data().options as TitleIconOption[] | undefined) : undefined
+        const cleanOptions = (options ?? DEFAULT_TITLE_ICON_OPTIONS)
+          .map((item) => ({ icon: String(item.icon || '').trim(), label: String(item.label || '').trim() }))
+          .filter((item) => item.icon && item.label)
+        if (cancelled) return
+        const nextOptions = cleanOptions.length ? cleanOptions : DEFAULT_TITLE_ICON_OPTIONS
+        setTitleIconOptions(nextOptions)
+        setTitleIconDraft(nextOptions)
+      } catch {
+        if (!cancelled) {
+          setTitleIconOptions(DEFAULT_TITLE_ICON_OPTIONS)
+          setTitleIconDraft(DEFAULT_TITLE_ICON_OPTIONS)
+        }
+      }
+    }
+    void loadTitleIconOptions()
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   useEffect(() => {
     if (!('Notification' in window) || Notification.permission !== 'granted') return
     const timers = visibleEvents.flatMap((event) => {
       if (!event.reminder || event.reminder === 'none') return []
-      const eventTime = dayjs(`${event.date} ${event.startTime}`)
+      const eventTime = event.allDay ? dayjs(event.date).startOf('day') : dayjs(`${event.date} ${event.startTime}`)
       const notifyTime = eventTime.subtract(reminderOffsetMinutes(event.reminder), 'minute')
       const delay = notifyTime.diff(dayjs())
       if (delay <= 0 || delay > 2147483647) return []
       const timer = window.setTimeout(() => {
-        new Notification(event.title, {
-          body: `${event.date} ${event.startTime}${event.location ? ` · ${event.location}` : ''}`
+        if (!canSendCalendarNotificationAt(dayjs())) return
+        void showLocalNotification(eventDisplayTitle(event), {
+          body: `${formatChineseDate(event.date)} ${event.allDay ? '整天' : event.startTime}${event.location ? ` · ${event.location}` : ''}`,
+          tag: `calendar-reminder-${event.id}-${notifyTime.valueOf()}`,
+          icon: '/pwa-192x192.png',
+          badge: '/pwa-192x192.png',
+          data: { url: '/' }
         })
       }, delay)
       return [timer]
     })
     return () => timers.forEach((timer) => window.clearTimeout(timer))
-  }, [visibleEvents])
+  }, [canSendCalendarNotificationAt, visibleEvents])
+
+  useEffect(() => {
+    if (!employeeId || !currentShift || hasTodayLeave) return
+    if (!('Notification' in window) || notificationPermission !== 'granted') return
+
+    const today = dayjs().format('YYYY-MM-DD')
+    const shiftStart = todayShiftTime(today, currentShift.startTime, '09:00')
+    let shiftEnd = todayShiftTime(today, currentShift.endTime, '18:00')
+    if (shiftEnd.isBefore(shiftStart)) shiftEnd = shiftEnd.add(1, 'day')
+
+    const schedules = [
+      {
+        enabled: notificationSettings.shiftStartEnabled,
+        at: shiftStart,
+        title: '行事曆通知',
+        body: `今日班表 ${currentShift.startTime} - ${currentShift.endTime}`,
+        tag: `calendar-shift-start-${employeeId}-${today}`
+      },
+      {
+        enabled: notificationSettings.shiftEndEnabled,
+        at: shiftEnd,
+        title: '行事曆通知',
+        body: `今日班表 ${currentShift.startTime} - ${currentShift.endTime}`,
+        tag: `calendar-shift-end-${employeeId}-${today}`
+      },
+      {
+        enabled: notificationSettings.punchInEnabled,
+        at: shiftStart.subtract(notificationSettings.punchLeadMinutes, 'minute'),
+        title: '上班打卡提醒',
+        body: `${currentShift.startTime} 上班，記得打卡`,
+        tag: `calendar-punch-in-${employeeId}-${today}`,
+        punchKind: 'in' as const
+      },
+      {
+        enabled: notificationSettings.punchOutEnabled,
+        at: shiftEnd.subtract(notificationSettings.punchLeadMinutes, 'minute'),
+        title: '下班打卡提醒',
+        body: `${currentShift.endTime} 下班，記得打卡`,
+        tag: `calendar-punch-out-${employeeId}-${today}`,
+        punchKind: 'out' as const
+      }
+    ]
+
+    const timers = schedules.flatMap((schedule) => {
+      if (!schedule.enabled) return []
+      const delay = schedule.at.diff(dayjs())
+      if (delay <= 0 || delay > 2147483647) return []
+      const timer = window.setTimeout(async () => {
+        if (schedule.punchKind) {
+          const punched = await hasCompletedPunch(employeeId, today, schedule.punchKind)
+          if (punched) return
+        }
+        void showLocalNotification(schedule.title, {
+          body: schedule.body,
+          tag: schedule.tag,
+          icon: '/pwa-192x192.png',
+          badge: '/pwa-192x192.png',
+          data: { url: '/' }
+        })
+      }, delay)
+      return [timer]
+    })
+    return () => timers.forEach((timer) => window.clearTimeout(timer))
+  }, [currentShift, employeeId, hasTodayLeave, notificationPermission, notificationSettings])
+
+  useEffect(() => {
+    void setLocalBadge(unreadActivityCount)
+  }, [unreadActivityCount])
+
+  useEffect(() => {
+    const currentIds = new Set(visibleActivityLogs.map((log) => log.id))
+    if (!seenActivityLogIdsRef.current) {
+      seenActivityLogIdsRef.current = currentIds
+      return
+    }
+
+    const addedLogs = visibleActivityLogs
+      .filter((log) => !seenActivityLogIdsRef.current?.has(log.id))
+      .filter((log) => log.actorUid !== user?.uid)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    seenActivityLogIdsRef.current = currentIds
+
+    if (notificationPermission !== 'granted') return
+    if (!canSendCalendarNotificationAt(dayjs())) return
+    addedLogs.slice(-3).forEach((log) => {
+      void showLocalNotification('行事曆通知', {
+        body: activityLogText(log),
+        tag: `calendar-activity-${log.id}`,
+        icon: '/pwa-192x192.png',
+        badge: '/pwa-192x192.png',
+        data: { url: '/' }
+      })
+    })
+  }, [canSendCalendarNotificationAt, notificationPermission, user?.uid, visibleActivityLogs])
 
   useEffect(() => {
     const textarea = noteTextareaRef.current
@@ -521,17 +994,42 @@ export default function CalendarPage() {
   }, [dayListDate])
 
   useEffect(() => {
+    if (!selectedEventId) return
+
+    function closeEventDetail(event: MouseEvent | TouchEvent) {
+      const target = event.target
+      if (target instanceof Element && target.closest('.event-detail-panel, .event-pill, .event-line, .week-event')) return
+      setSelectedEventId(null)
+    }
+
+    function closeEventDetailWithEscape(event: KeyboardEvent) {
+      if (event.key === 'Escape') setSelectedEventId(null)
+    }
+
+    document.addEventListener('mousedown', closeEventDetail)
+    document.addEventListener('touchstart', closeEventDetail)
+    document.addEventListener('keydown', closeEventDetailWithEscape)
+    return () => {
+      document.removeEventListener('mousedown', closeEventDetail)
+      document.removeEventListener('touchstart', closeEventDetail)
+      document.removeEventListener('keydown', closeEventDetailWithEscape)
+    }
+  }, [selectedEventId])
+
+  useEffect(() => {
     if (!showSearchPanel && !showNotificationsPanel) return
 
     function closeTopbarPanels(event: MouseEvent | TouchEvent) {
       const target = event.target
       if (target instanceof Element && target.closest('.tt-search-panel, .tt-notifications-panel, .topbar-panel-trigger, .tt-account-menu, .tt-avatar')) return
+      if (showNotificationsPanel) markActivityNotificationsSeen()
       setShowSearchPanel(false)
       setShowNotificationsPanel(false)
     }
 
     function closeTopbarPanelsWithEscape(event: KeyboardEvent) {
       if (event.key !== 'Escape') return
+      if (showNotificationsPanel) markActivityNotificationsSeen()
       setShowSearchPanel(false)
       setShowNotificationsPanel(false)
     }
@@ -635,13 +1133,21 @@ export default function CalendarPage() {
   const currentTitle = viewMode === 'week'
     ? `${weekDays[0].format('M/D')} - ${weekDays[6].format('M/D')}`
     : month.format('YYYY年M月')
-  const selectedCalendarNames = selectedCalendarIds
-    .map((id) => visibleCalendarMap.get(id)?.name)
-    .filter(Boolean)
-    .join('、') || '未選擇行事曆'
-
   function calendarColor(calendarId: string) {
     return visibleCalendarMap.get(calendarId)?.color ?? '#667085'
+  }
+
+  function activityLogColor(log: CalendarActivityLog) {
+    if (log.calendarId) return calendarColor(log.calendarId)
+    if (log.departmentId) return calendarColor(departmentCalendarId(log.departmentId))
+    return '#667085'
+  }
+
+  function removeEventsFromArchiveCache(ids: string[]) {
+    const idSet = new Set(ids)
+    updateLocalQueryCache<CalendarEvent[]>('calendarEventsArchive', (cached) => (
+      (cached ?? []).filter((event) => !idSet.has(event.id) && !idSet.has(recurrenceRootId(event)))
+    ))
   }
 
   function eventDisplayCalendarId(event: CalendarEvent) {
@@ -673,11 +1179,27 @@ export default function CalendarPage() {
   }
 
   function employeeName(id: string) {
-    return employees.find((employee) => employee.id === id)?.name || '未指定'
+    const employee = employees.find((item) => item.id === id)
+    return employee?.nickname || employee?.name || (id === employeeId ? displayName : '') || '未指定'
+  }
+
+  function eventDisplayTitle(event: CalendarEvent) {
+    if (!isHrReadonlyEvent(event) || !event.assigneeIds?.length) return event.title
+    const employee = employees.find((item) => item.id === event.assigneeIds[0])
+    const nickname = employee?.nickname?.trim()
+    const name = employee?.name?.trim()
+    if (!nickname || !name || !event.title.startsWith(name)) return event.title
+    return `${nickname}${event.title.slice(name.length)}`
+  }
+
+  function textDisplayTitle(title: string) {
+    const employee = employees.find((item) => item.nickname?.trim() && item.name?.trim() && title.startsWith(item.name.trim()))
+    if (!employee?.nickname || !employee.name) return title
+    return `${employee.nickname.trim()}${title.slice(employee.name.trim().length)}`
   }
 
   function currentActorName() {
-    return displayName || user?.displayName || user?.email || '未命名使用者'
+    return employeeId ? employeeName(employeeId) : (displayName || user?.displayName || user?.email || '未命名使用者')
   }
 
   function valueLabel(field: string, value: unknown) {
@@ -692,7 +1214,7 @@ export default function CalendarPage() {
       return ids.length ? ids.map((id) => employeeName(String(id))).join('、') : '未指定'
     }
     if (field === 'reminder') return REMINDER_OPTIONS.find((option) => option.value === value)?.label ?? '無通知'
-    if (field === 'repeat') return REPEAT_OPTIONS.find((option) => option.value === value)?.label ?? '無重複'
+    if (field === 'repeat') return repeatLabel(value as CalendarEvent['repeat'], eventForm.date, eventForm.repeatCustom)
     if (field === 'todos') return Array.isArray(value) ? `${value.length} 項` : '0 項'
     if (field === 'attachments') return Array.isArray(value) ? `${value.length} 個附件` : '0 個附件'
     return String(value ?? '').trim() || '空白'
@@ -782,28 +1304,37 @@ export default function CalendarPage() {
   const selectedEventCalendarText = eventForm.calendarIds.length > 0
     ? eventForm.calendarIds.map((id) => visibleCalendarMap.get(id)?.name).filter(Boolean).join('、')
     : '不選部門，僅指定同仁'
-  const currentTitleIcon = selectedTitleIcon(eventForm.title)
-  const currentTitleText = titleWithoutKnownIcon(eventForm.title)
+  const repeatOptions = useMemo(() => repeatPresetOptions(eventForm.date), [eventForm.date])
+  const selectedRepeatText = repeatLabel(eventForm.repeat, eventForm.date, eventForm.repeatCustom)
+  const currentTitleIcon = selectedTitleIcon(eventForm.title, titleIconOptions)
+  const currentTitleText = titleWithoutKnownIcon(eventForm.title, titleIconOptions)
+  const cachedEventArchive = useMemo(() => readLocalQueryCache<CalendarEvent[]>('calendarEventsArchive') ?? [], [events])
+  const titleSuggestionEvents = useMemo(() => {
+    const map = new Map<string, CalendarEvent>()
+    cachedEventArchive.forEach((event) => map.set(event.id, event))
+    events.forEach((event) => map.set(event.id, event))
+    return Array.from(map.values())
+  }, [cachedEventArchive, events])
   const titleSuggestionIndex = useMemo(() => (
-    events
+    titleSuggestionEvents
       .filter((event) => event.location?.trim() || event.url?.trim() || event.note?.trim() || event.todos?.length)
       .filter((event) => dayjs(event.date).isBefore(dayjs().add(1, 'day'), 'day'))
       .sort((a, b) => `${b.date} ${b.startTime}`.localeCompare(`${a.date} ${a.startTime}`))
       .slice(0, 600)
       .map((event) => ({
         event,
-        normalizedTitle: normalizeSearchText(event.title)
+        normalizedTitle: normalizeSearchText(eventDisplayTitle(event), titleIconOptions)
       }))
-  ), [events])
+  ), [employees, titleIconOptions, titleSuggestionEvents])
   const titleSuggestions = useMemo(() => {
-    const query = normalizeSearchText(currentTitleText)
+    const query = normalizeSearchText(currentTitleText, titleIconOptions)
     if (query.length < 1) return []
     return titleSuggestionIndex
       .filter((item) => item.event.id !== editingEventId)
       .filter((item) => item.normalizedTitle.includes(query))
       .map((item) => item.event)
       .slice(0, 6)
-  }, [currentTitleText, editingEventId, titleSuggestionIndex])
+  }, [currentTitleText, editingEventId, titleIconOptions, titleSuggestionIndex])
   const todoSummaryText = eventForm.todos.length > 0
     ? `${eventForm.todos.filter((todo) => todo.done).length}/${eventForm.todos.length} 已完成`
     : '待辦清單'
@@ -829,14 +1360,22 @@ export default function CalendarPage() {
   }
 
   function toggleCalendar(calendarId: string) {
-    setActiveCalendarIds((list) => toggle(list.length ? list.filter((id) => visibleCalendarIds.includes(id)) : visibleCalendarIds, calendarId))
+    setActiveCalendarIds((list) => {
+      const baseIds = calendarSelectionMode === 'all'
+        ? visibleCalendarIds
+        : calendarSelectionMode === 'none'
+          ? []
+          : list.filter((id) => visibleCalendarIds.includes(id))
+      const nextIds = toggle(baseIds, calendarId)
+      setCalendarSelectionMode(nextIds.length === visibleCalendarIds.length ? 'all' : nextIds.length === 0 ? 'none' : 'custom')
+      return nextIds
+    })
   }
 
   function selectAllCalendars() {
-    setActiveCalendarIds((ids) => {
-      const activeIds = ids.filter((id) => visibleCalendarIds.includes(id))
-      return activeIds.length === visibleCalendarIds.length ? ['__none__'] : []
-    })
+    const nextMode = allCalendarsSelected ? 'none' : 'all'
+    setCalendarSelectionMode(nextMode)
+    setActiveCalendarIds([])
   }
 
   function toggleSearchDepartment(departmentId: string) {
@@ -918,8 +1457,12 @@ export default function CalendarPage() {
     setAttachmentFiles([])
     setDeletedAttachments([])
     setEditingEventId(null)
+    setRecurrenceEditMode(null)
+    setRecurrenceEditCandidate(null)
     setShowTitleIconPicker(false)
     setShowTitleSuggestions(false)
+    setShowRepeatPicker(false)
+    setShowRepeatCustomModal(false)
     setShowEventModal(true)
   }
 
@@ -928,6 +1471,7 @@ export default function CalendarPage() {
     setDayListDate(null)
     setSelectedDate(event.date)
     setSelectedEventId(event.id)
+    if (showNotificationsPanel) markActivityNotificationsSeen()
     setShowNotificationsPanel(false)
     setShowSearchPanel(false)
   }
@@ -937,30 +1481,54 @@ export default function CalendarPage() {
       alert('此活動來自 HR 後台，請至 HR 後台編輯')
       return
     }
+    if (canUseRecurrenceScope(event)) {
+      setRecurrenceEditCandidate(event)
+      return
+    }
+    startEditEvent(event, 'all')
+  }
 
+  function canUseRecurrenceScope(event: CalendarEvent) {
+    if (isRepeatingEvent(event)) return true
+    if (!isRecurrenceOccurrence(event)) return false
+    const rootEvent = events.find((item) => item.id === recurrenceRootId(event))
+    return Boolean(rootEvent && isRepeatingEvent(rootEvent))
+  }
+
+  function startEditEvent(event: CalendarEvent, scope: RecurrenceEditScope) {
+    const rootEvent = events.find((item) => item.id === recurrenceRootId(event)) ?? event
+    const sourceDate = recurrenceSourceDate(event)
+    const formDate = scope === 'all' ? rootEvent.date : sourceDate
+    const range = shiftedEventDateRange(rootEvent, formDate)
     setEventForm({
-      calendarId: eventDisplayCalendarId(event),
-      calendarIds: eventDisplayCalendarIds(event),
-      title: event.title,
-      date: event.date,
-      endDate: eventEndDate(event),
-      startTime: event.startTime,
-      endTime: event.endTime,
-      departmentId: event.departmentId,
-      assigneeIds: requiredAssigneeIds(event.assigneeIds ?? []),
-      note: event.note ?? '',
-      reminder: event.reminder ?? 'none',
-      repeat: event.repeat ?? 'none',
-      todos: event.todos ?? [],
-      location: event.location ?? '',
-      url: event.url ?? '',
-      attachments: event.attachments ?? []
+      calendarId: eventDisplayCalendarId(rootEvent),
+      calendarIds: eventDisplayCalendarIds(rootEvent),
+      title: eventDisplayTitle(rootEvent),
+      date: range.date,
+      endDate: eventEndDate(range),
+      startTime: rootEvent.startTime,
+      endTime: rootEvent.endTime,
+      allDay: !!rootEvent.allDay,
+      departmentId: rootEvent.departmentId,
+      assigneeIds: requiredAssigneeIds(rootEvent.assigneeIds ?? []),
+      note: rootEvent.note ?? '',
+      reminder: rootEvent.reminder ?? 'none',
+      repeat: scope === 'single' ? 'none' : (rootEvent.repeat ?? 'none'),
+      repeatCustom: rootEvent.repeatCustom ?? emptyEvent.repeatCustom,
+      todos: rootEvent.todos ?? [],
+      location: rootEvent.location ?? '',
+      url: rootEvent.url ?? '',
+      attachments: rootEvent.attachments ?? []
     })
     setAttachmentFiles([])
     setDeletedAttachments([])
-    setEditingEventId(event.id)
+    setEditingEventId(rootEvent.id)
+    setRecurrenceEditMode(isRepeatingEvent(rootEvent) ? { scope, source: event } : null)
+    setRecurrenceEditCandidate(null)
     setShowTitleIconPicker(false)
     setShowTitleSuggestions(false)
+    setShowRepeatPicker(false)
+    setShowRepeatCustomModal(false)
     setShowEventModal(true)
   }
 
@@ -997,25 +1565,175 @@ export default function CalendarPage() {
     setEventForm((form) => ({ ...form, reminder }))
     if (reminder && reminder !== 'none' && 'Notification' in window && Notification.permission === 'default') {
       try {
-        await Notification.requestPermission()
+        const permission = await Notification.requestPermission()
+        setNotificationPermission(permission)
       } catch {
         alert('通知權限啟用失敗，請確認瀏覽器設定')
       }
     }
   }
 
+  async function enableCalendarNotifications() {
+    if (!('Notification' in window)) {
+      alert('此瀏覽器不支援通知功能')
+      return
+    }
+    try {
+      const permission = await Notification.requestPermission()
+      setNotificationPermission(permission)
+      if (permission !== 'granted') {
+        alert('通知尚未啟用，請到瀏覽器或手機設定允許通知')
+      }
+    } catch {
+      alert('通知權限啟用失敗，請確認瀏覽器設定')
+    }
+  }
+
+  function dismissStartupNotificationPrompt() {
+    setShowStartupNotificationPrompt(false)
+  }
+
+  async function enableStartupNotifications() {
+    if (!('Notification' in window)) {
+      dismissStartupNotificationPrompt()
+      return
+    }
+    try {
+      const permission = await Notification.requestPermission()
+      setNotificationPermission(permission)
+    } finally {
+      dismissStartupNotificationPrompt()
+    }
+  }
+
+  async function hasCompletedPunch(targetEmployeeId: string, date: string, kind: 'in' | 'out') {
+    try {
+      const snap = await getDocs(query(
+        collection(db, 'punchLogs'),
+        where('employeeId', '==', targetEmployeeId),
+        where('date', '==', date)
+      ))
+      const punchLog = snap.docs[0] ? ({ id: snap.docs[0].id, ...snap.docs[0].data() } as PunchLog) : null
+      const count = punchLog?.punches?.filter(Boolean).length ?? 0
+      return kind === 'in' ? count >= 1 : count >= 2
+    } catch {
+      return false
+    }
+  }
+
+  async function saveNotificationSettings() {
+    if (!user?.uid) return
+    setSavingNotificationSettings(true)
+    try {
+      if (
+        (notificationSettings.shiftStartEnabled ||
+          notificationSettings.shiftEndEnabled ||
+          notificationSettings.punchInEnabled ||
+          notificationSettings.punchOutEnabled) &&
+        'Notification' in window &&
+        Notification.permission === 'default'
+      ) {
+        const permission = await Notification.requestPermission()
+        setNotificationPermission(permission)
+      }
+      const payload: UserNotificationSettings = {
+        ...notificationSettings,
+        punchLeadMinutes: clampNotificationLeadMinutes(notificationSettings.punchLeadMinutes),
+        updatedAt: new Date().toISOString()
+      }
+      await setDoc(doc(db, 'calendarNotificationSettings', user.uid), payload, { merge: true })
+      setNotificationSettings(payload)
+      setShowNotificationSettings(false)
+    } catch {
+      alert('通知設定儲存失敗，請稍後再試')
+    } finally {
+      setSavingNotificationSettings(false)
+    }
+  }
+
+  function markActivityNotificationsSeen() {
+    const latest = visibleActivityLogs[0]?.createdAt ?? new Date().toISOString()
+    localStorage.setItem(ACTIVITY_NOTIFICATION_SEEN_KEY, latest)
+    setLastSeenActivityAt(latest)
+    void setLocalBadge(0)
+  }
+
+  function changeRepeat(repeat: CalendarEvent['repeat']) {
+    if (repeat === 'custom') {
+      setEventForm((form) => ({ ...form, repeatCustom: form.repeatCustom ?? emptyEvent.repeatCustom }))
+      setShowRepeatPicker(false)
+      setShowRepeatCustomModal(true)
+      return
+    }
+    setEventForm((form) => ({ ...form, repeat, repeatCustom: form.repeatCustom ?? emptyEvent.repeatCustom }))
+    setShowRepeatPicker(false)
+  }
+
+  function updateCustomRepeat(changes: Partial<NonNullable<CalendarEvent['repeatCustom']>>) {
+    setEventForm((form) => ({
+      ...form,
+      repeatCustom: {
+        ...(form.repeatCustom ?? emptyEvent.repeatCustom),
+        ...changes
+      }
+    }))
+  }
+
   function chooseTitleIcon(icon: string) {
     setEventForm((form) => ({
       ...form,
-      title: composeTitleWithIcon(icon, form.title)
+      title: composeTitleWithIcon(icon, form.title, titleIconOptions)
     }))
     setShowTitleIconPicker(false)
+  }
+
+  function openTitleIconSettings() {
+    setTitleIconDraft(titleIconOptions)
+    setShowTitleIconSettings(true)
+  }
+
+  function updateTitleIconDraft(index: number, changes: Partial<TitleIconOption>) {
+    setTitleIconDraft((items) => items.map((item, itemIndex) => itemIndex === index ? { ...item, ...changes } : item))
+  }
+
+  function removeTitleIconDraft(index: number) {
+    setTitleIconDraft((items) => items.filter((_, itemIndex) => itemIndex !== index))
+  }
+
+  function addTitleIconDraft() {
+    setTitleIconDraft((items) => [...items, { icon: '', label: '' }])
+  }
+
+  async function saveTitleIconSettings() {
+    if (!canManageCalendarColors) return
+    const options = titleIconDraft
+      .map((item) => ({ icon: item.icon.trim(), label: item.label.trim() }))
+      .filter((item) => item.icon && item.label)
+    if (!options.length) {
+      alert('至少保留一個 icon')
+      return
+    }
+    setSavingTitleIcons(true)
+    try {
+      await setDoc(doc(db, 'calendarSettings', 'titleIcons'), {
+        options,
+        updatedAt: new Date().toISOString(),
+        updatedBy: user?.uid ?? ''
+      }, { merge: true })
+      setTitleIconOptions(options)
+      setTitleIconDraft(options)
+      setShowTitleIconSettings(false)
+    } catch {
+      alert('標題 icon 設定儲存失敗')
+    } finally {
+      setSavingTitleIcons(false)
+    }
   }
 
   function applyTitleSuggestion(event: CalendarEvent) {
     setEventForm((form) => ({
       ...form,
-      title: event.title,
+      title: eventDisplayTitle(event),
       location: event.location ?? '',
       url: event.url ?? '',
       note: event.note ?? '',
@@ -1104,7 +1822,7 @@ export default function CalendarPage() {
       const selectedCalendarIds = eventForm.calendarIds
       const primaryCalendarId = selectedCalendarIds[0] ?? ''
       const selectedDepartmentId = primaryDepartmentIdFromCalendarIds(selectedCalendarIds, eventForm.departmentId)
-      const eventTitle = currentTitleIcon ? composeTitleWithIcon(currentTitleIcon, eventForm.title) : eventForm.title.trim()
+      const eventTitle = currentTitleIcon ? composeTitleWithIcon(currentTitleIcon, eventForm.title, titleIconOptions) : eventForm.title.trim()
       const payload = {
         calendarId: primaryCalendarId,
         calendarIds: selectedCalendarIds,
@@ -1113,11 +1831,13 @@ export default function CalendarPage() {
         endDate: normalizedEndDate,
         startTime: eventForm.startTime,
         endTime: eventForm.endTime,
+        allDay: !!eventForm.allDay,
         departmentId: selectedDepartmentId,
         assigneeIds: requiredAssignees,
         note: eventForm.note.trim(),
         reminder: eventForm.reminder ?? 'none',
         repeat: eventForm.repeat ?? 'none',
+        repeatCustom: eventForm.repeatCustom ?? emptyEvent.repeatCustom,
         todos: eventForm.todos.map((todo) => ({ ...todo, text: todo.text.trim() })).filter((todo) => todo.text),
         location: eventForm.location.trim(),
         url: eventForm.url.trim(),
@@ -1127,19 +1847,77 @@ export default function CalendarPage() {
 
       let savedEventId = editingEventId
       if (editingEventId) {
-        await updateDoc(doc(db, 'calendarEvents', editingEventId), payload)
-        if (editingEvent) {
-          const changes = eventChangeList(editingEvent, payload)
-          if (changes.length) {
-            await writeActivityLog({
-              action: 'update',
-              eventId: editingEventId,
-              eventTitle: payload.title,
-              calendarId: payload.calendarId,
-              departmentId: payload.departmentId,
-              date: payload.date,
-              changes
-            })
+        if (recurrenceEditMode?.scope === 'single' && editingEvent) {
+          const sourceDate = recurrenceSourceDate(recurrenceEditMode.source)
+          await updateDoc(doc(db, 'calendarEvents', editingEventId), {
+            repeatExceptions: arrayUnion(sourceDate),
+            updatedAt: new Date().toISOString()
+          })
+          const created = await addDoc(collection(db, 'calendarEvents'), {
+            ...payload,
+            repeat: 'none',
+            repeatCustom: emptyEvent.repeatCustom,
+            recurrenceParentId: editingEventId,
+            recurrenceOriginalDate: editingEvent.date,
+            recurrenceSourceDate: sourceDate,
+            done: false,
+            createdBy: user?.uid ?? '',
+            createdAt: new Date().toISOString()
+          })
+          savedEventId = created.id
+          await writeActivityLog({
+            action: 'update',
+            eventId: created.id,
+            eventTitle: payload.title,
+            calendarId: payload.calendarId,
+            departmentId: payload.departmentId,
+            assigneeIds: payload.assigneeIds,
+            date: payload.date,
+            changes: eventChangeList(editingEvent, payload)
+          })
+        } else if (recurrenceEditMode?.scope === 'future' && editingEvent && recurrenceSourceDate(recurrenceEditMode.source) !== editingEvent.date) {
+          const sourceDate = recurrenceSourceDate(recurrenceEditMode.source)
+          await updateDoc(doc(db, 'calendarEvents', editingEventId), {
+            repeatUntil: dayjs(sourceDate).subtract(1, 'day').format('YYYY-MM-DD'),
+            updatedAt: new Date().toISOString()
+          })
+          const created = await addDoc(collection(db, 'calendarEvents'), {
+            ...payload,
+            date: sourceDate,
+            endDate: shiftedEventDateRange(payload, sourceDate).endDate,
+            repeatExceptions: [],
+            repeatUntil: '',
+            done: false,
+            createdBy: user?.uid ?? '',
+            createdAt: new Date().toISOString()
+          })
+          savedEventId = created.id
+          await writeActivityLog({
+            action: 'update',
+            eventId: created.id,
+            eventTitle: payload.title,
+            calendarId: payload.calendarId,
+            departmentId: payload.departmentId,
+            assigneeIds: payload.assigneeIds,
+            date: sourceDate,
+            changes: eventChangeList(editingEvent, payload)
+          })
+        } else {
+          await updateDoc(doc(db, 'calendarEvents', editingEventId), payload)
+          if (editingEvent) {
+            const changes = eventChangeList(editingEvent, payload)
+            if (changes.length) {
+              await writeActivityLog({
+                action: 'update',
+                eventId: editingEventId,
+                eventTitle: payload.title,
+                calendarId: payload.calendarId,
+                departmentId: payload.departmentId,
+                assigneeIds: payload.assigneeIds,
+                date: payload.date,
+                changes
+              })
+            }
           }
         }
       } else {
@@ -1156,6 +1934,7 @@ export default function CalendarPage() {
           eventTitle: payload.title,
           calendarId: payload.calendarId,
           departmentId: payload.departmentId,
+          assigneeIds: payload.assigneeIds,
           date: payload.date
         })
       }
@@ -1163,6 +1942,7 @@ export default function CalendarPage() {
       setShowEventModal(false)
       setAttachmentFiles([])
       setDeletedAttachments([])
+      setRecurrenceEditMode(null)
       await refreshCalendarData()
       if (savedEventId) {
         syncEventAttachmentsInBackground(savedEventId, pendingAttachmentFiles, removedAttachments)
@@ -1264,15 +2044,71 @@ export default function CalendarPage() {
       alert('此活動來自 HR 後台，請至 HR 後台刪除')
       return
     }
+    if (canUseRecurrenceScope(event)) {
+      setRecurrenceDeleteCandidate(event)
+      return
+    }
+    await applyDeleteEvent(event, 'all')
+  }
+
+  async function applyDeleteEvent(event: CalendarEvent, scope: RecurrenceEditScope) {
     if (!confirm('確定刪除此工作？')) return
+    setRecurrenceDeleteCandidate(null)
     try {
-      await deleteDoc(doc(db, 'calendarEvents', event.id))
+      const rootId = recurrenceRootId(event)
+      const existingRootEvent = events.find((item) => item.id === rootId)
+      const rootEvent = existingRootEvent ?? event
+      const sourceDate = recurrenceSourceDate(event)
+      if (isRecurrenceOccurrence(event) && !existingRootEvent) {
+        await deleteDoc(doc(db, 'calendarEvents', event.id))
+        removeEventsFromArchiveCache([event.id])
+        await writeActivityLog({
+          action: 'delete',
+          eventId: event.id,
+          eventTitle: eventDisplayTitle(event),
+          calendarId: eventDisplayCalendarId(event),
+          departmentId: event.departmentId,
+          assigneeIds: event.assigneeIds,
+          date: event.date
+        })
+        setSelectedEventId(null)
+        await refreshCalendarData()
+        return
+      }
+      if (scope === 'single' && (isRecurrenceOccurrence(event) || isRepeatingEvent(rootEvent))) {
+        await updateDoc(doc(db, 'calendarEvents', rootId), {
+          repeatExceptions: arrayUnion(sourceDate),
+          updatedAt: new Date().toISOString()
+        })
+        await writeActivityLog({
+          action: 'delete',
+          eventId: rootId,
+          eventTitle: eventDisplayTitle(event),
+          calendarId: eventDisplayCalendarId(event),
+          departmentId: event.departmentId,
+          assigneeIds: event.assigneeIds,
+          date: event.date
+        })
+        setSelectedEventId(null)
+        await refreshCalendarData()
+        return
+      }
+      if (scope === 'future' && isRepeatingEvent(rootEvent) && sourceDate !== rootEvent.date) {
+        await updateDoc(doc(db, 'calendarEvents', rootId), {
+          repeatUntil: dayjs(sourceDate).subtract(1, 'day').format('YYYY-MM-DD'),
+          updatedAt: new Date().toISOString()
+        })
+      } else {
+        await deleteDoc(doc(db, 'calendarEvents', rootId))
+        removeEventsFromArchiveCache([rootId])
+      }
       await writeActivityLog({
         action: 'delete',
-        eventId: event.id,
-        eventTitle: event.title,
+        eventId: rootId,
+        eventTitle: eventDisplayTitle(event),
         calendarId: eventDisplayCalendarId(event),
         departmentId: event.departmentId,
+        assigneeIds: event.assigneeIds,
         date: event.date
       })
       setSelectedEventId((current) => current === event.id ? null : current)
@@ -1374,23 +2210,25 @@ export default function CalendarPage() {
 
     setSaving(true)
     try {
+      const nextDateRange = shiftedEventDateRange(sourceEvent, dragActionMenu.targetDate)
       if (action === 'move') {
         await updateDoc(doc(db, 'calendarEvents', sourceEvent.id), {
-          date: dragActionMenu.targetDate,
+          ...nextDateRange,
           updatedAt: new Date().toISOString()
         })
         await writeActivityLog({
           action: 'move',
           eventId: sourceEvent.id,
-          eventTitle: sourceEvent.title,
+          eventTitle: eventDisplayTitle(sourceEvent),
           calendarId: eventDisplayCalendarId(sourceEvent),
           departmentId: sourceEvent.departmentId,
+          assigneeIds: sourceEvent.assigneeIds,
           date: dragActionMenu.targetDate,
           changes: [{
             field: 'date',
             label: '日期',
-            before: sourceEvent.date,
-            after: dragActionMenu.targetDate
+            before: eventEndDate(sourceEvent) === sourceEvent.date ? sourceEvent.date : `${sourceEvent.date} - ${eventEndDate(sourceEvent)}`,
+            after: nextDateRange.endDate === nextDateRange.date ? nextDateRange.date : `${nextDateRange.date} - ${nextDateRange.endDate}`
           }]
         })
         setSelectedEventId(sourceEvent.id)
@@ -1398,7 +2236,7 @@ export default function CalendarPage() {
         const { id: _id, createdAt: _createdAt, updatedAt: _updatedAt, ...eventPayload } = sourceEvent
         const created = await addDoc(collection(db, 'calendarEvents'), {
           ...eventPayload,
-          date: dragActionMenu.targetDate,
+          ...nextDateRange,
           source: '',
           sourceId: '',
           sourceDate: '',
@@ -1409,15 +2247,16 @@ export default function CalendarPage() {
         await writeActivityLog({
           action: 'copy',
           eventId: created.id,
-          eventTitle: sourceEvent.title,
+          eventTitle: eventDisplayTitle(sourceEvent),
           calendarId: eventDisplayCalendarId(sourceEvent),
           departmentId: sourceEvent.departmentId,
+          assigneeIds: sourceEvent.assigneeIds,
           date: dragActionMenu.targetDate,
           changes: [{
             field: 'date',
             label: '日期',
-            before: sourceEvent.date,
-            after: dragActionMenu.targetDate
+            before: eventEndDate(sourceEvent) === sourceEvent.date ? sourceEvent.date : `${sourceEvent.date} - ${eventEndDate(sourceEvent)}`,
+            after: nextDateRange.endDate === nextDateRange.date ? nextDateRange.date : `${nextDateRange.date} - ${nextDateRange.endDate}`
           }]
         })
         setSelectedEventId(created.id)
@@ -1451,7 +2290,7 @@ export default function CalendarPage() {
       <button className={`panel-event ${event.done ? 'done' : ''}`} key={event.id} style={{ '--event-color': eventCalendarColor(event) } as CSSProperties} onClick={() => openEventDetail(event)}>
         <span />
         <div>
-          <strong>{event.title}</strong>
+          <strong>{eventDisplayTitle(event)}</strong>
           <small>{rangeText} {event.startTime} - {event.endTime} · {eventCalendarName(event)}</small>
         </div>
       </button>
@@ -1464,11 +2303,11 @@ export default function CalendarPage() {
     const calendarName = calendar?.name || eventCalendarName(selectedEvent) || '未分類行事曆'
     const assignees = selectedEvent.assigneeIds.map(employeeName)
     const reminderLabel = REMINDER_OPTIONS.find((option) => option.value === (selectedEvent.reminder ?? 'none'))?.label ?? '無通知'
-    const repeatLabel = REPEAT_OPTIONS.find((option) => option.value === (selectedEvent.repeat ?? 'none'))?.label ?? '無重複'
+    const eventRepeatLabel = repeatLabel(selectedEvent.repeat, selectedEvent.date, selectedEvent.repeatCustom)
     const locationText = selectedEvent.location?.trim()
     const canManageEvent = isAdmin && !isHrReadonlyEvent(selectedEvent)
     return (
-      <aside className="event-detail-panel">
+      <aside className="event-detail-panel" style={{ '--event-color': eventCalendarColor(selectedEvent) } as CSSProperties}>
         <div className="event-detail-header">
           <strong>活動詳情</strong>
           <div>
@@ -1481,16 +2320,16 @@ export default function CalendarPage() {
           <div className="event-detail-avatar" style={{ background: eventCalendarColor(selectedEvent) }}>
             {calendarName}
           </div>
-          <h2>{selectedEvent.title}</h2>
+          <h2>{eventDisplayTitle(selectedEvent)}</h2>
           <div className="event-detail-time">
             <div>
               <span>{formatChineseDate(selectedEvent.date)}</span>
-              <strong>{selectedEvent.startTime}</strong>
+              {!selectedEvent.allDay && <strong>{selectedEvent.startTime}</strong>}
             </div>
             <b>›</b>
             <div>
               <span>{formatChineseDate(eventEndDate(selectedEvent))}</span>
-              <strong>{selectedEvent.endTime}</strong>
+              {!selectedEvent.allDay && <strong>{selectedEvent.endTime}</strong>}
             </div>
           </div>
 
@@ -1500,32 +2339,31 @@ export default function CalendarPage() {
           </div>
           <div className="event-detail-row">
             <EventRowIcon name="repeat" />
-            <div>{repeatLabel}</div>
+            <div>{eventRepeatLabel}</div>
           </div>
           <div className="event-detail-row">
             <EventRowIcon name="calendar" />
             <div>{calendarName}</div>
           </div>
-          <div className="event-detail-row">
-            <EventRowIcon name="location" />
-            {locationText ? (
+          {locationText && (
+            <div className="event-detail-row">
+              <EventRowIcon name="location" />
               <a href={googleMapsDirectionUrl(locationText)} target="_blank" rel="noreferrer">{locationText}</a>
-            ) : (
-              <div>{departmentName(selectedEvent.departmentId)}</div>
-            )}
-          </div>
-          <a
-            className={`event-detail-map ${locationText ? 'clickable' : ''}`}
-            href={locationText ? googleMapsDirectionUrl(locationText) : undefined}
-            target="_blank"
-            rel="noreferrer"
-            aria-disabled={!locationText}
-          >
-            <div>
-              <strong>{locationText || departmentName(selectedEvent.departmentId)}</strong>
-              <small>{locationText ? '開啟 Google 地圖導航' : '尚未填寫地點'}</small>
             </div>
-          </a>
+          )}
+          {locationText && (
+            <a
+              className="event-detail-map clickable"
+              href={googleMapsDirectionUrl(locationText)}
+              target="_blank"
+              rel="noreferrer"
+            >
+              <div>
+                <strong>{locationText}</strong>
+                <small>開啟 Google 地圖導航</small>
+              </div>
+            </a>
+          )}
 
           {selectedEvent.url && (
             <a className="event-detail-link" href={selectedEvent.url} target="_blank" rel="noreferrer">
@@ -1613,16 +2451,18 @@ export default function CalendarPage() {
   }
 
   function activityLogText(log: CalendarActivityLog) {
-    if (log.action === 'create') return `${log.actorName} 新增了「${log.eventTitle}」`
-    if (log.action === 'delete') return `${log.actorName} 刪除了「${log.eventTitle}」`
-    if (log.action === 'move') return `${log.actorName} 將「${log.eventTitle}」移到 ${log.changes?.[0]?.after || log.date}`
-    if (log.action === 'copy') return `${log.actorName} 複製了「${log.eventTitle}」到 ${log.changes?.[0]?.after || log.date}`
+    const eventTitle = textDisplayTitle(log.eventTitle)
+    const actorName = textDisplayTitle(log.actorName)
+    if (log.action === 'create') return `${actorName} 新增了「${eventTitle}」`
+    if (log.action === 'delete') return `${actorName} 刪除了「${eventTitle}」`
+    if (log.action === 'move') return `${actorName} 將「${eventTitle}」移到 ${log.changes?.[0]?.after || log.date}`
+    if (log.action === 'copy') return `${actorName} 複製了「${eventTitle}」到 ${log.changes?.[0]?.after || log.date}`
     const firstChange = log.changes?.[0]
     if (firstChange) {
       const rest = (log.changes?.length ?? 0) > 1 ? `，另有 ${(log.changes?.length ?? 1) - 1} 項變更` : ''
-      return `${log.actorName} 將「${log.eventTitle}」的${firstChange.label}從「${firstChange.before}」改成「${firstChange.after}」${rest}`
+      return `${actorName} 將「${eventTitle}」的${firstChange.label}從「${firstChange.before}」改成「${firstChange.after}」${rest}`
     }
-    return `${log.actorName} 更新了「${log.eventTitle}」`
+    return `${actorName} 更新了「${eventTitle}」`
   }
 
   function renderNotificationsPanel() {
@@ -1631,21 +2471,215 @@ export default function CalendarPage() {
       <aside className="tt-floating-panel tt-notifications-panel">
         <div className="panel-head">
           <h2>通知</h2>
-          <button onClick={() => setShowNotificationsPanel(false)} aria-label="關閉通知">×</button>
+          <button
+            onClick={() => {
+              markActivityNotificationsSeen()
+              setShowNotificationsPanel(false)
+            }}
+            aria-label="關閉通知"
+          >
+            ×
+          </button>
         </div>
         <div className="panel-list">
-          {visibleActivityLogs.slice(0, 12).map((log) => (
-            <article className={`activity-log ${log.action}`} key={log.id}>
-              <span />
-              <div>
-                <strong>{activityLogText(log)}</strong>
-                <small>{dayjs(log.createdAt).format('M/D HH:mm')} · {visibleCalendarMap.get(log.calendarId)?.name || departmentName(log.departmentId)}</small>
-              </div>
-            </article>
-          ))}
+          {visibleActivityLogs.slice(0, 12).map((log) => {
+            const unread = Boolean(log.createdAt && log.createdAt > lastSeenActivityAt)
+            return (
+              <article className={`activity-log ${log.action}${unread ? ' unread' : ''}`} key={log.id}>
+                <span style={{ background: activityLogColor(log) }} />
+                <div>
+                  <strong>{activityLogText(log)}</strong>
+                  <small>{dayjs(log.createdAt).format('M/D HH:mm')} · {visibleCalendarMap.get(log.calendarId)?.name || departmentName(log.departmentId)}</small>
+                </div>
+              </article>
+            )
+          })}
           {visibleActivityLogs.length === 0 && <p className="panel-empty">目前沒有新的活動紀錄</p>}
         </div>
       </aside>
+    )
+  }
+
+  function renderStartupNotificationPrompt() {
+    if (!showStartupNotificationPrompt) return null
+    return (
+      <div className="modal-overlay" onClick={dismissStartupNotificationPrompt}>
+        <div className="modal notification-startup-modal" onClick={(event) => event.stopPropagation()}>
+          <div className="modal-header">
+            <h2>開啟通知</h2>
+            <button className="close-btn" onClick={dismissStartupNotificationPrompt}>×</button>
+          </div>
+          <div className="modal-body notification-prompt-body">
+            <strong>建議開啟行事曆通知</strong>
+            <p>預設只會在上班時間通知。</p>
+            <p>若要調整通知內容，可到大頭照選單的「通知設定」修改。</p>
+          </div>
+          <div className="modal-footer">
+            <button type="button" onClick={dismissStartupNotificationPrompt}>稍後</button>
+            <button type="button" className="primary-btn" onClick={enableStartupNotifications}>開啟通知</button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  function renderNotificationSettingsModal() {
+    if (!showNotificationSettings) return null
+    const shiftText = currentShift ? `${currentShift.name} ${currentShift.startTime} - ${currentShift.endTime}` : '尚未設定班別'
+    const disabledByLeave = hasTodayLeave ? '今天已有 HR 請假/休假，班表與打卡通知會自動略過。' : ''
+    const permissionState = 'Notification' in window ? notificationPermission : 'unsupported'
+    const permissionText = permissionState === 'granted'
+      ? '已開啟'
+      : permissionState === 'denied'
+        ? '已封鎖'
+        : permissionState === 'default'
+          ? '尚未允許'
+          : '不支援'
+    const permissionHint = permissionState === 'granted'
+      ? '瀏覽器通知權限已開啟，通知會依照下方設定執行。'
+      : permissionState === 'denied'
+        ? '目前瀏覽器封鎖通知，請到瀏覽器或手機設定中允許此網站通知。'
+        : permissionState === 'default'
+          ? '尚未開啟瀏覽器通知權限，重新載入頁面時會再次提醒。'
+          : '此瀏覽器不支援網站通知。'
+    return (
+      <div className="modal-overlay" onClick={() => setShowNotificationSettings(false)}>
+        <div className="modal notification-settings-modal" onClick={(event) => event.stopPropagation()}>
+          <div className="modal-header">
+            <h2>通知設定</h2>
+            <button className="close-btn" onClick={() => setShowNotificationSettings(false)}>×</button>
+          </div>
+          <div className="modal-body notification-settings-body">
+            <div className="notification-status-card">
+              <strong>{employeeId ? employeeName(employeeId) : displayName || '目前使用者'}</strong>
+              <span>班別：{shiftText}</span>
+              {disabledByLeave && <small>{disabledByLeave}</small>}
+            </div>
+
+            <div className={`notification-permission-card ${permissionState}`}>
+              <span>通知權限</span>
+              <strong>{permissionText}</strong>
+              <small>{permissionHint}</small>
+            </div>
+
+            <section className="notification-settings-section">
+              <div className="notification-section-head">
+                <strong>行事曆通知</strong>
+                <small>依照 HR 班表，預設只在上班時間通知；錯過時間不補通知。</small>
+              </div>
+              <label className="notification-setting-row compact">
+                <span>
+                  <strong>上班時間通知</strong>
+                  <small>勾選後，上班時間內有活動新增、修改、刪除，或活動提醒時間到時都會通知。</small>
+                </span>
+                <input
+                  type="checkbox"
+                  checked={notificationSettings.shiftStartEnabled}
+                  onChange={(event) => setNotificationSettings((settings) => ({ ...settings, shiftStartEnabled: event.target.checked }))}
+                />
+              </label>
+              <label className="notification-setting-row compact">
+                <span>
+                  <strong>下班後通知</strong>
+                  <small>勾選後，下班後上述行事曆通知也會繼續通知。</small>
+                </span>
+                <input
+                  type="checkbox"
+                  checked={notificationSettings.shiftEndEnabled}
+                  onChange={(event) => setNotificationSettings((settings) => ({ ...settings, shiftEndEnabled: event.target.checked }))}
+                />
+              </label>
+            </section>
+
+            <section className="notification-settings-section">
+              <div className="notification-section-head">
+                <strong>打卡提醒</strong>
+                <small>到打卡時段才檢查；若已打卡就不提醒，錯過時間不補通知。</small>
+              </div>
+              <label className="notification-setting-row compact">
+                <span>
+                  <strong>上班卡</strong>
+                  <small>檢查今天是否已有第一筆打卡。</small>
+                </span>
+                <input
+                  type="checkbox"
+                  checked={notificationSettings.punchInEnabled}
+                  onChange={(event) => setNotificationSettings((settings) => ({ ...settings, punchInEnabled: event.target.checked }))}
+                />
+              </label>
+              <label className="notification-setting-row compact">
+                <span>
+                  <strong>下班卡</strong>
+                  <small>檢查今天是否已有第二筆打卡。</small>
+                </span>
+                <input
+                  type="checkbox"
+                  checked={notificationSettings.punchOutEnabled}
+                  onChange={(event) => setNotificationSettings((settings) => ({ ...settings, punchOutEnabled: event.target.checked }))}
+                />
+              </label>
+              <label className="notification-lead-row">
+                <span>提前提醒</span>
+                <input
+                  type="number"
+                  min="0"
+                  max="240"
+                  value={notificationSettings.punchLeadMinutes}
+                  onChange={(event) => setNotificationSettings((settings) => ({ ...settings, punchLeadMinutes: clampNotificationLeadMinutes(event.target.value) }))}
+                />
+                <span>分鐘</span>
+              </label>
+            </section>
+          </div>
+          <div className="modal-footer">
+            <button type="button" onClick={() => setShowNotificationSettings(false)}>取消</button>
+            <button type="button" className="primary-btn" disabled={savingNotificationSettings} onClick={saveNotificationSettings}>
+              {savingNotificationSettings ? '儲存中' : '儲存'}
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  function renderTitleIconSettingsModal() {
+    if (!showTitleIconSettings || !canManageCalendarColors) return null
+    return (
+      <div className="modal-overlay" onClick={() => setShowTitleIconSettings(false)}>
+        <div className="modal title-icon-settings-modal" onClick={(event) => event.stopPropagation()}>
+          <div className="modal-header">
+            <h2>標題 icon 設定</h2>
+            <button className="close-btn" onClick={() => setShowTitleIconSettings(false)}>×</button>
+          </div>
+          <div className="modal-body title-icon-settings-body">
+            {titleIconDraft.map((item, index) => (
+              <div className="title-icon-setting-row" key={index}>
+                <input
+                  className="title-icon-symbol-input"
+                  value={item.icon}
+                  onChange={(event) => updateTitleIconDraft(index, { icon: event.target.value })}
+                  placeholder="👷"
+                  aria-label="icon"
+                />
+                <input
+                  value={item.label}
+                  onChange={(event) => updateTitleIconDraft(index, { label: event.target.value })}
+                  placeholder="名稱"
+                  aria-label="icon 名稱"
+                />
+                <button type="button" onClick={() => removeTitleIconDraft(index)} aria-label="刪除 icon">×</button>
+              </div>
+            ))}
+            <button type="button" className="title-icon-add-row" onClick={addTitleIconDraft}>新增 icon</button>
+          </div>
+          <div className="modal-footer">
+            <button type="button" onClick={() => setShowTitleIconSettings(false)}>取消</button>
+            <button type="button" className="primary-btn" disabled={savingTitleIcons} onClick={saveTitleIconSettings}>
+              {savingTitleIcons ? '儲存中' : '儲存'}
+            </button>
+          </div>
+        </div>
+      </div>
     )
   }
 
@@ -1653,10 +2687,9 @@ export default function CalendarPage() {
     <div className="timetree-page">
       <header className="timetree-topbar">
         <div className="topbar-left">
-          <button className="tt-icon-button" aria-label="開啟選單" onClick={() => setShowCalendarDrawer((open) => !open)}>☰</button>
           <div className="tt-logo">
             <span className="tt-logo-mark">✣</span>
-            <span>TimeTree</span>
+            <span>Citypainter</span>
           </div>
           <button className="tt-today" onClick={goToday}>今天</button>
           <div className="tt-stepper">
@@ -1685,6 +2718,7 @@ export default function CalendarPage() {
             aria-label="搜尋"
             onClick={() => {
               setShowSearchPanel((open) => !open)
+              if (showNotificationsPanel) markActivityNotificationsSeen()
               setShowNotificationsPanel(false)
               setShowAccountMenu(false)
             }}
@@ -1695,12 +2729,17 @@ export default function CalendarPage() {
             className={`tt-icon-button topbar-panel-trigger ${showNotificationsPanel ? 'active' : ''}`}
             aria-label="通知"
             onClick={() => {
-              setShowNotificationsPanel((open) => !open)
+              setShowNotificationsPanel((open) => {
+                const nextOpen = !open
+                if (!nextOpen) markActivityNotificationsSeen()
+                return nextOpen
+              })
               setShowSearchPanel(false)
               setShowAccountMenu(false)
             }}
           >
             <TopbarIcon name="bell" />
+            {unreadActivityCount > 0 && <span className="notification-dot">{Math.min(unreadActivityCount, 99)}</span>}
           </button>
           {isAdmin && <button className="tt-icon-button add" onClick={() => openAddEvent(selectedDate)} aria-label="新增工作">＋</button>}
           <button
@@ -1708,6 +2747,7 @@ export default function CalendarPage() {
             onClick={() => {
               setShowAccountMenu((open) => !open)
               setShowSearchPanel(false)
+              if (showNotificationsPanel) markActivityNotificationsSeen()
               setShowNotificationsPanel(false)
             }}
             aria-label="開啟帳號選單"
@@ -1717,6 +2757,40 @@ export default function CalendarPage() {
           </button>
           {showAccountMenu && (
             <div className="tt-account-menu" role="menu">
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setShowAccountMenu(false)
+                  setShowNotificationSettings(true)
+                }}
+              >
+                通知設定
+              </button>
+              {canManageCalendarColors && (
+                <>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setShowAccountMenu(false)
+                      setShowCalendarDrawer(true)
+                    }}
+                  >
+                    行事曆顏色設定
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setShowAccountMenu(false)
+                      openTitleIconSettings()
+                    }}
+                  >
+                    標題 icon 設定
+                  </button>
+                </>
+              )}
               <button
                 type="button"
                 role="menuitem"
@@ -1733,8 +2807,15 @@ export default function CalendarPage() {
       </header>
 
       <div className="timetree-body">
-        <aside className={`tt-left-rail ${showCalendarDrawer ? 'drawer-open' : ''}`}>
-          <button className={`rail-button ${allCalendarsSelected ? 'active' : ''}`} aria-label="全選所有行事曆" title="全選所有行事曆" onClick={selectAllCalendars}>✓</button>
+        <aside className="tt-left-rail">
+          <button
+            className={`rail-button ${allCalendarsSelected ? 'active' : ''}`}
+            aria-label={allCalendarsSelected ? '取消全選所有行事曆' : '全選所有行事曆'}
+            title={allCalendarsSelected ? '取消全選所有行事曆' : '全選所有行事曆'}
+            onClick={selectAllCalendars}
+          >
+            ✓
+          </button>
           <div className="rail-calendars">
             {visibleCalendars.slice(0, 8).map((calendar) => {
               const active = selectedCalendarIds.includes(calendar.id)
@@ -1757,47 +2838,41 @@ export default function CalendarPage() {
         {showCalendarDrawer && (
           <aside className="tt-calendar-drawer">
             <div className="panel-head">
-              <h2>行事曆篩選</h2>
-              <button onClick={() => setShowCalendarDrawer(false)} aria-label="關閉篩選">×</button>
+              <h2>行事曆顏色設定</h2>
+              <button onClick={() => setShowCalendarDrawer(false)} aria-label="關閉顏色設定">×</button>
             </div>
             <div className="drawer-section">
               <div className="panel-title-row">
-                <span className="field-label">行事曆</span>
+                <span className="field-label">部門行事曆</span>
               </div>
               <div className="drawer-calendar-list">
-                {visibleCalendars.map((calendar) => {
-                  const active = selectedCalendarIds.includes(calendar.id)
+                {visibleCalendars.filter((calendar) => calendar.systemKind === 'department').map((calendar) => {
                   return (
                     <div
                       key={calendar.id}
-                      className={`drawer-calendar-item ${active ? 'active' : ''}`}
+                      className="drawer-calendar-item active"
                       style={{ '--calendar-color': calendar.color } as CSSProperties}
                     >
-                      <button className="drawer-calendar-main" onClick={() => toggleCalendar(calendar.id)}>
+                      <div className="drawer-calendar-main">
                         <span />
                         <strong>{calendar.name}</strong>
-                        <small>{calendar.systemKind === 'hrLeave' ? 'HR' : '部門'}</small>
-                      </button>
-                      {calendar.systemKind === 'department' && canManageCalendarColors && (
-                        <div className="drawer-color-row" aria-label={`${calendar.name}顏色`}>
-                          {COLORS.map((color) => (
-                            <button
-                              key={color}
-                              className={calendar.color === color ? 'selected' : ''}
-                              style={{ '--swatch-color': color } as CSSProperties}
-                              onClick={() => updateDepartmentCalendarColor(calendar, color)}
-                              aria-label={`設定${calendar.name}為${color}`}
-                            />
-                          ))}
-                        </div>
-                      )}
+                        <small>部門</small>
+                      </div>
+                      <div className="drawer-color-row" aria-label={`${calendar.name}顏色`}>
+                        {COLORS.map((color) => (
+                          <button
+                            key={color}
+                            className={calendar.color === color ? 'selected' : ''}
+                            style={{ '--swatch-color': color } as CSSProperties}
+                            onClick={() => updateDepartmentCalendarColor(calendar, color)}
+                            aria-label={`設定${calendar.name}為${color}`}
+                          />
+                        ))}
+                      </div>
                     </div>
                   )
                 })}
               </div>
-            </div>
-            <div className="drawer-actions">
-              <button className="small-btn" onClick={selectAllCalendars}>全選</button>
             </div>
           </aside>
         )}
@@ -1834,7 +2909,7 @@ export default function CalendarPage() {
                     <span className="day-events">
                       {dayEvents.slice(0, 7).map((event) => (
                         <button
-                          className={`event-pill ${selectedEventId === event.id ? 'active' : ''}`}
+                          className={`event-pill ${event.allDay ? 'all-day' : 'timed'} ${selectedEventId === event.id ? 'active' : ''}`}
                           style={{ '--event-color': eventCalendarColor(event) } as CSSProperties}
                           key={event.id}
                           draggable={eventDragAllowed(event)}
@@ -1850,8 +2925,8 @@ export default function CalendarPage() {
                             openEventDetail(event)
                           }}
                         >
-                          <span>{event.title}</span>
-                          <small>{event.startTime}</small>
+                          <span>{eventDisplayTitle(event)}</span>
+                          {!event.allDay && <small>{event.startTime}</small>}
                         </button>
                       ))}
                       {dayEvents.length > 7 && (
@@ -1904,7 +2979,7 @@ export default function CalendarPage() {
                     <span className="week-events">
                       {dayEvents.length === 0 ? <small>沒有工作</small> : dayEvents.map((event) => (
                         <button
-                          className={`week-event ${event.done ? 'done' : ''} ${selectedEventId === event.id ? 'active' : ''}`}
+                          className={`week-event ${event.allDay ? 'all-day' : 'timed'} ${event.done ? 'done' : ''} ${selectedEventId === event.id ? 'active' : ''}`}
                           style={{ '--event-color': eventCalendarColor(event) } as CSSProperties}
                           key={event.id}
                           draggable={eventDragAllowed(event)}
@@ -1921,8 +2996,8 @@ export default function CalendarPage() {
                           }}
                         >
                           <i />
-                          <span>{event.startTime}</span>
-                          <b>{event.title}</b>
+                          <span>{event.allDay ? '整天' : event.startTime}</span>
+                          <b>{eventDisplayTitle(event)}</b>
                         </button>
                       ))}
                     </span>
@@ -1942,13 +3017,14 @@ export default function CalendarPage() {
             <h2>搜尋工作</h2>
             <button onClick={() => setShowSearchPanel(false)} aria-label="關閉搜尋">×</button>
           </div>
-          <input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="搜尋標題、備註、部門、成員" autoFocus />
-          <div className="search-department-filter" aria-label="部門篩選">
-            <div>
-              <span>部門</span>
-              <button className={allSearchDepartmentsSelected ? 'active' : ''} type="button" onClick={selectAllSearchDepartments}>全選</button>
-            </div>
-            <div>
+          <input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="搜尋標題、備註、地址" autoFocus />
+          <details className="search-department-filter" aria-label="部門篩選">
+            <summary>
+              <span>部門篩選</span>
+              <b>{allSearchDepartmentsSelected ? '全部部門' : `${selectedSearchDepartmentIds.length} 個部門`}</b>
+            </summary>
+            <div className="search-department-menu">
+              <button className={allSearchDepartmentsSelected ? 'active' : ''} type="button" onClick={selectAllSearchDepartments}>全部</button>
               {searchDepartmentOptions.map((department) => (
                 <button
                   className={selectedSearchDepartmentIds.includes(department.id) ? 'active' : ''}
@@ -1960,8 +3036,7 @@ export default function CalendarPage() {
                 </button>
               ))}
             </div>
-          </div>
-          <p className="panel-hint">{searchQuery.trim() ? `找到 ${searchEvents.length} 筆` : `目前顯示 ${searchEvents.length} 筆，範圍：${selectedCalendarNames}`}</p>
+          </details>
           <div className="panel-list">
             {searchEvents.slice(0, 12).map(renderEventSummary)}
             {searchEvents.length === 0 && <p className="panel-empty">沒有符合條件的工作</p>}
@@ -1970,6 +3045,9 @@ export default function CalendarPage() {
       )}
 
       {renderNotificationsPanel()}
+      {renderStartupNotificationPrompt()}
+      {renderNotificationSettingsModal()}
+      {renderTitleIconSettingsModal()}
       {renderDayListPanel()}
       {renderEventDetailPanel()}
 
@@ -2028,7 +3106,7 @@ export default function CalendarPage() {
                       {employees.filter((emp) => emp.status !== 'inactive').map((emp) => (
                         <label key={emp.id}>
                           <input type="checkbox" checked={calendarForm.employeeIds.includes(emp.id)} onChange={() => setCalendarForm((form) => ({ ...form, employeeIds: toggle(form.employeeIds, emp.id) }))} />
-                          {emp.name}
+                          {employeeName(emp.id)}
                         </label>
                       ))}
                     </div>
@@ -2062,8 +3140,8 @@ export default function CalendarPage() {
                   </button>
                   {showTitleIconPicker && (
                     <div className="title-icon-menu">
-                      {TITLE_ICON_OPTIONS.map((item) => (
-                        <button type="button" key={item.label} onClick={() => chooseTitleIcon(item.icon)}>
+                      {titleIconOptions.map((item) => (
+                        <button type="button" key={`${item.icon}-${item.label}`} onClick={() => chooseTitleIcon(item.icon)}>
                           <span>{item.icon}</span>
                           <small>{item.label}</small>
                         </button>
@@ -2076,7 +3154,7 @@ export default function CalendarPage() {
                   value={currentTitleText}
                   onChange={(event) => setEventForm((form) => ({
                     ...form,
-                    title: currentTitleIcon ? composeTitleWithIcon(currentTitleIcon, event.target.value) : event.target.value
+                    title: currentTitleIcon ? composeTitleWithIcon(currentTitleIcon, event.target.value, titleIconOptions) : event.target.value
                   }))}
                   onFocus={() => setShowTitleSuggestions(true)}
                   placeholder="新增標題"
@@ -2086,7 +3164,7 @@ export default function CalendarPage() {
                   <div className="title-suggestion-menu">
                     {titleSuggestions.map((suggestion) => (
                       <button type="button" key={suggestion.id} onClick={() => applyTitleSuggestion(suggestion)}>
-                        <strong>{suggestion.title}</strong>
+                        <strong>{eventDisplayTitle(suggestion)}</strong>
                         <small>{eventSuggestionMeta(suggestion)}</small>
                       </button>
                     ))}
@@ -2109,15 +3187,26 @@ export default function CalendarPage() {
                       }))
                     }}
                   />
-                  <input type="time" value={eventForm.startTime} onChange={(event) => setEventForm((form) => ({ ...form, startTime: event.target.value }))} />
+                  {!eventForm.allDay && (
+                    <input type="time" value={eventForm.startTime} onChange={(event) => setEventForm((form) => ({ ...form, startTime: event.target.value }))} />
+                  )}
                 </div>
                 <div className="time-row">
                   <span>結束</span>
                   <input type="date" value={eventForm.endDate} min={eventForm.date} onChange={(event) => setEventForm((form) => ({ ...form, endDate: event.target.value }))} />
-                  <input type="time" value={eventForm.endTime} onChange={(event) => setEventForm((form) => ({ ...form, endTime: event.target.value }))} />
+                  {!eventForm.allDay && (
+                    <input type="time" value={eventForm.endTime} onChange={(event) => setEventForm((form) => ({ ...form, endTime: event.target.value }))} />
+                  )}
                 </div>
                 <div className="event-checkbox-row">
-                  <label><input type="checkbox" /> 全天</label>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={!!eventForm.allDay}
+                      onChange={(event) => setEventForm((form) => ({ ...form, allDay: event.target.checked }))}
+                    />
+                    整天
+                  </label>
                 </div>
               </div>
 
@@ -2156,7 +3245,7 @@ export default function CalendarPage() {
                             disabled={emp.id === employeeId}
                             onChange={() => setEventForm((form) => ({ ...form, assigneeIds: requiredAssigneeIds(toggle(form.assigneeIds, emp.id)) }))}
                           />
-                          <span>{emp.name}</span>
+                          <span>{employeeName(emp.id)}</span>
                           <small>{emp.departmentName || departmentName(emp.departmentId || '')}</small>
                         </label>
                       ))}
@@ -2171,9 +3260,13 @@ export default function CalendarPage() {
                 </div>
                 <div className="event-editor-row">
                   <EventRowIcon name="repeat" />
-                  <select value={eventForm.repeat} onChange={(event) => setEventForm((form) => ({ ...form, repeat: event.target.value as CalendarEvent['repeat'] }))} aria-label="重複">
-                    {REPEAT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-                  </select>
+                  <button
+                    type="button"
+                    className={`event-static-row event-repeat-button ${eventForm.repeat && eventForm.repeat !== 'none' ? 'selected' : ''}`}
+                    onClick={() => setShowRepeatPicker(true)}
+                  >
+                    {selectedRepeatText}
+                  </button>
                 </div>
                 <div className="event-editor-row">
                   <EventRowIcon name="link" />
@@ -2241,6 +3334,150 @@ export default function CalendarPage() {
                   </details>
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {recurrenceEditCandidate && (
+        <div className="modal-overlay repeat-overlay" onClick={() => setRecurrenceEditCandidate(null)}>
+          <div className="modal repeat-modal recurrence-scope-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="repeat-option-list">
+              <button type="button" onClick={() => startEditEvent(recurrenceEditCandidate, 'single')}>
+                <span>只編輯這項預定</span>
+              </button>
+              <button type="button" onClick={() => startEditEvent(recurrenceEditCandidate, 'future')}>
+                <span>編輯這之後的預定</span>
+              </button>
+              <button type="button" onClick={() => startEditEvent(recurrenceEditCandidate, 'all')}>
+                <span>編輯所有預定</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {recurrenceDeleteCandidate && (
+        <div className="modal-overlay repeat-overlay" onClick={() => setRecurrenceDeleteCandidate(null)}>
+          <div className="modal repeat-modal recurrence-scope-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="repeat-option-list">
+              <button type="button" onClick={() => applyDeleteEvent(recurrenceDeleteCandidate, 'single')}>
+                <span>只刪除這項預定</span>
+              </button>
+              <button type="button" onClick={() => applyDeleteEvent(recurrenceDeleteCandidate, 'future')}>
+                <span>刪除這之後的預定</span>
+              </button>
+              <button type="button" onClick={() => applyDeleteEvent(recurrenceDeleteCandidate, 'all')}>
+                <span>刪除所有預定</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showRepeatPicker && (
+        <div className="modal-overlay repeat-overlay" onClick={() => setShowRepeatPicker(false)}>
+          <div className="modal repeat-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="repeat-option-list">
+              {repeatOptions.map((option) => (
+                <button
+                  type="button"
+                  key={option.value}
+                  className={eventForm.repeat === option.value ? 'selected' : ''}
+                  onClick={() => changeRepeat(option.value)}
+                >
+                  <span>{option.label}</span>
+                  <i />
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showRepeatCustomModal && (
+        <div className="modal-overlay repeat-overlay" onClick={() => setShowRepeatCustomModal(false)}>
+          <div className="modal repeat-custom-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="repeat-custom-header">
+              <EventRowIcon name="repeat" />
+              <strong>自訂</strong>
+            </div>
+            <div className="repeat-custom-body">
+              <div className="repeat-interval-row">
+                <span>重複間隔：每</span>
+                <input
+                  type="number"
+                  min="1"
+                  value={eventForm.repeatCustom?.interval ?? 1}
+                  onChange={(event) => updateCustomRepeat({ interval: Math.max(1, Number(event.target.value) || 1) })}
+                />
+                <select
+                  value={eventForm.repeatCustom?.frequency ?? 'day'}
+                  onChange={(event) => updateCustomRepeat({ frequency: event.target.value as NonNullable<CalendarEvent['repeatCustom']>['frequency'] })}
+                >
+                  <option value="day">天</option>
+                  <option value="week">週</option>
+                  <option value="month">月</option>
+                  <option value="year">年</option>
+                </select>
+              </div>
+
+              <div className="repeat-end-group">
+                <strong>結束時間</strong>
+                <label>
+                  <input
+                    type="radio"
+                    name="repeat-end"
+                    checked={(eventForm.repeatCustom?.ends ?? 'never') === 'never'}
+                    onChange={() => updateCustomRepeat({ ends: 'never' })}
+                  />
+                  無
+                </label>
+                <label>
+                  <input
+                    type="radio"
+                    name="repeat-end"
+                    checked={eventForm.repeatCustom?.ends === 'until'}
+                    onChange={() => updateCustomRepeat({ ends: 'until' })}
+                  />
+                  於：
+                  <input
+                    type="date"
+                    value={eventForm.repeatCustom?.until ?? dayjs(eventForm.date).add(1, 'month').format('YYYY-MM-DD')}
+                    disabled={eventForm.repeatCustom?.ends !== 'until'}
+                    min={eventForm.date}
+                    onChange={(event) => updateCustomRepeat({ until: event.target.value })}
+                  />
+                </label>
+                <label>
+                  <input
+                    type="radio"
+                    name="repeat-end"
+                    checked={eventForm.repeatCustom?.ends === 'count'}
+                    onChange={() => updateCustomRepeat({ ends: 'count' })}
+                  />
+                  次數：
+                  <input
+                    type="number"
+                    min="1"
+                    value={eventForm.repeatCustom?.count ?? 1}
+                    disabled={eventForm.repeatCustom?.ends !== 'count'}
+                    onChange={(event) => updateCustomRepeat({ count: Math.max(1, Number(event.target.value) || 1) })}
+                  />
+                </label>
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button className="small-btn" onClick={() => setShowRepeatCustomModal(false)}>取消</button>
+              <button
+                className="primary-btn"
+                onClick={() => {
+                  setEventForm((form) => ({ ...form, repeat: 'custom', repeatCustom: form.repeatCustom ?? emptyEvent.repeatCustom }))
+                  setShowRepeatCustomModal(false)
+                }}
+              >
+                保存
+              </button>
             </div>
           </div>
         </div>

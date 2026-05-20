@@ -20,6 +20,33 @@ const AuthContext = createContext<AuthContextType>({
   loading: true
 })
 
+const AUTH_PROFILE_CACHE_KEY = 'cityPainterCalendarAuthProfile'
+
+type CachedAuthProfile = {
+  uid: string
+  role: AuthContextType['role']
+  employeeId: string | null
+  displayName: string
+}
+
+function readCachedAuthProfile(uid: string) {
+  try {
+    const raw = window.localStorage.getItem(AUTH_PROFILE_CACHE_KEY)
+    const cached = raw ? JSON.parse(raw) as CachedAuthProfile : null
+    return cached?.uid === uid ? cached : null
+  } catch {
+    return null
+  }
+}
+
+function writeCachedAuthProfile(profile: CachedAuthProfile) {
+  try {
+    window.localStorage.setItem(AUTH_PROFILE_CACHE_KEY, JSON.stringify(profile))
+  } catch {
+    // 權限快取失敗不影響登入流程。
+  }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
   const [role, setRole] = useState<AuthContextType['role']>('loading')
@@ -36,11 +63,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setRole('unknown')
         setEmployeeId(null)
         setDisplayName('')
+        try {
+          window.localStorage.removeItem(AUTH_PROFILE_CACHE_KEY)
+        } catch {
+          // 忽略本機快取清除失敗。
+        }
         setLoading(false)
         return
       }
 
       setUser(nextUser)
+      const cachedProfile = readCachedAuthProfile(nextUser.uid)
+      if (cachedProfile) {
+        setRole(cachedProfile.role)
+        setEmployeeId(cachedProfile.employeeId)
+        setDisplayName(cachedProfile.displayName)
+        setLoading(false)
+      }
 
       try {
         const roleSnap = await getDoc(doc(db, 'userRoles', nextUser.uid))
@@ -57,18 +96,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const nextEmployeeId = roleData.employeeId ?? null
         setRole(roleData.role)
         setEmployeeId(nextEmployeeId)
+        let nextDisplayName = roleData.displayName || nextUser.displayName || ''
 
         if (nextEmployeeId) {
           const empSnap = await getDoc(doc(db, 'employees', nextEmployeeId))
-          const empName = empSnap.exists() ? (empSnap.data() as { name?: string }).name : ''
-          setDisplayName(empName || roleData.displayName || nextUser.displayName || '')
-        } else {
-          setDisplayName(roleData.displayName || nextUser.displayName || '')
+          const empData = empSnap.exists() ? (empSnap.data() as { name?: string; nickname?: string }) : {}
+          nextDisplayName = empData.nickname || empData.name || nextDisplayName
         }
+        setDisplayName(nextDisplayName)
+        writeCachedAuthProfile({
+          uid: nextUser.uid,
+          role: roleData.role,
+          employeeId: nextEmployeeId,
+          displayName: nextDisplayName
+        })
       } catch {
-        setRole('unknown')
-        setEmployeeId(null)
-        setDisplayName(nextUser.displayName ?? nextUser.email ?? '')
+        if (!cachedProfile) {
+          setRole('unknown')
+          setEmployeeId(null)
+          setDisplayName(nextUser.displayName ?? nextUser.email ?? '')
+        }
       } finally {
         setLoading(false)
       }

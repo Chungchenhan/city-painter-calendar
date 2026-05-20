@@ -58,8 +58,8 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg', 'apple-touch-icon.png', 'icons.svg'],
       manifest: {
-        name: '都市彩繪行事曆',
-        short_name: '彩繪行事曆',
+        name: '行事曆',
+        short_name: '行事曆',
         description: '都市彩繪有限公司部門工作行事曆',
         theme_color: '#f6b100',
         background_color: '#fff8e6',
@@ -90,11 +90,10 @@ export default defineConfig({
           },
           {
             urlPattern: ({ request, url }) => request.mode === 'navigate' && !url.pathname.startsWith('/__/auth/') && !url.pathname.startsWith('/api/'),
-            handler: 'NetworkFirst',
+            handler: 'StaleWhileRevalidate',
             options: {
               cacheName: 'pages',
-              expiration: { maxEntries: 20, maxAgeSeconds: 24 * 60 * 60 },
-              networkTimeoutSeconds: 3
+              expiration: { maxEntries: 20, maxAgeSeconds: 24 * 60 * 60 }
             }
           }
         ]
