@@ -295,6 +295,7 @@ export default function CalendarPage() {
   const [showCalendarDrawer, setShowCalendarDrawer] = useState(false)
   const [showSearchPanel, setShowSearchPanel] = useState(false)
   const [showNotificationsPanel, setShowNotificationsPanel] = useState(false)
+  const [showAccountMenu, setShowAccountMenu] = useState(false)
   const [showTitleIconPicker, setShowTitleIconPicker] = useState(false)
   const [showTitleSuggestions, setShowTitleSuggestions] = useState(false)
   const [dayListDate, setDayListDate] = useState<string | null>(null)
@@ -519,7 +520,7 @@ export default function CalendarPage() {
 
     function closeTopbarPanels(event: MouseEvent | TouchEvent) {
       const target = event.target
-      if (target instanceof Element && target.closest('.tt-search-panel, .tt-notifications-panel, .topbar-panel-trigger')) return
+      if (target instanceof Element && target.closest('.tt-search-panel, .tt-notifications-panel, .topbar-panel-trigger, .tt-account-menu, .tt-avatar')) return
       setShowSearchPanel(false)
       setShowNotificationsPanel(false)
     }
@@ -539,6 +540,30 @@ export default function CalendarPage() {
       document.removeEventListener('keydown', closeTopbarPanelsWithEscape)
     }
   }, [showSearchPanel, showNotificationsPanel])
+
+  useEffect(() => {
+    if (!showAccountMenu) return
+
+    function closeAccountMenu(event: MouseEvent | TouchEvent) {
+      const target = event.target
+      if (target instanceof Element && target.closest('.tt-account-menu, .tt-avatar')) return
+      setShowAccountMenu(false)
+    }
+
+    function closeAccountMenuWithEscape(event: KeyboardEvent) {
+      if (event.key !== 'Escape') return
+      setShowAccountMenu(false)
+    }
+
+    document.addEventListener('mousedown', closeAccountMenu)
+    document.addEventListener('touchstart', closeAccountMenu)
+    document.addEventListener('keydown', closeAccountMenuWithEscape)
+    return () => {
+      document.removeEventListener('mousedown', closeAccountMenu)
+      document.removeEventListener('touchstart', closeAccountMenu)
+      document.removeEventListener('keydown', closeAccountMenuWithEscape)
+    }
+  }, [showAccountMenu])
 
   useEffect(() => {
     if (!showTitleIconPicker) return
@@ -1655,6 +1680,7 @@ export default function CalendarPage() {
             onClick={() => {
               setShowSearchPanel((open) => !open)
               setShowNotificationsPanel(false)
+              setShowAccountMenu(false)
             }}
           >
             <TopbarIcon name="search" />
@@ -1665,14 +1691,38 @@ export default function CalendarPage() {
             onClick={() => {
               setShowNotificationsPanel((open) => !open)
               setShowSearchPanel(false)
+              setShowAccountMenu(false)
             }}
           >
             <TopbarIcon name="bell" />
           </button>
           {isAdmin && <button className="tt-icon-button add" onClick={() => openAddEvent(selectedDate)} aria-label="新增工作">＋</button>}
-          <button className="tt-avatar" onClick={() => signOut(auth)} title="登出">
+          <button
+            className={`tt-avatar ${showAccountMenu ? 'active' : ''}`}
+            onClick={() => {
+              setShowAccountMenu((open) => !open)
+              setShowSearchPanel(false)
+              setShowNotificationsPanel(false)
+            }}
+            aria-label="開啟帳號選單"
+            aria-expanded={showAccountMenu}
+          >
             {user?.photoURL ? <img src={user.photoURL} alt={displayName || user.email || '使用者'} referrerPolicy="no-referrer" /> : (displayName || user?.email || 'U').slice(0, 1)}
           </button>
+          {showAccountMenu && (
+            <div className="tt-account-menu" role="menu">
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setShowAccountMenu(false)
+                  signOut(auth)
+                }}
+              >
+                登出
+              </button>
+            </div>
+          )}
         </div>
       </header>
 

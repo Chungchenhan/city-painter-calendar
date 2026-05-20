@@ -68,6 +68,7 @@ textarea {
 
 .topbar-right {
   justify-content: flex-end;
+  position: relative;
 }
 
 .tt-logo {
@@ -218,6 +219,40 @@ textarea {
   height: 100%;
   display: block;
   object-fit: cover;
+}
+
+.tt-avatar.active {
+  box-shadow: 0 0 0 3px rgba(47, 200, 120, 0.18);
+}
+
+.tt-account-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 60;
+  min-width: 132px;
+  overflow: hidden;
+  border: 1px solid #e6e6e6;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.14);
+}
+
+.tt-account-menu button {
+  width: 100%;
+  min-height: 42px;
+  border: 0;
+  background: transparent;
+  color: #202124;
+  font-weight: 700;
+  text-align: left;
+  padding: 0 14px;
+}
+
+.tt-account-menu button:hover,
+.tt-account-menu button:focus-visible {
+  background: #f6f7f8;
+  outline: 0;
 }
 
 .timetree-body {
