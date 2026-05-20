@@ -714,6 +714,10 @@ export default function CalendarPage() {
     setActiveSearchDepartmentIds([])
   }
 
+  function requiredAssigneeIds(ids: string[]) {
+    return employeeId ? Array.from(new Set([employeeId, ...ids])) : ids
+  }
+
   function goToday() {
     const today = dayjs()
     setMonth(today.startOf('month'))
@@ -733,15 +737,17 @@ export default function CalendarPage() {
 
   function openAddEvent(date = selectedDate) {
     const defaultCalendar = writableCalendars.find((calendar) => (
-      currentEmployee?.departmentId && calendar.departmentIds.includes(currentEmployee.departmentId)
+      Boolean(currentEmployee?.departmentId && calendar.departmentIds.includes(currentEmployee.departmentId)) ||
+      Boolean(currentEmployee?.departmentName && calendar.name === currentEmployee.departmentName)
     )) ?? writableCalendars[0]
-    const defaultDepartmentId = defaultCalendar?.departmentIds[0] ?? currentEmployee?.departmentId ?? ''
+    const defaultDepartmentId = defaultCalendar?.departmentIds[0] ?? currentEmployee?.departmentId ?? departments.find((department) => department.name === currentEmployee?.departmentName)?.id ?? ''
     setEventForm({
       ...emptyEvent,
       date,
       calendarId: defaultCalendar?.id ?? '',
       calendarIds: defaultCalendar?.id ? [defaultCalendar.id] : [],
-      departmentId: defaultDepartmentId
+      departmentId: defaultDepartmentId,
+      assigneeIds: requiredAssigneeIds([])
     })
     setAttachmentFiles([])
     setDeletedAttachments([])
@@ -773,7 +779,7 @@ export default function CalendarPage() {
       startTime: event.startTime,
       endTime: event.endTime,
       departmentId: event.departmentId,
-      assigneeIds: event.assigneeIds ?? [],
+      assigneeIds: requiredAssigneeIds(event.assigneeIds ?? []),
       note: event.note ?? '',
       reminder: event.reminder ?? 'none',
       repeat: event.repeat ?? 'none',
@@ -919,7 +925,7 @@ export default function CalendarPage() {
         startTime: eventForm.startTime,
         endTime: eventForm.endTime,
         departmentId: selectedDepartmentId,
-        assigneeIds: eventForm.assigneeIds,
+        assigneeIds: requiredAssigneeIds(eventForm.assigneeIds),
         note: eventForm.note.trim(),
         reminder: eventForm.reminder ?? 'none',
         repeat: eventForm.repeat ?? 'none',
@@ -1898,7 +1904,12 @@ export default function CalendarPage() {
                     <div className="event-assignee-grid">
                       {employees.filter((emp) => emp.status !== 'inactive').map((emp) => (
                         <label key={emp.id}>
-                          <input type="checkbox" checked={eventForm.assigneeIds.includes(emp.id)} onChange={() => setEventForm((form) => ({ ...form, assigneeIds: toggle(form.assigneeIds, emp.id) }))} />
+                          <input
+                            type="checkbox"
+                            checked={eventForm.assigneeIds.includes(emp.id)}
+                            disabled={emp.id === employeeId}
+                            onChange={() => setEventForm((form) => ({ ...form, assigneeIds: requiredAssigneeIds(toggle(form.assigneeIds, emp.id)) }))}
+                          />
                           <span>{emp.name}</span>
                           <small>{emp.departmentName || departmentName(emp.departmentId || '')}</small>
                         </label>
