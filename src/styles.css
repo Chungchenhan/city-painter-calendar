@@ -626,6 +626,10 @@ textarea {
   right: 124px;
 }
 
+.tt-day-list-panel {
+  right: 96px;
+}
+
 .panel-head {
   display: flex;
   align-items: center;
@@ -1360,6 +1364,15 @@ p {
 .more-pill {
   color: #6b7280;
   background: #eee9dd;
+  cursor: pointer;
+}
+
+.more-pill:hover,
+.more-pill:focus-visible {
+  color: #202124;
+  background: #ded7c8;
+  outline: 2px solid rgba(47, 47, 47, 0.24);
+  outline-offset: 1px;
 }
 
 .agenda-header {

@@ -195,6 +195,7 @@ export default function CalendarPage() {
   const [activeCalendarIds, setActiveCalendarIds] = useState<string[]>([])
   const [showCalendarDrawer, setShowCalendarDrawer] = useState(false)
   const [showSearchPanel, setShowSearchPanel] = useState(false)
+  const [dayListDate, setDayListDate] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [activeToolPanel, setActiveToolPanel] = useState<ToolPanelId | null>(null)
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null)
@@ -435,6 +436,7 @@ export default function CalendarPage() {
 
   function openEventDetail(event: CalendarEvent) {
     setDragActionMenu(null)
+    setDayListDate(null)
     setSelectedDate(event.date)
     setMonth(dayjs(event.date).startOf('month'))
     setSelectedEventId(event.id)
@@ -984,6 +986,27 @@ export default function CalendarPage() {
     )
   }
 
+  function renderDayListPanel() {
+    if (!dayListDate) return null
+    const dayEvents = eventsByDate.get(dayListDate) ?? []
+    return (
+      <aside className="tt-floating-panel tt-day-list-panel">
+        <div className="panel-head">
+          <h2>{dayjs(dayListDate).format('M月D日')}活動</h2>
+          <button onClick={() => setDayListDate(null)} aria-label="關閉當日活動">×</button>
+        </div>
+        <p className="panel-hint">共 {dayEvents.length} 筆</p>
+        <div className="panel-list">
+          {dayEvents.map((event) => renderEventSummary(event))}
+          {dayEvents.length === 0 && <p className="panel-empty">這天沒有活動</p>}
+        </div>
+        {isAdmin && (
+          <button className="primary-btn" onClick={() => openAddEvent(dayListDate)}>新增這天活動</button>
+        )}
+      </aside>
+    )
+  }
+
   function renderToolPanel() {
     if (!activeToolPanel) return null
     const panel = TOOL_PANELS.find((item) => item.id === activeToolPanel)
@@ -1203,7 +1226,27 @@ export default function CalendarPage() {
                           <small>{event.startTime}</small>
                         </button>
                       ))}
-                      {dayEvents.length > 7 && <span className="more-pill">+{dayEvents.length - 7}</span>}
+                      {dayEvents.length > 7 && (
+                        <span
+                          className="more-pill"
+                          role="button"
+                          tabIndex={0}
+                          onClick={(clickEvent) => {
+                            clickEvent.stopPropagation()
+                            setSelectedDate(date)
+                            setDayListDate(date)
+                          }}
+                          onKeyDown={(keyEvent) => {
+                            if (keyEvent.key !== 'Enter' && keyEvent.key !== ' ') return
+                            keyEvent.preventDefault()
+                            keyEvent.stopPropagation()
+                            setSelectedDate(date)
+                            setDayListDate(date)
+                          }}
+                        >
+                          +{dayEvents.length - 7}
+                        </span>
+                      )}
                     </span>
                   </button>
                 )
@@ -1293,6 +1336,7 @@ export default function CalendarPage() {
       )}
 
       {renderToolPanel()}
+      {renderDayListPanel()}
       {renderEventDetailPanel()}
 
       {dragActionMenu && (
