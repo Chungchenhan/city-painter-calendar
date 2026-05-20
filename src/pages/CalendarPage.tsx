@@ -50,6 +50,7 @@ const emptyCalendar = {
 
 const emptyEvent = {
   calendarId: '',
+  calendarIds: [] as string[],
   title: '',
   date: dayjs().format('YYYY-MM-DD'),
   startTime: '09:00',
@@ -306,14 +307,15 @@ export default function CalendarPage() {
   const visibleEvents = useMemo(() => {
     const keyword = searchQuery.trim().toLowerCase()
     return events.filter((event) => {
-      const calendar = visibleCalendarMap.get(eventDisplayCalendarId(event))
-      if (!calendar || !selectedCalendarIds.includes(calendar.id)) return false
+      const eventCalendarIds = eventDisplayCalendarIds(event)
+      const eventCalendars = eventCalendarIds.map((id) => visibleCalendarMap.get(id)).filter(Boolean) as DisplayCalendar[]
+      if (!eventCalendars.length || !eventCalendars.some((calendar) => selectedCalendarIds.includes(calendar.id))) return false
       if (keyword) {
         const searchable = [
           event.title,
           event.note ?? '',
           departmentName(event.departmentId),
-          calendar.name,
+          ...eventCalendars.map((calendar) => calendar.name),
           ...(event.assigneeIds ?? []).map(employeeName)
         ].join(' ').toLowerCase()
         if (!searchable.includes(keyword)) return false
@@ -466,9 +468,15 @@ export default function CalendarPage() {
 
   function eventDisplayCalendarId(event: CalendarEvent) {
     if (isHrReadonlyEvent(event)) return hrLeaveCalendar?.id ?? event.calendarId
+    if (event.calendarIds?.length) return event.calendarIds[0]
     if (event.calendarId.startsWith(DEPARTMENT_CALENDAR_PREFIX)) return event.calendarId
     if (event.departmentId) return departmentCalendarId(event.departmentId)
     return event.calendarId
+  }
+
+  function eventDisplayCalendarIds(event: CalendarEvent) {
+    if (isHrReadonlyEvent(event)) return [eventDisplayCalendarId(event)]
+    return event.calendarIds?.length ? event.calendarIds : [eventDisplayCalendarId(event)]
   }
 
   function eventCalendarColor(event: CalendarEvent) {
@@ -476,7 +484,10 @@ export default function CalendarPage() {
   }
 
   function eventCalendarName(event: CalendarEvent) {
-    return visibleCalendarMap.get(eventDisplayCalendarId(event))?.name ?? '未分類行事曆'
+    const names = eventDisplayCalendarIds(event)
+      .map((id) => visibleCalendarMap.get(id)?.name)
+      .filter(Boolean)
+    return names.join('、') || '未分類行事曆'
   }
 
   function departmentName(id: string) {
@@ -494,6 +505,10 @@ export default function CalendarPage() {
   function valueLabel(field: string, value: unknown) {
     if (field === 'departmentId') return value ? departmentName(String(value)) : '未分配'
     if (field === 'calendarId') return value ? (visibleCalendarMap.get(String(value))?.name || '未分類行事曆') : '未分類行事曆'
+    if (field === 'calendarIds') {
+      const ids = Array.isArray(value) ? value : []
+      return ids.length ? ids.map((id) => visibleCalendarMap.get(String(id))?.name || '未分類行事曆').join('、') : '未分類行事曆'
+    }
     if (field === 'assigneeIds') {
       const ids = Array.isArray(value) ? value : []
       return ids.length ? ids.map((id) => employeeName(String(id))).join('、') : '未指定'
@@ -512,7 +527,7 @@ export default function CalendarPage() {
       ['startTime', '開始時間'],
       ['endTime', '結束時間'],
       ['departmentId', '部門'],
-      ['calendarId', '行事曆'],
+      ['calendarIds', '行事曆'],
       ['assigneeIds', '同仁'],
       ['reminder', '通知'],
       ['repeat', '重複'],
@@ -551,6 +566,23 @@ export default function CalendarPage() {
       .map((employee) => employee.id)
   }
 
+  function primaryDepartmentIdFromCalendarIds(calendarIds: string[], fallback = '') {
+    const firstCalendarId = calendarIds[0] ?? ''
+    return departmentIdFromCalendarId(firstCalendarId) || visibleCalendarMap.get(firstCalendarId)?.departmentIds?.[0] || fallback
+  }
+
+  function toggleEventCalendar(calendarId: string) {
+    setEventForm((form) => {
+      const calendarIds = toggle(form.calendarIds, calendarId)
+      return {
+        ...form,
+        calendarIds,
+        calendarId: calendarIds[0] ?? '',
+        departmentId: primaryDepartmentIdFromCalendarIds(calendarIds, form.departmentId)
+      }
+    })
+  }
+
   function toggleCalendarDepartment(departmentId: string) {
     setCalendarForm((form) => {
       const selected = form.departmentIds.includes(departmentId)
@@ -568,6 +600,9 @@ export default function CalendarPage() {
   const selectedAssigneeText = eventForm.assigneeIds.length > 0
     ? eventForm.assigneeIds.map(employeeName).join('、')
     : '選擇同仁'
+  const selectedEventCalendarText = eventForm.calendarIds.length > 0
+    ? eventForm.calendarIds.map((id) => visibleCalendarMap.get(id)?.name).filter(Boolean).join('、')
+    : '選擇行事曆'
   const todoSummaryText = eventForm.todos.length > 0
     ? `${eventForm.todos.filter((todo) => todo.done).length}/${eventForm.todos.length} 已完成`
     : '待辦清單'
@@ -626,6 +661,7 @@ export default function CalendarPage() {
       ...emptyEvent,
       date,
       calendarId: defaultCalendar?.id ?? '',
+      calendarIds: defaultCalendar?.id ? [defaultCalendar.id] : [],
       departmentId: defaultDepartmentId
     })
     setAttachmentFiles([])
@@ -652,6 +688,7 @@ export default function CalendarPage() {
 
     setEventForm({
       calendarId: eventDisplayCalendarId(event),
+      calendarIds: eventDisplayCalendarIds(event),
       title: event.title,
       date: event.date,
       startTime: event.startTime,
@@ -769,7 +806,7 @@ export default function CalendarPage() {
   }
 
   async function saveEvent() {
-    if (!eventForm.calendarId || !eventForm.title.trim() || !eventForm.date) {
+    if (!eventForm.calendarIds.length || !eventForm.title.trim() || !eventForm.date) {
       alert('請填寫行事曆、標題與日期')
       return
     }
@@ -783,9 +820,12 @@ export default function CalendarPage() {
     try {
       const pendingAttachmentFiles = [...attachmentFiles]
       const removedAttachments = [...deletedAttachments]
-      const selectedDepartmentId = departmentIdFromCalendarId(eventForm.calendarId) || eventForm.departmentId
+      const selectedCalendarIds = eventForm.calendarIds
+      const primaryCalendarId = selectedCalendarIds[0]
+      const selectedDepartmentId = primaryDepartmentIdFromCalendarIds(selectedCalendarIds, eventForm.departmentId)
       const payload = {
-        calendarId: eventForm.calendarId,
+        calendarId: primaryCalendarId,
+        calendarIds: selectedCalendarIds,
         title: eventForm.title.trim(),
         date: eventForm.date,
         startTime: eventForm.startTime,
@@ -1109,7 +1149,7 @@ export default function CalendarPage() {
   }
 
   async function deleteCalendar(id: string) {
-    if (events.some((event) => event.calendarId === id)) {
+    if (events.some((event) => event.calendarId === id || event.calendarIds?.includes(id))) {
       alert('此行事曆已有工作，請先刪除或移動工作')
       return
     }
@@ -1707,6 +1747,24 @@ export default function CalendarPage() {
               </div>
 
               <div className="event-editor-list">
+                <div className="event-editor-row">
+                  <EventRowIcon name="calendar" />
+                  <details className="event-picker-row">
+                    <summary>
+                      <span>{selectedEventCalendarText}</span>
+                      {eventForm.calendarIds.length > 0 && <small>{eventForm.calendarIds.length} 個行事曆</small>}
+                    </summary>
+                    <div className="event-assignee-grid event-calendar-grid">
+                      {writableCalendars.map((calendar) => (
+                        <label key={calendar.id}>
+                          <input type="checkbox" checked={eventForm.calendarIds.includes(calendar.id)} onChange={() => toggleEventCalendar(calendar.id)} />
+                          <span>{calendar.name}</span>
+                          <small>{calendar.systemKind === 'department' ? '部門' : '行事曆'}</small>
+                        </label>
+                      ))}
+                    </div>
+                  </details>
+                </div>
                 <div className="event-editor-row assignee">
                   <EventRowIcon name="person" />
                   <details className="event-picker-row">
@@ -1724,40 +1782,6 @@ export default function CalendarPage() {
                       ))}
                     </div>
                   </details>
-                </div>
-                <div className="event-editor-row">
-                  <EventRowIcon name="department" />
-                  <select
-                    value={eventForm.departmentId}
-                    onChange={(event) => {
-                      const nextDepartmentId = event.target.value
-                      setEventForm((form) => ({
-                        ...form,
-                        departmentId: nextDepartmentId,
-                        calendarId: nextDepartmentId ? departmentCalendarId(nextDepartmentId) : ''
-                      }))
-                    }}
-                  >
-                    <option value="">不指定部門</option>
-                    {departments.map((department) => <option key={department.id} value={department.id}>{department.name}</option>)}
-                  </select>
-                </div>
-                <div className="event-editor-row">
-                  <EventRowIcon name="calendar" />
-                  <select
-                    value={eventForm.calendarId}
-                    onChange={(event) => {
-                      const nextCalendarId = event.target.value
-                      setEventForm((form) => ({
-                        ...form,
-                        calendarId: nextCalendarId,
-                        departmentId: departmentIdFromCalendarId(nextCalendarId) || form.departmentId
-                      }))
-                    }}
-                  >
-                    <option value="">選擇行事曆</option>
-                    {writableCalendars.map((calendar) => <option key={calendar.id} value={calendar.id}>{calendar.name}</option>)}
-                  </select>
                 </div>
                 <div className="event-editor-row">
                   <EventRowIcon name="bell" />

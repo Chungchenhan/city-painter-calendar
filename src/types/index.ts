@@ -36,6 +36,7 @@ export interface CalendarGroup {
 export interface CalendarEvent {
   id: string
   calendarId: string
+  calendarIds?: string[]
   title: string
   date: string
   startTime: string
