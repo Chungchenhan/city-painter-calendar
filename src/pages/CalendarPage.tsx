@@ -291,6 +291,29 @@ export default function CalendarPage() {
     textarea.style.height = `${textarea.scrollHeight}px`
   }, [eventForm.note, showEventModal])
 
+  useEffect(() => {
+    if (!dragActionMenu) return
+
+    function closeMenu(event: MouseEvent | TouchEvent) {
+      const target = event.target
+      if (target instanceof Element && target.closest('.event-drag-menu')) return
+      setDragActionMenu(null)
+    }
+
+    function closeMenuWithEscape(event: KeyboardEvent) {
+      if (event.key === 'Escape') setDragActionMenu(null)
+    }
+
+    document.addEventListener('mousedown', closeMenu)
+    document.addEventListener('touchstart', closeMenu)
+    document.addEventListener('keydown', closeMenuWithEscape)
+    return () => {
+      document.removeEventListener('mousedown', closeMenu)
+      document.removeEventListener('touchstart', closeMenu)
+      document.removeEventListener('keydown', closeMenuWithEscape)
+    }
+  }, [dragActionMenu])
+
   const monthDays = useMemo(() => {
     const start = month.startOf('month').startOf('week')
     return Array.from({ length: 42 }, (_, index) => start.add(index, 'day'))
