@@ -123,6 +123,27 @@ function dateRangeBetween(startDate: string, endDate: string) {
   return days
 }
 
+function compactText(text: string, limit = 18) {
+  const compact = text.replace(/\s+/g, ' ').trim()
+  return compact.length > limit ? `${compact.slice(0, limit)}...` : compact
+}
+
+function eventSuggestionMeta(event: CalendarEvent) {
+  const parts = [event.date]
+  if (event.location?.trim()) parts.push(compactText(event.location, 16))
+  if (event.url?.trim()) {
+    try {
+      parts.push(new URL(event.url).hostname.replace(/^www\./, ''))
+    } catch {
+      parts.push(compactText(event.url, 16))
+    }
+  }
+  if (event.note?.trim()) parts.push(compactText(event.note, 24))
+  const todoTexts = (event.todos ?? []).map((todo) => todo.text.trim()).filter(Boolean)
+  if (todoTexts.length) parts.push(todoTexts.slice(0, 2).map((text) => compactText(text, 10)).join('、'))
+  return parts.join(' · ')
+}
+
 function googleMapsDirectionUrl(location: string) {
   return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(location)}`
 }
@@ -1970,13 +1991,7 @@ export default function CalendarPage() {
                     {titleSuggestions.map((suggestion) => (
                       <button type="button" key={suggestion.id} onClick={() => applyTitleSuggestion(suggestion)}>
                         <strong>{suggestion.title}</strong>
-                        <small>
-                          {suggestion.date}
-                          {suggestion.location ? ` · ${suggestion.location}` : ''}
-                          {suggestion.url ? ' · 網址' : ''}
-                          {suggestion.note ? ' · 備註' : ''}
-                          {suggestion.todos?.length ? ` · ${suggestion.todos.length} 項待辦` : ''}
-                        </small>
+                        <small>{eventSuggestionMeta(suggestion)}</small>
                       </button>
                     ))}
                   </div>
