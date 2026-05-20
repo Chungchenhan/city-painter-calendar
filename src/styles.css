@@ -2849,6 +2849,11 @@ p {
 }
 
 @media (max-width: 760px) {
+  :root {
+    --mobile-panel-top: 96px;
+    --mobile-panel-bottom: calc(28px + env(safe-area-inset-bottom, 0px));
+  }
+
   html,
   body,
   #root {
@@ -3174,10 +3179,10 @@ p {
   }
 
   .event-detail-panel {
-    top: 136px;
+    top: var(--mobile-panel-top);
     left: 8px;
     right: 8px;
-    bottom: calc(136px + env(safe-area-inset-bottom, 0px));
+    bottom: var(--mobile-panel-bottom);
     width: auto;
     border-left: 0;
     border: 1px solid #e9e9e9;
@@ -3210,17 +3215,17 @@ p {
   .tt-search-panel {
     left: 8px;
     right: 8px;
-    top: 136px;
+    top: var(--mobile-panel-top);
     width: auto;
     max-height: none;
   }
 
   .tt-floating-panel {
-    bottom: calc(136px + env(safe-area-inset-bottom, 0px));
+    bottom: var(--mobile-panel-bottom);
   }
 
   .tt-search-panel {
-    bottom: calc(136px + env(safe-area-inset-bottom, 0px));
+    bottom: var(--mobile-panel-bottom);
   }
 
   .tt-calendar-drawer {
