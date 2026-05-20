@@ -50,10 +50,25 @@ function localApiPlugin(): Plugin {
   }
 }
 
+function appVersionPlugin(): Plugin {
+  const version = process.env.VERCEL_GIT_COMMIT_SHA || process.env.VERCEL_DEPLOYMENT_ID || `${Date.now()}`
+  return {
+    name: 'app-version',
+    generateBundle() {
+      this.emitFile({
+        type: 'asset',
+        fileName: 'app-version.json',
+        source: JSON.stringify({ version })
+      })
+    }
+  }
+}
+
 export default defineConfig({
   plugins: [
     react(),
     localApiPlugin(),
+    appVersionPlugin(),
     VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg', 'apple-touch-icon.png', 'icons.svg'],

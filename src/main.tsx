@@ -9,9 +9,12 @@ import { useAuth } from './contexts/AuthContext'
 import AppShell from './components/AppShell'
 import CalendarPage from './pages/CalendarPage'
 import LoginPage from './pages/LoginPage'
+import { setupAppUpdateChecks } from './lib/appUpdate'
 import './styles.css'
 
 const queryClient = new QueryClient()
+
+setupAppUpdateChecks()
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const { user, role, loading } = useAuth()
