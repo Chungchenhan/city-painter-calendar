@@ -3226,6 +3226,36 @@ p {
 
   .tt-search-panel {
     bottom: var(--mobile-panel-bottom);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 14px 12px;
+  }
+
+  .tt-search-panel .panel-head {
+    min-height: 48px;
+  }
+
+  .tt-search-panel .panel-head h2 {
+    font-size: 17px;
+  }
+
+  .tt-search-panel > input {
+    height: 48px;
+    min-height: 48px;
+    padding: 0 14px;
+    font-size: 15px;
+  }
+
+  .tt-search-panel .search-department-filter summary {
+    min-height: 36px;
+  }
+
+  .tt-search-panel .panel-list {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding-top: 2px;
   }
 
   .tt-calendar-drawer {
