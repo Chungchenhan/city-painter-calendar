@@ -725,7 +725,6 @@ export default function CalendarPage() {
     setDragActionMenu(null)
     setDayListDate(null)
     setSelectedDate(event.date)
-    setMonth(dayjs(event.date).startOf('month'))
     setSelectedEventId(event.id)
     setShowNotificationsPanel(false)
     setShowSearchPanel(false)
