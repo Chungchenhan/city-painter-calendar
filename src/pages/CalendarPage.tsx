@@ -100,6 +100,10 @@ function composeTitleWithIcon(icon: string, title: string) {
   return `${icon}${cleanTitle ? ` ${cleanTitle}` : ''}`
 }
 
+function normalizeSearchText(text: string) {
+  return titleWithoutKnownIcon(text).trim().toLowerCase()
+}
+
 function googleMapsDirectionUrl(location: string) {
   return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(location)}`
 }
@@ -705,17 +709,26 @@ export default function CalendarPage() {
     : '不選部門，僅指定同仁'
   const currentTitleIcon = selectedTitleIcon(eventForm.title)
   const currentTitleText = titleWithoutKnownIcon(eventForm.title)
-  const titleSuggestions = useMemo(() => {
-    const query = currentTitleText.trim().toLowerCase()
-    if (query.length < 1) return []
-    return events
-      .filter((event) => event.id !== editingEventId)
-      .filter((event) => dayjs(event.date).isBefore(dayjs().add(1, 'day'), 'day'))
-      .filter((event) => titleWithoutKnownIcon(event.title).toLowerCase().includes(query))
+  const titleSuggestionIndex = useMemo(() => (
+    events
       .filter((event) => event.location?.trim() || event.url?.trim() || event.note?.trim() || event.todos?.length)
+      .filter((event) => dayjs(event.date).isBefore(dayjs().add(1, 'day'), 'day'))
       .sort((a, b) => `${b.date} ${b.startTime}`.localeCompare(`${a.date} ${a.startTime}`))
+      .slice(0, 600)
+      .map((event) => ({
+        event,
+        normalizedTitle: normalizeSearchText(event.title)
+      }))
+  ), [events])
+  const titleSuggestions = useMemo(() => {
+    const query = normalizeSearchText(currentTitleText)
+    if (query.length < 2) return []
+    return titleSuggestionIndex
+      .filter((item) => item.event.id !== editingEventId)
+      .filter((item) => item.normalizedTitle.includes(query))
+      .map((item) => item.event)
       .slice(0, 6)
-  }, [currentTitleText, editingEventId, events])
+  }, [currentTitleText, editingEventId, titleSuggestionIndex])
   const todoSummaryText = eventForm.todos.length > 0
     ? `${eventForm.todos.filter((todo) => todo.done).length}/${eventForm.todos.length} 已完成`
     : '待辦清單'
