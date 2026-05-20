@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, DragEvent, PointerEvent, ReactNode } from 'react'
 import dayjs from 'dayjs'
-import { addDoc, arrayUnion, collection, deleteDoc, doc, updateDoc } from 'firebase/firestore'
+import { addDoc, arrayUnion, collection, deleteDoc, doc, setDoc, updateDoc } from 'firebase/firestore'
 import { signOut } from 'firebase/auth'
 import { useQueryClient } from '@tanstack/react-query'
 import { auth, db } from '../lib/firebase'
@@ -100,6 +100,10 @@ function isHrReadonlyEvent(event: CalendarEvent) {
 
 function departmentCalendarId(departmentId: string) {
   return `${DEPARTMENT_CALENDAR_PREFIX}${departmentId}`
+}
+
+function departmentCalendarDocId(departmentId: string) {
+  return `departmentCalendar_${departmentId}`
 }
 
 function departmentIdFromCalendarId(calendarId: string) {
@@ -221,23 +225,32 @@ export default function CalendarPage() {
   } | null>(null)
 
   const currentEmployee = employees.find((emp) => emp.id === employeeId)
+  const currentEmployeeDepartmentName = currentEmployee?.departmentName || departments.find((department) => department.id === currentEmployee?.departmentId)?.name || ''
+  const canManageCalendarColors = currentEmployeeDepartmentName === '管理部'
+
+  const departmentCalendarSettingsMap = useMemo(() => (
+    new Map(calendars.map((calendar) => [calendar.id, calendar]))
+  ), [calendars])
 
   const departmentCalendars = useMemo<DisplayCalendar[]>(() => (
     [...departments]
       .sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'))
-      .map((department, index) => ({
-        id: departmentCalendarId(department.id),
-        name: department.name,
-        color: COLORS[index % COLORS.length],
-        departmentIds: [department.id],
-        employeeIds: employees
-          .filter((employee) => employee.status !== 'inactive')
-          .filter((employee) => employee.departmentId === department.id || employee.departmentName === department.name)
-          .map((employee) => employee.id),
-        isCompanyWide: false,
-        systemKind: 'department'
-      }))
-  ), [departments, employees])
+      .map((department, index) => {
+        const setting = departmentCalendarSettingsMap.get(departmentCalendarDocId(department.id))
+        return {
+          id: departmentCalendarId(department.id),
+          name: department.name,
+          color: setting?.color || COLORS[index % COLORS.length],
+          departmentIds: [department.id],
+          employeeIds: employees
+            .filter((employee) => employee.status !== 'inactive')
+            .filter((employee) => employee.departmentId === department.id || employee.departmentName === department.name)
+            .map((employee) => employee.id),
+          isCompanyWide: false,
+          systemKind: 'department'
+        }
+      })
+  ), [departmentCalendarSettingsMap, departments, employees])
 
   const hrLeaveCalendar = useMemo<DisplayCalendar | null>(() => {
     const calendar = calendars.find((item) => item.name.trim() === HR_LEAVE_CALENDAR_NAME)
@@ -626,6 +639,26 @@ export default function CalendarPage() {
       alert('行事曆儲存失敗')
     } finally {
       setSaving(false)
+    }
+  }
+
+  async function updateDepartmentCalendarColor(calendar: DisplayCalendar, color: string) {
+    const departmentId = calendar.departmentIds[0]
+    if (!departmentId || !canManageCalendarColors) return
+
+    try {
+      await setDoc(doc(db, 'calendarCalendars', departmentCalendarDocId(departmentId)), {
+        name: calendar.name,
+        color,
+        departmentIds: [departmentId],
+        employeeIds: calendar.employeeIds,
+        isCompanyWide: false,
+        updatedAt: new Date().toISOString(),
+        createdBy: user?.uid ?? ''
+      }, { merge: true })
+      await queryClient.invalidateQueries({ queryKey: ['calendarCalendars'] })
+    } catch {
+      alert('行事曆顏色儲存失敗')
     }
   }
 
@@ -1171,16 +1204,30 @@ export default function CalendarPage() {
                 {visibleCalendars.map((calendar) => {
                   const active = selectedCalendarIds.includes(calendar.id)
                   return (
-                    <button
+                    <div
                       key={calendar.id}
-                      className={active ? 'active' : ''}
-                      onClick={() => toggleCalendar(calendar.id)}
+                      className={`drawer-calendar-item ${active ? 'active' : ''}`}
                       style={{ '--calendar-color': calendar.color } as CSSProperties}
                     >
-                      <span />
-                      <strong>{calendar.name}</strong>
-                      <small>{calendar.systemKind === 'hrLeave' ? 'HR' : '部門'}</small>
-                    </button>
+                      <button className="drawer-calendar-main" onClick={() => toggleCalendar(calendar.id)}>
+                        <span />
+                        <strong>{calendar.name}</strong>
+                        <small>{calendar.systemKind === 'hrLeave' ? 'HR' : '部門'}</small>
+                      </button>
+                      {calendar.systemKind === 'department' && canManageCalendarColors && (
+                        <div className="drawer-color-row" aria-label={`${calendar.name}顏色`}>
+                          {COLORS.map((color) => (
+                            <button
+                              key={color}
+                              className={calendar.color === color ? 'selected' : ''}
+                              style={{ '--swatch-color': color } as CSSProperties}
+                              onClick={() => updateDepartmentCalendarColor(calendar, color)}
+                              aria-label={`設定${calendar.name}為${color}`}
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   )
                 })}
               </div>

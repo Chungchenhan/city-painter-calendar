@@ -602,6 +602,10 @@ textarea {
   overflow: hidden;
 }
 
+.tt-calendar-drawer .panel-head {
+  padding-left: 8px;
+}
+
 .tt-floating-panel {
   right: 62px;
   top: 70px;
@@ -658,25 +662,32 @@ textarea {
   gap: 8px;
 }
 
-.drawer-calendar-list button {
+.drawer-calendar-item {
+  overflow: hidden;
+  border: 1px solid #ececec;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.drawer-calendar-item.active {
+  border-color: var(--calendar-color);
+  background: #fbfff8;
+}
+
+.drawer-calendar-main {
   min-height: 48px;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 9px;
   align-items: center;
-  border: 1px solid #ececec;
-  border-radius: 8px;
+  width: 100%;
+  border: 0;
   padding: 0 10px;
-  background: #fff;
+  background: transparent;
   text-align: left;
 }
 
-.drawer-calendar-list button.active {
-  border-color: var(--calendar-color);
-  background: #fbfff8;
-}
-
-.drawer-calendar-list button > span,
+.drawer-calendar-main > span,
 .settings-calendar > span {
   width: 13px;
   height: 13px;
@@ -693,6 +704,27 @@ textarea {
 .drawer-calendar-list small {
   color: #2f8fca;
   font-weight: 800;
+}
+
+.drawer-color-row {
+  display: flex;
+  gap: 8px;
+  padding: 0 10px 10px 32px;
+}
+
+.drawer-color-row button {
+  width: 22px;
+  height: 22px;
+  min-height: 22px;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  background: var(--swatch-color);
+  padding: 0;
+}
+
+.drawer-color-row button.selected {
+  border-color: #1f2937;
+  box-shadow: 0 0 0 2px #fff inset;
 }
 
 .drawer-actions {
