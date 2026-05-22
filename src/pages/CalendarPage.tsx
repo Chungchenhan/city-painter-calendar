@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, DragEvent, PointerEvent, ReactNode, TouchEvent as ReactTouchEvent } from 'react'
 import dayjs from 'dayjs'
-import { addDoc, arrayUnion, collection, deleteDoc, doc, getDoc, getDocs, query, setDoc, updateDoc, where } from 'firebase/firestore'
+import { addDoc, arrayUnion, collection, deleteDoc, doc, getDoc, getDocs, query, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore'
 import { signOut } from 'firebase/auth'
 import { useQueryClient } from '@tanstack/react-query'
 import { auth, db } from '../lib/firebase'
@@ -66,6 +66,10 @@ type EventForm = {
   allDay: boolean
   departmentId: string
   assigneeIds: string[]
+  visibilityEnabled: boolean
+  hiddenDepartmentIds: string[]
+  hiddenAssigneeIds: string[]
+  titleOverrides: NonNullable<CalendarEvent['titleOverrides']>
   note: string
   reminder: CalendarEvent['reminder']
   repeat: CalendarEvent['repeat']
@@ -101,6 +105,10 @@ const emptyEvent: EventForm = {
   allDay: false,
   departmentId: '',
   assigneeIds: [] as string[],
+  visibilityEnabled: false,
+  hiddenDepartmentIds: [] as string[],
+  hiddenAssigneeIds: [] as string[],
+  titleOverrides: [] as NonNullable<CalendarEvent['titleOverrides']>,
   note: '',
   reminder: 'none' as CalendarEvent['reminder'],
   repeat: 'none' as CalendarEvent['repeat'],
@@ -681,6 +689,7 @@ export default function CalendarPage() {
 
   const visibleSourceEvents = useMemo(() => {
     return events.filter((event) => {
+      if (!eventAllowedForViewer(event)) return false
       const eventCalendarIds = eventDisplayCalendarIds(event)
       const eventCalendars = eventCalendarIds.map((id) => visibleCalendarMap.get(id)).filter(Boolean) as DisplayCalendar[]
       if (!eventCalendars.length) return Boolean(employeeId && event.assigneeIds?.includes(employeeId))
@@ -690,7 +699,7 @@ export default function CalendarPage() {
       if (!event.assigneeIds?.length) return true
       return false
     })
-  }, [employeeId, events, isAdmin, selectedCalendarIds, visibleCalendarMap, departments, employees, hrLeaveCalendar])
+  }, [currentEmployee?.departmentId, currentEmployee?.departmentName, employeeId, events, isAdmin, selectedCalendarIds, visibleCalendarMap, departments, employees, hrLeaveCalendar])
 
   const visibleEvents = useMemo(() => {
     const rangeStart = month.subtract(1, 'month').startOf('month').format('YYYY-MM-DD')
@@ -728,22 +737,19 @@ export default function CalendarPage() {
 
   function canReceiveActivityLog(log: CalendarActivityLog) {
     const assigneeIds = log.assigneeIds ?? []
-    if (assigneeIds.length) return Boolean(employeeId && assigneeIds.includes(employeeId))
-    if (!log.departmentId) return true
-    return Boolean(
-      currentEmployee?.departmentId === log.departmentId ||
-      currentEmployee?.departmentName === departmentName(log.departmentId)
-    )
+    return Boolean(employeeId && assigneeIds.includes(employeeId))
   }
 
   const visibleActivityLogs = useMemo(() => (
     activityLogs
       .filter((log) => selectedCalendarIds.includes(log.calendarId))
-      .filter(canReceiveActivityLog)
-  ), [activityLogs, currentEmployee?.departmentId, currentEmployee?.departmentName, employeeId, selectedCalendarIds])
+  ), [activityLogs, selectedCalendarIds])
+  const pushActivityLogs = useMemo(() => (
+    visibleActivityLogs.filter(canReceiveActivityLog)
+  ), [employeeId, visibleActivityLogs])
   const unreadActivityCount = useMemo(() => (
-    visibleActivityLogs.filter((log) => log.createdAt && log.createdAt > lastSeenActivityAt).length
-  ), [lastSeenActivityAt, visibleActivityLogs])
+    pushActivityLogs.filter((log) => log.createdAt && log.createdAt > lastSeenActivityAt).length
+  ), [lastSeenActivityAt, pushActivityLogs])
 
   const hasTodayLeave = useMemo(() => {
     if (!employeeId) return false
@@ -826,6 +832,7 @@ export default function CalendarPage() {
     if (!('Notification' in window) || Notification.permission !== 'granted') return
     const timers = visibleEvents.flatMap((event) => {
       if (!event.reminder || event.reminder === 'none') return []
+      if (!employeeId || !event.assigneeIds?.includes(employeeId)) return []
       const eventTime = event.allDay ? dayjs(event.date).startOf('day') : dayjs(`${event.date} ${event.startTime}`)
       const notifyTime = eventTime.subtract(reminderOffsetMinutes(event.reminder), 'minute')
       const delay = notifyTime.diff(dayjs())
@@ -843,7 +850,7 @@ export default function CalendarPage() {
       return [timer]
     })
     return () => timers.forEach((timer) => window.clearTimeout(timer))
-  }, [canSendCalendarNotificationAt, visibleEvents])
+  }, [canSendCalendarNotificationAt, employeeId, visibleEvents])
 
   useEffect(() => {
     if (!employeeId || !currentShift || hasTodayLeave) return
@@ -914,13 +921,13 @@ export default function CalendarPage() {
   }, [unreadActivityCount])
 
   useEffect(() => {
-    const currentIds = new Set(visibleActivityLogs.map((log) => log.id))
+    const currentIds = new Set(pushActivityLogs.map((log) => log.id))
     if (!seenActivityLogIdsRef.current) {
       seenActivityLogIdsRef.current = currentIds
       return
     }
 
-    const addedLogs = visibleActivityLogs
+    const addedLogs = pushActivityLogs
       .filter((log) => !seenActivityLogIdsRef.current?.has(log.id))
       .filter((log) => log.actorUid !== user?.uid)
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
@@ -937,7 +944,7 @@ export default function CalendarPage() {
         data: { url: '/' }
       })
     })
-  }, [canSendCalendarNotificationAt, notificationPermission, user?.uid, visibleActivityLogs])
+  }, [canSendCalendarNotificationAt, notificationPermission, pushActivityLogs, user?.uid])
 
   useEffect(() => {
     const textarea = noteTextareaRef.current
@@ -1182,7 +1189,41 @@ export default function CalendarPage() {
     return employee?.nickname || employee?.name || (id === employeeId ? displayName : '') || '未指定'
   }
 
+  function eventAllowedForViewer(event: CalendarEvent) {
+    if (isAdmin) return true
+    if (!employeeId) return false
+    const hiddenEmployees = event.hiddenAssigneeIds ?? []
+    if (hiddenEmployees.includes(employeeId)) return false
+    const hiddenDepartments = event.hiddenDepartmentIds ?? []
+    const viewerDepartmentId = currentEmployee?.departmentId ?? ''
+    const viewerDepartmentName = currentEmployee?.departmentName ?? ''
+    if (viewerDepartmentId && hiddenDepartments.includes(viewerDepartmentId)) return false
+    if (viewerDepartmentName && hiddenDepartments.some((id) => departmentName(id) === viewerDepartmentName)) return false
+    const assignees = event.assigneeIds ?? []
+    const hasDepartmentScope = Boolean(event.departmentId || event.calendarId || event.calendarIds?.length)
+    if (!hasDepartmentScope && assignees.length > 0) return assignees.includes(employeeId)
+    return true
+  }
+
+  function eventTitleOverrideForViewer(event: CalendarEvent) {
+    const overrides = event.titleOverrides ?? []
+    if (!overrides.length) return ''
+    const userOverride = employeeId
+      ? overrides.find((item) => item.targetType === 'employee' && item.targetId === employeeId)
+      : null
+    if (userOverride?.title.trim()) return userOverride.title.trim()
+    const departmentId = currentEmployee?.departmentId ?? ''
+    const departmentNameValue = currentEmployee?.departmentName ?? ''
+    const departmentOverride = overrides.find((item) => (
+      item.targetType === 'department' &&
+      (item.targetId === departmentId || departmentName(item.targetId) === departmentNameValue)
+    ))
+    return departmentOverride?.title.trim() ?? ''
+  }
+
   function eventDisplayTitle(event: CalendarEvent) {
+    const overrideTitle = eventTitleOverrideForViewer(event)
+    if (overrideTitle) return overrideTitle
     if (!isHrReadonlyEvent(event) || !event.assigneeIds?.length) return event.title
     const employee = employees.find((item) => item.id === event.assigneeIds[0])
     const nickname = employee?.nickname?.trim()
@@ -1212,6 +1253,15 @@ export default function CalendarPage() {
       const ids = Array.isArray(value) ? value : []
       return ids.length ? ids.map((id) => employeeName(String(id))).join('、') : '未指定'
     }
+    if (field === 'hiddenDepartmentIds') {
+      const ids = Array.isArray(value) ? value : []
+      return ids.length ? ids.map((id) => departmentName(String(id))).join('、') : '無'
+    }
+    if (field === 'hiddenAssigneeIds') {
+      const ids = Array.isArray(value) ? value : []
+      return ids.length ? ids.map((id) => employeeName(String(id))).join('、') : '無'
+    }
+    if (field === 'titleOverrides') return Array.isArray(value) ? `${value.length} 個替代標題` : '0 個替代標題'
     if (field === 'reminder') return REMINDER_OPTIONS.find((option) => option.value === value)?.label ?? '無通知'
     if (field === 'repeat') return repeatLabel(value as CalendarEvent['repeat'], eventForm.date, eventForm.repeatCustom)
     if (field === 'todos') return Array.isArray(value) ? `${value.length} 項` : '0 項'
@@ -1229,6 +1279,9 @@ export default function CalendarPage() {
       ['departmentId', '部門'],
       ['calendarIds', '行事曆'],
       ['assigneeIds', '同仁'],
+      ['hiddenDepartmentIds', '排除部門'],
+      ['hiddenAssigneeIds', '排除同仁'],
+      ['titleOverrides', '替代標題'],
       ['reminder', '通知'],
       ['repeat', '重複'],
       ['location', '地點'],
@@ -1271,6 +1324,75 @@ export default function CalendarPage() {
     return departmentIdFromCalendarId(firstCalendarId) || visibleCalendarMap.get(firstCalendarId)?.departmentIds?.[0] || fallback
   }
 
+  function eventViewerEmployeeIds(event: CalendarEvent) {
+    const ids = new Set<string>()
+    const departmentScopeIds = new Set<string>()
+    const addDepartment = (departmentId: string) => {
+      departmentScopeIds.add(departmentId)
+      getDepartmentEmployeeIds(departmentId).forEach((id) => ids.add(id))
+    }
+    ;(event.calendarIds?.length ? event.calendarIds : [eventDisplayCalendarId(event)]).forEach((calendarId) => {
+      const departmentId = departmentIdFromCalendarId(calendarId) || visibleCalendarMap.get(calendarId)?.departmentIds?.[0] || ''
+      if (departmentId) addDepartment(departmentId)
+    })
+    if (event.departmentId) addDepartment(event.departmentId)
+    ;(event.assigneeIds ?? []).forEach((id) => ids.add(id))
+    ;(event.hiddenDepartmentIds ?? []).forEach((departmentId) => {
+      getDepartmentEmployeeIds(departmentId).forEach((id) => ids.delete(id))
+    })
+    ;(event.hiddenAssigneeIds ?? []).forEach((id) => ids.delete(id))
+    if (departmentScopeIds.size === 0 && event.assigneeIds?.length) {
+      const assigned = new Set(event.assigneeIds)
+      Array.from(ids).forEach((id) => {
+        if (!assigned.has(id)) ids.delete(id)
+      })
+    }
+    return Array.from(ids)
+  }
+
+  function titleForEmployeeView(event: CalendarEvent, targetEmployeeId: string) {
+    const employee = employees.find((item) => item.id === targetEmployeeId)
+    const overrides = event.titleOverrides ?? []
+    const userOverride = overrides.find((item) => item.targetType === 'employee' && item.targetId === targetEmployeeId)
+    if (userOverride?.title.trim()) return userOverride.title.trim()
+    const departmentOverride = overrides.find((item) => (
+      item.targetType === 'department' &&
+      (item.targetId === employee?.departmentId || departmentName(item.targetId) === employee?.departmentName)
+    ))
+    return departmentOverride?.title.trim() || event.title
+  }
+
+  async function syncCalendarEventViews(event: CalendarEvent) {
+    if (!event.id || !employees.length) return
+    const viewerIds = new Set(eventViewerEmployeeIds(event))
+    const batch = writeBatch(db)
+    employees
+      .filter((employee) => employee.status !== 'inactive')
+      .forEach((employee) => {
+        const ref = doc(db, 'calendarEventViews', employee.id, 'events', event.id)
+        if (!viewerIds.has(employee.id)) {
+          batch.delete(ref)
+          return
+        }
+        batch.set(ref, {
+          ...event,
+          sourceEventId: event.id,
+          displayTitle: titleForEmployeeView(event, employee.id),
+          updatedAt: new Date().toISOString()
+        }, { merge: true })
+      })
+    await batch.commit()
+  }
+
+  async function deleteCalendarEventViews(eventId: string) {
+    if (!eventId || !employees.length) return
+    const batch = writeBatch(db)
+    employees.forEach((employee) => {
+      batch.delete(doc(db, 'calendarEventViews', employee.id, 'events', eventId))
+    })
+    await batch.commit()
+  }
+
   function toggleEventCalendar(calendarId: string) {
     setEventForm((form) => {
       const calendarIds = toggle(form.calendarIds, calendarId)
@@ -1300,6 +1422,11 @@ export default function CalendarPage() {
   const selectedAssigneeText = eventForm.assigneeIds.length > 0
     ? eventForm.assigneeIds.map(employeeName).join('、')
     : '選擇同仁'
+  const hiddenTargetText = [
+    eventForm.hiddenDepartmentIds.length ? `排除 ${eventForm.hiddenDepartmentIds.length} 個部門` : '',
+    eventForm.hiddenAssigneeIds.length ? `排除 ${eventForm.hiddenAssigneeIds.length} 位同仁` : '',
+    eventForm.titleOverrides.length ? `${eventForm.titleOverrides.length} 個標題覆寫` : ''
+  ].filter(Boolean).join('、') || '可見與替代標題'
   const selectedEventCalendarText = eventForm.calendarIds.length > 0
     ? eventForm.calendarIds.map((id) => visibleCalendarMap.get(id)?.name).filter(Boolean).join('、')
     : '不選部門，僅指定同仁'
@@ -1385,8 +1512,40 @@ export default function CalendarPage() {
     setActiveSearchDepartmentIds([])
   }
 
+  function addTitleOverride() {
+    const firstDepartmentId = departments[0]?.id ?? ''
+    const firstEmployeeId = employees.find((employee) => employee.status !== 'inactive')?.id ?? ''
+    setEventForm((form) => ({
+      ...form,
+      titleOverrides: [
+        ...form.titleOverrides,
+        {
+          targetType: firstDepartmentId ? 'department' : 'employee',
+          targetId: firstDepartmentId || firstEmployeeId,
+          title: ''
+        }
+      ]
+    }))
+  }
+
+  function updateTitleOverride(index: number, patch: Partial<NonNullable<CalendarEvent['titleOverrides']>[number]>) {
+    setEventForm((form) => ({
+      ...form,
+      titleOverrides: form.titleOverrides.map((item, itemIndex) => (
+        itemIndex === index ? { ...item, ...patch } : item
+      ))
+    }))
+  }
+
+  function removeTitleOverride(index: number) {
+    setEventForm((form) => ({
+      ...form,
+      titleOverrides: form.titleOverrides.filter((_, itemIndex) => itemIndex !== index)
+    }))
+  }
+
   function requiredAssigneeIds(ids: string[]) {
-    return employeeId ? Array.from(new Set([employeeId, ...ids])) : ids
+    return Array.from(new Set(ids))
   }
 
   function goToday() {
@@ -1510,6 +1669,14 @@ export default function CalendarPage() {
       allDay: !!rootEvent.allDay,
       departmentId: rootEvent.departmentId,
       assigneeIds: requiredAssigneeIds(rootEvent.assigneeIds ?? []),
+      visibilityEnabled: Boolean(
+        rootEvent.hiddenDepartmentIds?.length ||
+        rootEvent.hiddenAssigneeIds?.length ||
+        rootEvent.titleOverrides?.length
+      ),
+      hiddenDepartmentIds: rootEvent.hiddenDepartmentIds ?? [],
+      hiddenAssigneeIds: rootEvent.hiddenAssigneeIds ?? [],
+      titleOverrides: rootEvent.titleOverrides ?? [],
       note: rootEvent.note ?? '',
       reminder: rootEvent.reminder ?? 'none',
       repeat: scope === 'single' ? 'none' : (rootEvent.repeat ?? 'none'),
@@ -1781,17 +1948,21 @@ export default function CalendarPage() {
     }
   }
 
-  async function updateDepartmentCalendarColor(calendar: DisplayCalendar, color: string) {
+  async function updateCalendarColor(calendar: DisplayCalendar, color: string) {
+    if (!canManageCalendarColors) return
     const departmentId = calendar.departmentIds[0]
-    if (!departmentId || !canManageCalendarColors) return
+    const docId = calendar.systemKind === 'department'
+      ? departmentCalendarDocId(departmentId)
+      : calendar.id
+    if (!docId) return
 
     try {
-      await setDoc(doc(db, 'calendarCalendars', departmentCalendarDocId(departmentId)), {
+      await setDoc(doc(db, 'calendarCalendars', docId), {
         name: calendar.name,
         color,
-        departmentIds: [departmentId],
+        departmentIds: calendar.systemKind === 'department' ? [departmentId] : calendar.departmentIds,
         employeeIds: calendar.employeeIds,
-        isCompanyWide: false,
+        isCompanyWide: calendar.systemKind === 'department' ? false : calendar.isCompanyWide,
         updatedAt: new Date().toISOString(),
         createdBy: user?.uid ?? ''
       }, { merge: true })
@@ -1833,6 +2004,11 @@ export default function CalendarPage() {
         allDay: !!eventForm.allDay,
         departmentId: selectedDepartmentId,
         assigneeIds: requiredAssignees,
+        hiddenDepartmentIds: eventForm.visibilityEnabled ? eventForm.hiddenDepartmentIds : [],
+        hiddenAssigneeIds: eventForm.visibilityEnabled ? eventForm.hiddenAssigneeIds : [],
+        titleOverrides: eventForm.visibilityEnabled ? eventForm.titleOverrides
+          .map((item) => ({ ...item, title: item.title.trim() }))
+          .filter((item) => item.targetId && item.title) : [],
         note: eventForm.note.trim(),
         reminder: eventForm.reminder ?? 'none',
         repeat: eventForm.repeat ?? 'none',
@@ -1845,6 +2021,7 @@ export default function CalendarPage() {
       }
 
       let savedEventId = editingEventId
+      let savedViewEvent: CalendarEvent | null = null
       if (editingEventId) {
         if (recurrenceEditMode?.scope === 'single' && editingEvent) {
           const sourceDate = recurrenceSourceDate(recurrenceEditMode.source)
@@ -1864,6 +2041,7 @@ export default function CalendarPage() {
             createdAt: new Date().toISOString()
           })
           savedEventId = created.id
+          savedViewEvent = { id: created.id, ...payload, repeat: 'none', repeatCustom: emptyEvent.repeatCustom, recurrenceParentId: editingEventId, recurrenceOriginalDate: editingEvent.date, recurrenceSourceDate: sourceDate, done: false, createdBy: user?.uid ?? '', createdAt: new Date().toISOString() }
           await writeActivityLog({
             action: 'update',
             eventId: created.id,
@@ -1891,6 +2069,7 @@ export default function CalendarPage() {
             createdAt: new Date().toISOString()
           })
           savedEventId = created.id
+          savedViewEvent = { id: created.id, ...payload, date: sourceDate, endDate: shiftedEventDateRange(payload, sourceDate).endDate, repeatExceptions: [], repeatUntil: '', done: false, createdBy: user?.uid ?? '', createdAt: new Date().toISOString() }
           await writeActivityLog({
             action: 'update',
             eventId: created.id,
@@ -1903,6 +2082,7 @@ export default function CalendarPage() {
           })
         } else {
           await updateDoc(doc(db, 'calendarEvents', editingEventId), payload)
+          if (editingEvent) savedViewEvent = { ...editingEvent, ...payload, id: editingEventId }
           if (editingEvent) {
             const changes = eventChangeList(editingEvent, payload)
             if (changes.length) {
@@ -1927,6 +2107,7 @@ export default function CalendarPage() {
           createdAt: new Date().toISOString()
         })
         savedEventId = created.id
+        savedViewEvent = { id: created.id, ...payload, done: false, createdBy: user?.uid ?? '', createdAt: new Date().toISOString() }
         await writeActivityLog({
           action: 'create',
           eventId: created.id,
@@ -1942,6 +2123,7 @@ export default function CalendarPage() {
       setAttachmentFiles([])
       setDeletedAttachments([])
       setRecurrenceEditMode(null)
+      if (savedViewEvent) await syncCalendarEventViews(savedViewEvent)
       await refreshCalendarData()
       if (savedEventId) {
         syncEventAttachmentsInBackground(savedEventId, pendingAttachmentFiles, removedAttachments)
@@ -2060,6 +2242,7 @@ export default function CalendarPage() {
       const sourceDate = recurrenceSourceDate(event)
       if (isRecurrenceOccurrence(event) && !existingRootEvent) {
         await deleteDoc(doc(db, 'calendarEvents', event.id))
+        await deleteCalendarEventViews(event.id)
         removeEventsFromArchiveCache([event.id])
         await writeActivityLog({
           action: 'delete',
@@ -2099,6 +2282,7 @@ export default function CalendarPage() {
         })
       } else {
         await deleteDoc(doc(db, 'calendarEvents', rootId))
+        await deleteCalendarEventViews(rootId)
         removeEventsFromArchiveCache([rootId])
       }
       await writeActivityLog({
@@ -2215,6 +2399,11 @@ export default function CalendarPage() {
           ...nextDateRange,
           updatedAt: new Date().toISOString()
         })
+        await syncCalendarEventViews({
+          ...sourceEvent,
+          ...nextDateRange,
+          updatedAt: new Date().toISOString()
+        })
         await writeActivityLog({
           action: 'move',
           eventId: sourceEvent.id,
@@ -2243,6 +2432,17 @@ export default function CalendarPage() {
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
         })
+        await syncCalendarEventViews({
+          id: created.id,
+          ...eventPayload,
+          ...nextDateRange,
+          source: '',
+          sourceId: '',
+          sourceDate: '',
+          createdBy: user?.uid ?? sourceEvent.createdBy ?? '',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        } as CalendarEvent)
         await writeActivityLog({
           action: 'copy',
           eventId: created.id,
@@ -2482,8 +2682,9 @@ export default function CalendarPage() {
         <div className="panel-list">
           {visibleActivityLogs.slice(0, 30).map((log) => {
             const unread = Boolean(log.createdAt && log.createdAt > lastSeenActivityAt)
+            const assignedToMe = canReceiveActivityLog(log)
             return (
-              <article className={`activity-log ${log.action}${unread ? ' unread' : ''}`} key={log.id}>
+              <article className={`activity-log ${log.action}${unread ? ' unread' : ''}${assignedToMe ? ' assigned-to-me' : ''}`} key={log.id}>
                 <span style={{ background: activityLogColor(log) }} />
                 <div>
                   <strong>{activityLogText(log)}</strong>
@@ -2841,10 +3042,10 @@ export default function CalendarPage() {
             </div>
             <div className="drawer-section">
               <div className="panel-title-row">
-                <span className="field-label">部門行事曆</span>
+                <span className="field-label">行事曆</span>
               </div>
               <div className="drawer-calendar-list">
-                {visibleCalendars.filter((calendar) => calendar.systemKind === 'department').map((calendar) => {
+                {visibleCalendars.filter((calendar) => calendar.systemKind === 'department' || calendar.systemKind === 'hrLeave').map((calendar) => {
                   return (
                     <div
                       key={calendar.id}
@@ -2854,7 +3055,7 @@ export default function CalendarPage() {
                       <div className="drawer-calendar-main">
                         <span />
                         <strong>{calendar.name}</strong>
-                        <small>部門</small>
+                        <small>{calendar.systemKind === 'hrLeave' ? 'HR' : '部門'}</small>
                       </div>
                       <div className="drawer-color-row" aria-label={`${calendar.name}顏色`}>
                         {COLORS.map((color) => (
@@ -2862,7 +3063,7 @@ export default function CalendarPage() {
                             key={color}
                             className={calendar.color === color ? 'selected' : ''}
                             style={{ '--swatch-color': color } as CSSProperties}
-                            onClick={() => updateDepartmentCalendarColor(calendar, color)}
+                            onClick={() => updateCalendarColor(calendar, color)}
                             aria-label={`設定${calendar.name}為${color}`}
                           />
                         ))}
@@ -3205,6 +3406,14 @@ export default function CalendarPage() {
                     />
                     整天
                   </label>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={!!eventForm.visibilityEnabled}
+                      onChange={(event) => setEventForm((form) => ({ ...form, visibilityEnabled: event.target.checked }))}
+                    />
+                    可見/替代
+                  </label>
                 </div>
               </div>
 
@@ -3240,7 +3449,6 @@ export default function CalendarPage() {
                           <input
                             type="checkbox"
                             checked={eventForm.assigneeIds.includes(emp.id)}
-                            disabled={emp.id === employeeId}
                             onChange={() => setEventForm((form) => ({ ...form, assigneeIds: requiredAssigneeIds(toggle(form.assigneeIds, emp.id)) }))}
                           />
                           <span>{employeeName(emp.id)}</span>
@@ -3250,6 +3458,81 @@ export default function CalendarPage() {
                     </div>
                   </details>
                 </div>
+                {eventForm.visibilityEnabled && (
+                  <div className="event-editor-row">
+                    <EventRowIcon name="department" />
+                    <details className="event-picker-row">
+                      <summary>
+                        <span>{hiddenTargetText}</span>
+                        <small>排除可見對象 / 替代標題</small>
+                      </summary>
+                      <div className="event-visibility-editor">
+                        <strong>不顯示給這些部門</strong>
+                        <div className="event-assignee-grid event-calendar-grid">
+                          {departments.map((department) => (
+                            <label key={department.id}>
+                              <input
+                                type="checkbox"
+                                checked={eventForm.hiddenDepartmentIds.includes(department.id)}
+                                onChange={() => setEventForm((form) => ({ ...form, hiddenDepartmentIds: toggle(form.hiddenDepartmentIds, department.id) }))}
+                              />
+                              <span>{department.name}</span>
+                              <small>排除部門</small>
+                            </label>
+                          ))}
+                        </div>
+
+                        <strong>不顯示給這些同仁</strong>
+                        <div className="event-assignee-grid">
+                          {employees.filter((emp) => emp.status !== 'inactive').map((emp) => (
+                            <label key={emp.id}>
+                              <input
+                                type="checkbox"
+                                checked={eventForm.hiddenAssigneeIds.includes(emp.id)}
+                                onChange={() => setEventForm((form) => ({ ...form, hiddenAssigneeIds: toggle(form.hiddenAssigneeIds, emp.id) }))}
+                              />
+                              <span>{employeeName(emp.id)}</span>
+                              <small>{emp.departmentName || departmentName(emp.departmentId || '')}</small>
+                            </label>
+                          ))}
+                        </div>
+
+                        <strong>替代顯示標題</strong>
+                        <div className="title-override-list">
+                          {eventForm.titleOverrides.map((override, index) => (
+                            <div className="title-override-row" key={`${override.targetType}-${override.targetId}-${index}`}>
+                              <select
+                                value={override.targetType}
+                                onChange={(event) => {
+                                  const targetType = event.target.value as 'department' | 'employee'
+                                  updateTitleOverride(index, {
+                                    targetType,
+                                    targetId: targetType === 'department' ? (departments[0]?.id ?? '') : (employees.find((emp) => emp.status !== 'inactive')?.id ?? '')
+                                  })
+                                }}
+                              >
+                                <option value="department">部門</option>
+                                <option value="employee">同仁</option>
+                              </select>
+                              <select value={override.targetId} onChange={(event) => updateTitleOverride(index, { targetId: event.target.value })}>
+                                {override.targetType === 'department'
+                                  ? departments.map((department) => <option key={department.id} value={department.id}>{department.name}</option>)
+                                  : employees.filter((emp) => emp.status !== 'inactive').map((emp) => <option key={emp.id} value={emp.id}>{employeeName(emp.id)}</option>)}
+                              </select>
+                              <input
+                                value={override.title}
+                                onChange={(event) => updateTitleOverride(index, { title: event.target.value })}
+                                placeholder="此對象看到的標題"
+                              />
+                              <button type="button" onClick={() => removeTitleOverride(index)} aria-label="刪除替代標題">×</button>
+                            </div>
+                          ))}
+                          <button type="button" className="todo-add-btn" onClick={addTitleOverride}>新增替代標題</button>
+                        </div>
+                      </div>
+                    </details>
+                  </div>
+                )}
                 <div className="event-editor-row">
                   <EventRowIcon name="bell" />
                   <select value={eventForm.reminder} onChange={(event) => changeReminder(event.target.value as CalendarEvent['reminder'])} aria-label="通知">

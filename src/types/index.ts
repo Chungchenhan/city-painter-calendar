@@ -68,6 +68,13 @@ export interface CalendarEvent {
   allDay?: boolean
   departmentId: string
   assigneeIds: string[]
+  hiddenDepartmentIds?: string[]
+  hiddenAssigneeIds?: string[]
+  titleOverrides?: {
+    targetType: 'department' | 'employee'
+    targetId: string
+    title: string
+  }[]
   note: string
   reminder?: 'none' | 'start' | '5m' | '15m' | '1h' | '1d'
   repeat?: 'none' | 'daily' | 'weekly' | 'weekdays' | 'monthly' | 'monthlyNthWeekday' | 'monthlyDay' | 'yearly' | 'custom'

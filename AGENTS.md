@@ -27,3 +27,9 @@
 - 首頁不得因等待所有行事曆、員工、部門、附件或通知資料載完才顯示。
 - PWA 導航頁面優先使用快取回應，避免弱網路下白畫面。
 - 新增功能時若會增加首頁請求或 bundle，必須改成延後載入或背景載入。
+
+## PWA / 快取更新
+- 每次 build / deploy 必須產生 `/app-version.json`，版本值優先使用 `VERCEL_GIT_COMMIT_SHA`，其次 `VERCEL_DEPLOYMENT_ID`。
+- 前端啟動、回到前景、視窗 focus 時，以 `cache: 'no-store'` 檢查 `/app-version.json?t=...`。
+- 若版本與 localStorage 記錄不同，必須清除 Cache Storage 並重新整理頁面；需用 sessionStorage reload flag 防止無限重載。
+- Service Worker 必須啟用 `skipWaiting`、`clientsClaim`、`autoUpdate`，部署後不可讓手機版長時間停在舊快取。
