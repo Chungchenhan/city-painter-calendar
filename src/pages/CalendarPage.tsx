@@ -15,6 +15,7 @@ const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六']
 const COLORS = ['#f6b100', '#1fb6a6', '#3c82f6', '#ef6262', '#8d6df2', '#31a24c', '#f57c35', '#667085']
 const DEPARTMENT_CALENDAR_PREFIX = 'department:'
 const HR_LEAVE_CALENDAR_NAME = 'HR 請假'
+const HR_HOLIDAY_COLOR = '#dc2626'
 const ACTIVITY_NOTIFICATION_SEEN_KEY = 'cityPainterCalendarActivitySeenAt'
 const DEFAULT_USER_NOTIFICATION_SETTINGS: UserNotificationSettings = {
   shiftStartEnabled: true,
@@ -278,7 +279,11 @@ async function showLocalNotification(title: string, options: NotificationOptions
 }
 
 function isHrReadonlyEvent(event: CalendarEvent) {
-  return event.source === 'hrLeaveRequest' || event.id.startsWith('hrLeaveRequest_')
+  return event.source === 'hrLeaveRequest' || event.source === 'hrHoliday' || event.id.startsWith('hrLeaveRequest_') || event.id.startsWith('hrHoliday_')
+}
+
+function isHrHolidayEvent(event: CalendarEvent) {
+  return event.source === 'hrHoliday' || event.id.startsWith('hrHoliday_')
 }
 
 function departmentCalendarId(departmentId: string) {
@@ -1181,6 +1186,7 @@ export default function CalendarPage() {
   }
 
   function eventCalendarColor(event: CalendarEvent) {
+    if (isHrHolidayEvent(event)) return HR_HOLIDAY_COLOR
     return calendarColor(eventDisplayCalendarId(event))
   }
 
@@ -1218,7 +1224,21 @@ export default function CalendarPage() {
 
   function canManageCalendarEvent(event: CalendarEvent) {
     if (isHrReadonlyEvent(event)) return false
-    return isAdmin || Boolean(user?.uid && event.createdBy === user.uid)
+    if (isAdmin || Boolean(user?.uid && event.createdBy === user.uid)) return true
+    if (!employeeId || !eventAllowedForViewer(event)) return false
+
+    const eventCalendarIds = eventDisplayCalendarIds(event)
+    const eventCalendars = eventCalendarIds
+      .map((id) => visibleCalendarMap.get(id))
+      .filter(Boolean) as DisplayCalendar[]
+
+    if (!eventCalendars.length) {
+      return Boolean(event.assigneeIds?.includes(employeeId))
+    }
+
+    return eventCalendars.some((calendar) => (
+      calendar.systemKind !== 'hrLeave' && visibleCalendarIds.includes(calendar.id)
+    ))
   }
 
   function eventTitleOverrideForViewer(event: CalendarEvent) {
@@ -1657,7 +1677,7 @@ export default function CalendarPage() {
       return
     }
     if (!canManageCalendarEvent(event)) {
-      alert('只能編輯自己新增的活動')
+      alert('沒有此活動的編輯權限')
       return
     }
     if (canUseRecurrenceScope(event)) {
@@ -2247,7 +2267,7 @@ export default function CalendarPage() {
       return
     }
     if (!canManageCalendarEvent(event)) {
-      alert('只能刪除自己新增的活動')
+      alert('沒有此活動的刪除權限')
       return
     }
     if (canUseRecurrenceScope(event)) {
