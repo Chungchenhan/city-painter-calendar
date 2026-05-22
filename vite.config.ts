@@ -4,7 +4,7 @@ import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
-const iconCacheVersion = '20260523-icons'
+const appCacheVersion = process.env.VERCEL_GIT_COMMIT_SHA || process.env.VERCEL_DEPLOYMENT_ID || `${Date.now()}`
 
 function loadLocalServerEnv() {
   const envPath = path.resolve(process.cwd(), '.env.vercel.local')
@@ -53,15 +53,26 @@ function localApiPlugin(): Plugin {
 }
 
 function appVersionPlugin(): Plugin {
-  const version = process.env.VERCEL_GIT_COMMIT_SHA || process.env.VERCEL_DEPLOYMENT_ID || `${Date.now()}`
   return {
     name: 'app-version',
     generateBundle() {
       this.emitFile({
         type: 'asset',
         fileName: 'app-version.json',
-        source: JSON.stringify({ version })
+        source: JSON.stringify({ version: appCacheVersion })
       })
+    }
+  }
+}
+
+function htmlIconVersionPlugin(): Plugin {
+  return {
+    name: 'html-icon-version',
+    transformIndexHtml(html) {
+      return html.replace(
+        /(href="\/(?:favicon\.svg|apple-touch-icon\.png))(?:\?v=[^"]*)?"/g,
+        `$1?v=${appCacheVersion}"`
+      )
     }
   }
 }
@@ -71,6 +82,7 @@ export default defineConfig({
     react(),
     localApiPlugin(),
     appVersionPlugin(),
+    htmlIconVersionPlugin(),
     VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg', 'apple-touch-icon.png', 'icons.svg'],
@@ -85,9 +97,9 @@ export default defineConfig({
         scope: '/',
         lang: 'zh-TW',
         icons: [
-          { src: `pwa-192x192.png?v=${iconCacheVersion}`, sizes: '192x192', type: 'image/png' },
-          { src: `pwa-512x512.png?v=${iconCacheVersion}`, sizes: '512x512', type: 'image/png' },
-          { src: `pwa-512x512.png?v=${iconCacheVersion}`, sizes: '512x512', type: 'image/png', purpose: 'maskable' }
+          { src: `pwa-192x192.png?v=${appCacheVersion}`, sizes: '192x192', type: 'image/png' },
+          { src: `pwa-512x512.png?v=${appCacheVersion}`, sizes: '512x512', type: 'image/png' },
+          { src: `pwa-512x512.png?v=${appCacheVersion}`, sizes: '512x512', type: 'image/png', purpose: 'maskable' }
         ]
       },
       workbox: {
