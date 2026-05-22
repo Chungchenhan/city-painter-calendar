@@ -4,6 +4,8 @@ import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
+const iconCacheVersion = '20260523-icons'
+
 function loadLocalServerEnv() {
   const envPath = path.resolve(process.cwd(), '.env.vercel.local')
   if (!fs.existsSync(envPath)) return
@@ -83,9 +85,9 @@ export default defineConfig({
         scope: '/',
         lang: 'zh-TW',
         icons: [
-          { src: 'pwa-192x192.png', sizes: '192x192', type: 'image/png' },
-          { src: 'pwa-512x512.png', sizes: '512x512', type: 'image/png' },
-          { src: 'pwa-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' }
+          { src: `pwa-192x192.png?v=${iconCacheVersion}`, sizes: '192x192', type: 'image/png' },
+          { src: `pwa-512x512.png?v=${iconCacheVersion}`, sizes: '512x512', type: 'image/png' },
+          { src: `pwa-512x512.png?v=${iconCacheVersion}`, sizes: '512x512', type: 'image/png', purpose: 'maskable' }
         ]
       },
       workbox: {
