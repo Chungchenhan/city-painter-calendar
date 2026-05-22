@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import dayjs from 'dayjs'
 import { collection, getDocs, limit, onSnapshot, orderBy, query, where } from 'firebase/firestore'
@@ -22,11 +22,20 @@ function eventOverlapsRange(event: CalendarEvent, startDate: string, endDate: st
   return event.date <= endDate && eventEndDate(event) >= startDate
 }
 
-function mergeEventArchive(rows: CalendarEvent[], range?: { startDate: string, endDate: string }) {
+function isRepeatingCalendarEvent(event: CalendarEvent) {
+  return REPEAT_VALUES.includes(event.repeat as NonNullable<CalendarEvent['repeat']>)
+}
+
+function mergeEventArchive(rows: CalendarEvent[], range?: { startDate: string, endDate: string }, repeatRows?: CalendarEvent[]) {
   const cached = readLocalQueryCache<CalendarEvent[]>(EVENT_ARCHIVE_CACHE_KEY) ?? []
+  const activeRepeatIds = repeatRows ? new Set(repeatRows.map((event) => event.id)) : null
   const map = new Map<string, CalendarEvent>()
   cached
-    .filter((event) => !range || !eventOverlapsRange(event, range.startDate, range.endDate))
+    .filter((event) => {
+      if (range && eventOverlapsRange(event, range.startDate, range.endDate)) return false
+      if (activeRepeatIds && isRepeatingCalendarEvent(event) && !activeRepeatIds.has(event.id)) return false
+      return true
+    })
     .forEach((event) => map.set(event.id, event))
   rows.forEach((event) => map.set(event.id, event))
   const merged = Array.from(map.values())
@@ -67,12 +76,14 @@ export function useCalendarGroups() {
 }
 
 export function useCalendarEvents(activeMonth: string) {
+  const queryClient = useQueryClient()
   const monthValue = dayjs(activeMonth || dayjs().format('YYYY-MM')).startOf('month')
   const startDate = monthValue.subtract(1, 'month').startOf('month').format('YYYY-MM-DD')
   const endDate = monthValue.add(1, 'month').endOf('month').format('YYYY-MM-DD')
+  const queryKey = ['calendarEvents', startDate, endDate]
 
   const result = useQuery({
-    queryKey: ['calendarEvents', startDate, endDate],
+    queryKey,
     queryFn: async () => {
       const rangeSnap = await getDocs(query(
         collection(db, 'calendarEvents'),
@@ -85,18 +96,59 @@ export function useCalendarEvents(activeMonth: string) {
       ))
       const map = new Map<string, CalendarEvent>()
       rangeSnap.docs.forEach((d) => map.set(d.id, { id: d.id, ...d.data() } as CalendarEvent))
-      repeatSnap.docs.forEach((d) => {
-        const event = { id: d.id, ...d.data() } as CalendarEvent
+      const repeatRows = repeatSnap.docs.map((d) => ({ id: d.id, ...d.data() })) as CalendarEvent[]
+      repeatRows.forEach((event) => {
         if (event.date <= endDate) map.set(event.id, event)
       })
       const rows = Array.from(map.values())
       const sorted = sortEvents(rows)
-      mergeEventArchive(sorted, { startDate, endDate })
+      mergeEventArchive(sorted, { startDate, endDate }, repeatRows)
       return sorted
     },
     placeholderData: () => cachedEventsInRange(startDate, endDate),
     staleTime: 60 * 1000
   })
+
+  useEffect(() => {
+    let rangeRows: CalendarEvent[] | null = null
+    let repeatRows: CalendarEvent[] | null = null
+
+    const publishRows = () => {
+      if (!rangeRows || !repeatRows) return
+      const map = new Map<string, CalendarEvent>()
+      rangeRows.forEach((event) => map.set(event.id, event))
+      repeatRows.forEach((event) => {
+        if (event.date <= endDate) map.set(event.id, event)
+      })
+      const sorted = sortEvents(Array.from(map.values()))
+      mergeEventArchive(sorted, { startDate, endDate }, repeatRows)
+      queryClient.setQueryData(queryKey, sorted)
+    }
+
+    const rangeQuery = query(
+      collection(db, 'calendarEvents'),
+      where('date', '>=', startDate),
+      where('date', '<=', endDate)
+    )
+    const repeatQuery = query(
+      collection(db, 'calendarEvents'),
+      where('repeat', 'in', REPEAT_VALUES)
+    )
+
+    const unsubscribeRange = onSnapshot(rangeQuery, (snap) => {
+      rangeRows = snap.docs.map((d) => ({ id: d.id, ...d.data() })) as CalendarEvent[]
+      publishRows()
+    })
+    const unsubscribeRepeat = onSnapshot(repeatQuery, (snap) => {
+      repeatRows = snap.docs.map((d) => ({ id: d.id, ...d.data() })) as CalendarEvent[]
+      publishRows()
+    })
+
+    return () => {
+      unsubscribeRange()
+      unsubscribeRepeat()
+    }
+  }, [endDate, queryClient, startDate])
 
   useEffect(() => {
     if (!activeMonth) return

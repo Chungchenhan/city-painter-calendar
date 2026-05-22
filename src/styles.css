@@ -1227,14 +1227,14 @@ textarea {
 }
 
 .activity-log.assigned-to-me {
-  border-color: #bdebd1;
-  background: linear-gradient(90deg, rgba(47, 202, 122, 0.1), #fff 36%);
-  box-shadow: inset 3px 0 0 #2fca7a;
+  border-color: #202124;
+  background: linear-gradient(90deg, rgba(32, 33, 36, 0.08), #fff 36%);
+  box-shadow: inset 3px 0 0 #202124;
 }
 
 .activity-log.assigned-to-me.unread {
-  border-color: #e5d887;
-  background: linear-gradient(90deg, rgba(47, 202, 122, 0.12), #fff8df 38%);
+  border-color: #202124;
+  background: linear-gradient(90deg, rgba(32, 33, 36, 0.1), #fff8df 38%);
 }
 
 .activity-log > span {
@@ -1254,7 +1254,7 @@ textarea {
 }
 
 .activity-log.assigned-to-me strong {
-  color: #116b3b;
+  color: #202124;
   font-weight: 850;
 }
 
@@ -2248,18 +2248,63 @@ p {
   font-size: 15px;
 }
 
+.time-input-wrap {
+  position: relative;
+  display: block;
+  min-width: 0;
+  min-height: 40px;
+  border-radius: 8px;
+  background: #fafafa;
+  overflow: hidden;
+}
+
+.time-input-wrap.compact {
+  min-width: 96px;
+}
+
+.time-input-icon {
+  position: absolute;
+  left: 13px;
+  top: 50%;
+  width: 18px;
+  height: 18px;
+  transform: translateY(-50%);
+  color: #111;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
 .time-row input {
   min-height: 40px;
   min-width: 0;
+  width: 100%;
   border: 0;
   border-radius: 8px;
-  background: #fafafa;
+  background: transparent;
   color: #222;
+  padding-left: 42px;
+  padding-right: 12px;
+  cursor: pointer;
 }
 
 .time-row input[type="time"] {
   width: 100%;
   min-width: 96px;
+}
+
+.time-row input::-webkit-calendar-picker-indicator {
+  opacity: 0;
+  width: 100%;
+  height: 100%;
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 0;
+  cursor: pointer;
 }
 
 .event-checkbox-row {
@@ -2323,19 +2368,48 @@ p {
 .event-editor-row textarea,
 .event-editor-row > input,
 .event-static-row {
+  --event-field-x-padding: 13px;
   width: 100%;
   min-height: 44px;
+  box-sizing: border-box;
   border: 0;
   border-radius: 8px;
   background: #fafafa;
   color: #333;
+  font-family: inherit;
   font-size: 15px;
+  font-weight: 400;
+  line-height: 44px;
+  text-align: left;
+}
+
+.event-editor-row select,
+.event-editor-row > input {
+  padding: 0 var(--event-field-x-padding);
+}
+
+.event-editor-row select {
+  appearance: none;
+  background-color: #fafafa;
+  background-image:
+    linear-gradient(45deg, transparent 50%, #333 50%),
+    linear-gradient(135deg, #333 50%, transparent 50%);
+  background-position:
+    calc(100% - 18px) 50%,
+    calc(100% - 12px) 50%;
+  background-size: 6px 6px, 6px 6px;
+  background-repeat: no-repeat;
+  padding-right: 36px;
+}
+
+.event-editor-row select.placeholder {
+  color: #8a8a8a;
 }
 
 .event-static-row {
   display: flex;
   align-items: center;
-  padding: 0 14px;
+  padding: 0 var(--event-field-x-padding);
   color: #8a8a8a;
   text-align: left;
 }
@@ -2357,6 +2431,8 @@ p {
 .event-editor-row textarea {
   min-height: 44px;
   max-height: 260px;
+  padding-left: var(--event-field-x-padding);
+  padding-right: var(--event-field-x-padding);
   padding-top: 12px;
   resize: none;
   overflow: hidden;
@@ -2379,17 +2455,44 @@ p {
 }
 
 .event-picker-row summary {
+  --event-field-x-padding: 13px;
   min-height: 44px;
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   border-radius: 8px;
-  padding: 0 14px;
+  padding: 0 var(--event-field-x-padding);
   background: #fafafa;
-  color: #333;
+  color: #8a8a8a;
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 400;
+  line-height: 44px;
   cursor: pointer;
   list-style: none;
+}
+
+.event-picker-row summary span {
+  min-width: 0;
+  overflow: hidden;
+  color: #8a8a8a;
+  font-size: 15px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.event-picker-row summary span.selected {
+  color: #222;
+}
+
+.event-picker-row summary small {
+  flex: 0 0 auto;
+  color: #8a8a8a;
+  font-size: 13px;
+  font-weight: 400;
 }
 
 .event-picker-row summary::-webkit-details-marker {
@@ -2398,6 +2501,7 @@ p {
 
 .event-picker-row summary::after {
   content: "›";
+  flex: 0 0 auto;
   color: #999;
   font-size: 24px;
   line-height: 1;
