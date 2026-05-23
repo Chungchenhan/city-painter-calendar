@@ -71,7 +71,7 @@ export interface CalendarEvent {
   hiddenDepartmentIds?: string[]
   hiddenAssigneeIds?: string[]
   titleOverrides?: {
-    targetType: 'department' | 'employee'
+    targetType: 'department' | 'employee' | 'allDepartmentsExceptOwn' | 'allEmployeesExceptSelf'
     targetId: string
     title: string
   }[]

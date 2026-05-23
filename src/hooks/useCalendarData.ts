@@ -8,6 +8,7 @@ import type { CalendarActivityLog, CalendarEvent, CalendarGroup } from '../types
 
 const EVENT_ARCHIVE_CACHE_KEY = 'calendarEventsArchive'
 const EVENT_ARCHIVE_MONTH_CACHE_KEY = 'calendarEventsArchiveMonths'
+const EVENT_SEARCH_CACHE_KEY = 'calendarEventsSearchIndex'
 const REPEAT_VALUES: NonNullable<CalendarEvent['repeat']>[] = ['daily', 'weekly', 'weekdays', 'monthly', 'monthlyNthWeekday', 'monthlyDay', 'yearly', 'custom']
 
 function sortEvents(rows: CalendarEvent[]) {
@@ -179,6 +180,22 @@ export function useCalendarEvents(activeMonth: string) {
   }, [activeMonth])
 
   return result
+}
+
+export function useCalendarSearchEvents(enabled: boolean) {
+  return useQuery({
+    queryKey: ['calendarEventsSearchIndex'],
+    enabled,
+    queryFn: async () => {
+      const snap = await getDocs(collection(db, 'calendarEvents'))
+      const rows = sortEvents(snap.docs.map((d) => ({ id: d.id, ...d.data() })) as CalendarEvent[])
+      writeLocalQueryCache(EVENT_SEARCH_CACHE_KEY, rows)
+      mergeEventArchive(rows)
+      return rows
+    },
+    placeholderData: () => readLocalQueryCache<CalendarEvent[]>(EVENT_SEARCH_CACHE_KEY),
+    staleTime: 5 * 60 * 1000
+  })
 }
 
 export function useCalendarActivityLogs() {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { CSSProperties, DragEvent, PointerEvent, ReactNode, TouchEvent as ReactTouchEvent } from 'react'
+import type { CSSProperties, DragEvent, PointerEvent as ReactPointerEvent, ReactNode, TouchEvent as ReactTouchEvent } from 'react'
 import dayjs from 'dayjs'
 import { addDoc, arrayUnion, collection, deleteDoc, doc, getDoc, getDocs, query, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore'
 import { signOut } from 'firebase/auth'
@@ -7,7 +7,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { auth, db } from '../lib/firebase'
 import { readLocalQueryCache, updateLocalQueryCache } from '../lib/localQueryCache'
 import { useAuth } from '../contexts/AuthContext'
-import { useCalendarActivityLogs, useCalendarEvents, useCalendarGroups } from '../hooks/useCalendarData'
+import { useCalendarActivityLogs, useCalendarEvents, useCalendarGroups, useCalendarSearchEvents } from '../hooks/useCalendarData'
 import { useDepartments, useEmployees, useShifts } from '../hooks/useHrData'
 import type { CalendarActivityLog, CalendarEvent, CalendarGroup, PunchLog, UserNotificationSettings } from '../types'
 
@@ -16,6 +16,8 @@ const COLORS = ['#f6b100', '#1fb6a6', '#3c82f6', '#ef6262', '#8d6df2', '#31a24c'
 const DEPARTMENT_CALENDAR_PREFIX = 'department:'
 const HR_LEAVE_CALENDAR_NAME = 'HR 請假'
 const HR_HOLIDAY_COLOR = '#dc2626'
+const ALL_DEPARTMENTS_EXCEPT_OWN = 'allDepartmentsExceptOwn'
+const ALL_EMPLOYEES_EXCEPT_SELF = 'allEmployeesExceptSelf'
 const ACTIVITY_NOTIFICATION_SEEN_KEY = 'cityPainterCalendarActivitySeenAt'
 const DEFAULT_USER_NOTIFICATION_SETTINGS: UserNotificationSettings = {
   shiftStartEnabled: true,
@@ -279,11 +281,11 @@ async function showLocalNotification(title: string, options: NotificationOptions
 }
 
 function isHrReadonlyEvent(event: CalendarEvent) {
-  return event.source === 'hrLeaveRequest' || event.source === 'hrHoliday' || event.id.startsWith('hrLeaveRequest_') || event.id.startsWith('hrHoliday_')
+  return event.source === 'hrLeaveRequest' || event.source === 'hrHoliday' || event.source === 'hrTyphoonHoliday' || event.id.startsWith('hrLeaveRequest_') || event.id.startsWith('hrHoliday_') || event.id.startsWith('hrTyphoonHoliday_')
 }
 
 function isHrHolidayEvent(event: CalendarEvent) {
-  return event.source === 'hrHoliday' || event.id.startsWith('hrHoliday_')
+  return event.source === 'hrHoliday' || event.source === 'hrTyphoonHoliday' || event.id.startsWith('hrHoliday_') || event.id.startsWith('hrTyphoonHoliday_')
 }
 
 function departmentCalendarId(departmentId: string) {
@@ -585,8 +587,10 @@ export default function CalendarPage() {
   const [viewMode, setViewMode] = useState<ViewMode>('month')
   const [calendarSelectionMode, setCalendarSelectionMode] = useState<'all' | 'none' | 'custom'>('all')
   const [activeCalendarIds, setActiveCalendarIds] = useState<string[]>([])
+  const [lastSelectedCalendarId, setLastSelectedCalendarId] = useState('')
   const [showCalendarDrawer, setShowCalendarDrawer] = useState(false)
   const [showSearchPanel, setShowSearchPanel] = useState(false)
+  const { data: searchIndexEvents = [], isFetching: searchIndexFetching } = useCalendarSearchEvents(showSearchPanel)
   const [showNotificationsPanel, setShowNotificationsPanel] = useState(false)
   const [showAccountMenu, setShowAccountMenu] = useState(false)
   const [showStartupNotificationPrompt, setShowStartupNotificationPrompt] = useState(false)
@@ -609,6 +613,7 @@ export default function CalendarPage() {
   const [savingTitleIcons, setSavingTitleIcons] = useState(false)
   const [lastSeenActivityAt, setLastSeenActivityAt] = useState(() => localStorage.getItem(ACTIVITY_NOTIFICATION_SEEN_KEY) || '')
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null)
+  const [showEventActionMenu, setShowEventActionMenu] = useState(false)
   const [showCalendarModal, setShowCalendarModal] = useState(false)
   const [showEventModal, setShowEventModal] = useState(false)
   const [editingCalendarId, setEditingCalendarId] = useState<string | null>(null)
@@ -627,11 +632,23 @@ export default function CalendarPage() {
   const monthInputRef = useRef<HTMLInputElement | null>(null)
   const calendarTouchStartRef = useRef<{ x: number; y: number } | null>(null)
   const suppressEventClickRef = useRef(false)
+  const lastEventPointerTypeRef = useRef('')
   const pointerDragRef = useRef<{
     eventId: string
     startX: number
     startY: number
     moved: boolean
+  } | null>(null)
+  const dayListTouchDragRef = useRef<{
+    eventId: string
+    pointerId: number
+    startX: number
+    startY: number
+    latestX: number
+    latestY: number
+    timer: number
+    active: boolean
+    dragging: boolean
   } | null>(null)
   const seenActivityLogIdsRef = useRef<Set<string> | null>(null)
 
@@ -723,9 +740,24 @@ export default function CalendarPage() {
     return expandRecurringEvents(visibleSourceEvents, rangeStart, rangeEnd)
   }, [month, visibleSourceEvents])
 
+  const visibleSearchEvents = useMemo(() => {
+    const map = new Map<string, CalendarEvent>()
+    searchIndexEvents.forEach((event) => map.set(event.id, event))
+    events.forEach((event) => map.set(event.id, event))
+    return Array.from(map.values())
+      .filter((event) => {
+        if (!eventAllowedForViewer(event)) return false
+        const eventCalendarIds = eventDisplayCalendarIds(event)
+        const eventCalendars = eventCalendarIds.map((id) => visibleCalendarMap.get(id)).filter(Boolean) as DisplayCalendar[]
+        if (!eventCalendars.length) return Boolean(employeeId && event.assigneeIds?.includes(employeeId))
+        return eventCalendars.some((calendar) => selectedCalendarIds.includes(calendar.id))
+      })
+      .sort((a, b) => `${b.date} ${b.startTime}`.localeCompare(`${a.date} ${a.startTime}`))
+  }, [currentEmployee?.departmentId, currentEmployee?.departmentName, employeeId, events, searchIndexEvents, selectedCalendarIds, visibleCalendarMap, departments, employees, hrLeaveCalendar])
+
   const searchEvents = useMemo(() => {
     const keyword = searchQuery.trim().toLowerCase()
-    return visibleEvents.filter((event) => {
+    return visibleSearchEvents.filter((event) => {
       if (hasCustomSearchDepartmentFilter && event.departmentId && !selectedSearchDepartmentIds.includes(event.departmentId)) return false
       if (hasCustomSearchDepartmentFilter && !event.departmentId) return false
       if (!keyword) return true
@@ -736,7 +768,7 @@ export default function CalendarPage() {
       ].join(' ').toLowerCase()
       return searchable.includes(keyword)
     })
-  }, [employees, hasCustomSearchDepartmentFilter, searchQuery, selectedSearchDepartmentIds, visibleEvents])
+  }, [employees, hasCustomSearchDepartmentFilter, searchQuery, selectedSearchDepartmentIds, visibleSearchEvents])
 
   const eventsByDate = useMemo(() => {
     const map = new Map<string, CalendarEvent[]>()
@@ -992,6 +1024,10 @@ export default function CalendarPage() {
     }
   }, [dragActionMenu])
 
+  useEffect(() => () => {
+    resetDayListTouchDrag()
+  }, [])
+
   useEffect(() => {
     if (!dayListDate) return
 
@@ -1022,6 +1058,7 @@ export default function CalendarPage() {
       const target = event.target
       if (target instanceof Element && target.closest('.event-detail-panel, .event-pill, .event-line, .week-event')) return
       setSelectedEventId(null)
+      setShowEventActionMenu(false)
     }
 
     function closeEventDetailWithEscape(event: KeyboardEvent) {
@@ -1037,6 +1074,29 @@ export default function CalendarPage() {
       document.removeEventListener('keydown', closeEventDetailWithEscape)
     }
   }, [selectedEventId])
+
+  useEffect(() => {
+    if (!showEventActionMenu) return
+
+    function closeEventActionMenu(event: MouseEvent | TouchEvent) {
+      const target = event.target
+      if (target instanceof Element && target.closest('.event-detail-action-wrap')) return
+      setShowEventActionMenu(false)
+    }
+
+    function closeEventActionMenuWithEscape(event: KeyboardEvent) {
+      if (event.key === 'Escape') setShowEventActionMenu(false)
+    }
+
+    document.addEventListener('mousedown', closeEventActionMenu)
+    document.addEventListener('touchstart', closeEventActionMenu)
+    document.addEventListener('keydown', closeEventActionMenuWithEscape)
+    return () => {
+      document.removeEventListener('mousedown', closeEventActionMenu)
+      document.removeEventListener('touchstart', closeEventActionMenu)
+      document.removeEventListener('keydown', closeEventActionMenuWithEscape)
+    }
+  }, [showEventActionMenu])
 
   useEffect(() => {
     if (!showSearchPanel && !showNotificationsPanel) return
@@ -1148,8 +1208,10 @@ export default function CalendarPage() {
 
   const selectedEvent = useMemo(() => {
     if (!selectedEventId) return null
-    return visibleEvents.find((event) => event.id === selectedEventId) ?? null
-  }, [selectedEventId, visibleEvents])
+    return visibleEvents.find((event) => event.id === selectedEventId) ??
+      visibleSearchEvents.find((event) => event.id === selectedEventId) ??
+      null
+  }, [selectedEventId, visibleEvents, visibleSearchEvents])
   const loading = calendarsLoading || eventsLoading
   const selectedDay = dayjs(selectedDate)
   const currentTitle = viewMode === 'week'
@@ -1206,6 +1268,12 @@ export default function CalendarPage() {
     return employee?.nickname || employee?.name || (id === employeeId ? displayName : '') || '未指定'
   }
 
+  function eventOwnerLabel(event: CalendarEvent) {
+    const firstAssigneeId = event.assigneeIds?.[0]
+    if (firstAssigneeId) return employeeName(firstAssigneeId).slice(0, 1)
+    return (eventCalendarName(event) || '行').slice(0, 1)
+  }
+
   function eventAllowedForViewer(event: CalendarEvent) {
     if (isAdmin) return true
     if (!employeeId) return false
@@ -1254,7 +1322,17 @@ export default function CalendarPage() {
       item.targetType === 'department' &&
       (item.targetId === departmentId || departmentName(item.targetId) === departmentNameValue)
     ))
-    return departmentOverride?.title.trim() ?? ''
+    if (departmentOverride?.title.trim()) return departmentOverride.title.trim()
+    const allEmployeesOverride = employeeId
+      ? overrides.find((item) => item.targetType === ALL_EMPLOYEES_EXCEPT_SELF && item.targetId !== employeeId)
+      : null
+    if (allEmployeesOverride?.title.trim()) return allEmployeesOverride.title.trim()
+    const allDepartmentsOverride = overrides.find((item) => (
+      item.targetType === ALL_DEPARTMENTS_EXCEPT_OWN &&
+      item.targetId !== departmentId &&
+      departmentName(item.targetId) !== departmentNameValue
+    ))
+    return allDepartmentsOverride?.title.trim() ?? ''
   }
 
   function eventDisplayTitle(event: CalendarEvent) {
@@ -1395,6 +1473,15 @@ export default function CalendarPage() {
       item.targetType === 'department' &&
       (item.targetId === employee?.departmentId || departmentName(item.targetId) === employee?.departmentName)
     ))
+    if (departmentOverride?.title.trim()) return departmentOverride.title.trim()
+    const allEmployeesOverride = overrides.find((item) => item.targetType === ALL_EMPLOYEES_EXCEPT_SELF && item.targetId !== targetEmployeeId)
+    if (allEmployeesOverride?.title.trim()) return allEmployeesOverride.title.trim()
+    const allDepartmentsOverride = overrides.find((item) => (
+      item.targetType === ALL_DEPARTMENTS_EXCEPT_OWN &&
+      item.targetId !== employee?.departmentId &&
+      departmentName(item.targetId) !== employee?.departmentName
+    ))
+    if (allDepartmentsOverride?.title.trim()) return allDepartmentsOverride.title.trim()
     return departmentOverride?.title.trim() || event.title
   }
 
@@ -1458,6 +1545,15 @@ export default function CalendarPage() {
   const selectedAssigneeText = eventForm.assigneeIds.length > 0
     ? eventForm.assigneeIds.map(employeeName).join('、')
     : '選擇同仁'
+  const ownDepartmentId = currentEmployee?.departmentId || departments.find((department) => department.name === currentEmployee?.departmentName)?.id || ''
+  const allOtherDepartmentIds = departments
+    .filter((department) => department.id !== ownDepartmentId && department.name !== currentEmployee?.departmentName)
+    .map((department) => department.id)
+  const allOtherEmployeeIds = employees
+    .filter((emp) => emp.status !== 'inactive' && emp.id !== employeeId)
+    .map((emp) => emp.id)
+  const allOtherDepartmentsHidden = allOtherDepartmentIds.length > 0 && allOtherDepartmentIds.every((id) => eventForm.hiddenDepartmentIds.includes(id))
+  const allOtherEmployeesHidden = allOtherEmployeeIds.length > 0 && allOtherEmployeeIds.every((id) => eventForm.hiddenAssigneeIds.includes(id))
   const hiddenTargetText = [
     eventForm.hiddenDepartmentIds.length ? `排除 ${eventForm.hiddenDepartmentIds.length} 個部門` : '',
     eventForm.hiddenAssigneeIds.length ? `排除 ${eventForm.hiddenAssigneeIds.length} 位同仁` : '',
@@ -1466,6 +1562,7 @@ export default function CalendarPage() {
   const selectedEventCalendarText = eventForm.calendarIds.length > 0
     ? eventForm.calendarIds.map((id) => visibleCalendarMap.get(id)?.name).filter(Boolean).join('、')
     : '不選部門，僅指定同仁'
+  const eventEditorColor = visibleCalendarMap.get(eventForm.calendarIds[0] ?? eventForm.calendarId)?.color ?? COLORS[0]
   const repeatOptions = useMemo(() => repeatPresetOptions(eventForm.date), [eventForm.date])
   const selectedRepeatText = repeatLabel(eventForm.repeat, eventForm.date, eventForm.repeatCustom)
   const currentTitleIcon = selectedTitleIcon(eventForm.title, titleIconOptions)
@@ -1529,6 +1626,14 @@ export default function CalendarPage() {
           ? []
           : list.filter((id) => visibleCalendarIds.includes(id))
       const nextIds = toggle(baseIds, calendarId)
+      const clickedCalendar = visibleCalendarMap.get(calendarId)
+      const clickedIsSelected = nextIds.includes(calendarId)
+      if (clickedCalendar?.systemKind !== 'hrLeave' && clickedIsSelected) {
+        setLastSelectedCalendarId(calendarId)
+      } else if (!nextIds.includes(lastSelectedCalendarId) || lastSelectedCalendarId === calendarId) {
+        const fallbackId = [...nextIds].reverse().find((id) => visibleCalendarMap.get(id)?.systemKind !== 'hrLeave') ?? ''
+        setLastSelectedCalendarId(fallbackId)
+      }
       setCalendarSelectionMode(nextIds.length === visibleCalendarIds.length ? 'all' : nextIds.length === 0 ? 'none' : 'custom')
       return nextIds
     })
@@ -1564,6 +1669,14 @@ export default function CalendarPage() {
     }))
   }
 
+  function defaultTitleOverrideTargetId(targetType: NonNullable<CalendarEvent['titleOverrides']>[number]['targetType']) {
+    if (targetType === ALL_DEPARTMENTS_EXCEPT_OWN) return ownDepartmentId
+    if (targetType === ALL_EMPLOYEES_EXCEPT_SELF) return employeeId ?? ''
+    return targetType === 'department'
+      ? (departments[0]?.id ?? '')
+      : (employees.find((emp) => emp.status !== 'inactive')?.id ?? '')
+  }
+
   function updateTitleOverride(index: number, patch: Partial<NonNullable<CalendarEvent['titleOverrides']>[number]>) {
     setEventForm((form) => ({
       ...form,
@@ -1578,6 +1691,30 @@ export default function CalendarPage() {
       ...form,
       titleOverrides: form.titleOverrides.filter((_, itemIndex) => itemIndex !== index)
     }))
+  }
+
+  function toggleAllOtherDepartmentsHidden() {
+    setEventForm((form) => {
+      const selected = allOtherDepartmentIds.length > 0 && allOtherDepartmentIds.every((id) => form.hiddenDepartmentIds.includes(id))
+      return {
+        ...form,
+        hiddenDepartmentIds: selected
+          ? form.hiddenDepartmentIds.filter((id) => !allOtherDepartmentIds.includes(id))
+          : Array.from(new Set([...form.hiddenDepartmentIds, ...allOtherDepartmentIds]))
+      }
+    })
+  }
+
+  function toggleAllOtherEmployeesHidden() {
+    setEventForm((form) => {
+      const selected = allOtherEmployeeIds.length > 0 && allOtherEmployeeIds.every((id) => form.hiddenAssigneeIds.includes(id))
+      return {
+        ...form,
+        hiddenAssigneeIds: selected
+          ? form.hiddenAssigneeIds.filter((id) => !allOtherEmployeeIds.includes(id))
+          : Array.from(new Set([...form.hiddenAssigneeIds, ...allOtherEmployeeIds]))
+      }
+    })
   }
 
   function requiredAssigneeIds(ids: string[]) {
@@ -1635,7 +1772,10 @@ export default function CalendarPage() {
 
   function openAddEvent(date = selectedDate) {
     if (!canCreateEvent) return
-    const defaultCalendar = writableCalendars.find((calendar) => (
+    const clickedCalendar = writableCalendars.find((calendar) => (
+      calendar.id === lastSelectedCalendarId && selectedCalendarIds.includes(calendar.id)
+    ))
+    const defaultCalendar = clickedCalendar ?? writableCalendars.find((calendar) => (
       Boolean(currentEmployee?.departmentId && calendar.departmentIds.includes(currentEmployee.departmentId)) ||
       Boolean(currentEmployee?.departmentName && calendar.name === currentEmployee.departmentName)
     )) ?? writableCalendars[0]
@@ -1664,7 +1804,11 @@ export default function CalendarPage() {
   function openEventDetail(event: CalendarEvent) {
     setDragActionMenu(null)
     setDayListDate(null)
+    setShowEventActionMenu(false)
     setSelectedDate(event.date)
+    if (!dayjs(event.date).isSame(month, 'month')) {
+      setMonth(dayjs(event.date).startOf('month'))
+    }
     setSelectedEventId(event.id)
     if (showNotificationsPanel) markActivityNotificationsSeen()
     setShowNotificationsPanel(false)
@@ -1685,6 +1829,57 @@ export default function CalendarPage() {
       return
     }
     startEditEvent(event, 'all')
+  }
+
+  function openCopyEvent(event: CalendarEvent) {
+    if (!canCreateEvent) {
+      alert('沒有新增活動的權限')
+      return
+    }
+    const targetDate = selectedDate || event.date
+    const range = shiftedEventDateRange(event, targetDate)
+    const hiddenDepartmentIds = event.hiddenDepartmentIds ?? []
+    const hiddenAssigneeIds = event.hiddenAssigneeIds ?? []
+    const titleOverrides = event.titleOverrides ?? []
+    setEventForm({
+      calendarId: eventDisplayCalendarId(event),
+      calendarIds: eventDisplayCalendarIds(event),
+      title: event.title,
+      date: range.date,
+      endDate: eventEndDate(range),
+      startTime: event.startTime,
+      endTime: event.endTime,
+      allDay: !!event.allDay,
+      departmentId: event.departmentId,
+      assigneeIds: event.assigneeIds ?? [],
+      visibilityEnabled: Boolean(hiddenDepartmentIds.length || hiddenAssigneeIds.length || titleOverrides.length),
+      hiddenDepartmentIds,
+      hiddenAssigneeIds,
+      titleOverrides,
+      note: event.note ?? '',
+      reminder: event.reminder ?? 'none',
+      repeat: 'none',
+      repeatCustom: emptyEvent.repeatCustom,
+      todos: (event.todos ?? []).map((todo) => ({
+        id: crypto.randomUUID(),
+        text: todo.text,
+        done: false
+      })),
+      location: event.location ?? '',
+      url: event.url ?? '',
+      attachments: event.attachments ?? []
+    })
+    setAttachmentFiles([])
+    setDeletedAttachments([])
+    setEditingEventId(null)
+    setRecurrenceEditMode(null)
+    setRecurrenceEditCandidate(null)
+    setShowTitleIconPicker(false)
+    setShowTitleSuggestions(false)
+    setShowRepeatPicker(false)
+    setShowRepeatCustomModal(false)
+    setSelectedEventId(null)
+    setShowEventModal(true)
   }
 
   function canUseRecurrenceScope(event: CalendarEvent) {
@@ -1743,6 +1938,7 @@ export default function CalendarPage() {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ['calendarCalendars'] }),
       queryClient.invalidateQueries({ queryKey: ['calendarEvents'] }),
+      queryClient.invalidateQueries({ queryKey: ['calendarEventsSearchIndex'] }),
       queryClient.invalidateQueries({ queryKey: ['calendarActivityLogs'] })
     ])
   }
@@ -2373,7 +2569,27 @@ export default function CalendarPage() {
     return element?.dataset.calendarDate ?? ''
   }
 
-  function beginPointerEventDrag(event: PointerEvent, calendarEvent: CalendarEvent) {
+  function isTouchDragPointer(event: Pick<ReactPointerEvent | globalThis.PointerEvent, 'pointerType'>) {
+    return event.pointerType === 'touch' || event.pointerType === 'pen'
+  }
+
+  function shouldUseMobileEventListFlow() {
+    return lastEventPointerTypeRef.current === 'touch' ||
+      lastEventPointerTypeRef.current === 'pen' ||
+      window.innerWidth <= 768 ||
+      (window.matchMedia?.('(hover: none), (pointer: coarse)').matches ?? false)
+  }
+
+  function handleMonthDayClick(date: string) {
+    if (selectedDate === date) {
+      setDayListDate(date)
+      return
+    }
+    setSelectedDate(date)
+  }
+
+  function beginPointerEventDrag(event: ReactPointerEvent, calendarEvent: CalendarEvent) {
+    if (isTouchDragPointer(event)) return
     if (!eventDragAllowed(calendarEvent)) return
     pointerDragRef.current = {
       eventId: calendarEvent.id,
@@ -2384,7 +2600,8 @@ export default function CalendarPage() {
     event.currentTarget.setPointerCapture?.(event.pointerId)
   }
 
-  function movePointerEventDrag(event: PointerEvent) {
+  function movePointerEventDrag(event: ReactPointerEvent) {
+    if (isTouchDragPointer(event)) return
     const drag = pointerDragRef.current
     if (!drag) return
     const distance = Math.abs(event.clientX - drag.startX) + Math.abs(event.clientY - drag.startY)
@@ -2394,7 +2611,8 @@ export default function CalendarPage() {
     setDragOverDate(targetDate || null)
   }
 
-  function endPointerEventDrag(event: PointerEvent) {
+  function endPointerEventDrag(event: ReactPointerEvent) {
+    if (isTouchDragPointer(event)) return
     const drag = pointerDragRef.current
     if (!drag) return
     const targetDate = drag.moved ? dragDateFromPoint(event.clientX, event.clientY) : ''
@@ -2426,6 +2644,102 @@ export default function CalendarPage() {
     if (eventId) {
       openDragActionMenu(eventId, targetDate, event.clientX, event.clientY)
     }
+  }
+
+  function clearDayListTouchDragListeners() {
+    document.removeEventListener('pointermove', moveDayListTouchDrag)
+    document.removeEventListener('pointerup', endDayListTouchDrag)
+    document.removeEventListener('pointercancel', cancelDayListTouchDrag)
+  }
+
+  function resetDayListTouchDrag() {
+    const drag = dayListTouchDragRef.current
+    if (drag?.timer) window.clearTimeout(drag.timer)
+    dayListTouchDragRef.current = null
+    clearDayListTouchDragListeners()
+  }
+
+  function beginDayListTouchDrag(event: ReactPointerEvent, calendarEvent: CalendarEvent) {
+    if (!isTouchDragPointer(event) || !eventDragAllowed(calendarEvent)) return
+    event.stopPropagation()
+    resetDayListTouchDrag()
+    const pointerId = event.pointerId
+    const startX = event.clientX
+    const startY = event.clientY
+    const timer = window.setTimeout(() => {
+      const drag = dayListTouchDragRef.current
+      if (!drag || drag.pointerId !== pointerId) return
+      drag.active = true
+    }, 420)
+
+    dayListTouchDragRef.current = {
+      eventId: calendarEvent.id,
+      pointerId,
+      startX,
+      startY,
+      latestX: startX,
+      latestY: startY,
+      timer,
+      active: false,
+      dragging: false
+    }
+    document.addEventListener('pointermove', moveDayListTouchDrag)
+    document.addEventListener('pointerup', endDayListTouchDrag)
+    document.addEventListener('pointercancel', cancelDayListTouchDrag)
+  }
+
+  function moveDayListTouchDrag(event: globalThis.PointerEvent) {
+    const drag = dayListTouchDragRef.current
+    if (!drag || drag.pointerId !== event.pointerId) return
+    drag.latestX = event.clientX
+    drag.latestY = event.clientY
+    if (!drag.active) {
+      const distance = Math.abs(event.clientX - drag.startX) + Math.abs(event.clientY - drag.startY)
+      if (distance > 22) resetDayListTouchDrag()
+      return
+    }
+    if (!drag.dragging) {
+      const distance = Math.abs(event.clientX - drag.startX) + Math.abs(event.clientY - drag.startY)
+      if (distance < 12) return
+      drag.dragging = true
+      suppressEventClickRef.current = true
+      setSelectedEventId(null)
+      setDragActionMenu(null)
+      setDayListDate(null)
+    }
+    event.preventDefault()
+    setDragOverDate(dragDateFromPoint(event.clientX, event.clientY) || null)
+  }
+
+  function endDayListTouchDrag(event: globalThis.PointerEvent) {
+    const drag = dayListTouchDragRef.current
+    if (!drag || drag.pointerId !== event.pointerId) return
+    const targetDate = drag.dragging ? dragDateFromPoint(event.clientX, event.clientY) : ''
+    const eventId = drag.eventId
+    const wasDragging = drag.dragging
+    const wasActive = drag.active
+    resetDayListTouchDrag()
+    if (wasDragging && targetDate) {
+      openDragActionMenu(eventId, targetDate, event.clientX, event.clientY)
+    } else {
+      setDragOverDate(null)
+    }
+    if (wasActive) {
+      suppressEventClickRef.current = true
+      window.setTimeout(() => {
+        suppressEventClickRef.current = false
+      }, 300)
+    }
+  }
+
+  function cancelDayListTouchDrag(event?: globalThis.PointerEvent) {
+    const drag = dayListTouchDragRef.current
+    if (event && drag && drag.pointerId !== event.pointerId) return
+    resetDayListTouchDrag()
+    setDragOverDate(null)
+    window.setTimeout(() => {
+      suppressEventClickRef.current = false
+    }, 300)
   }
 
   async function applyDragEventAction(action: 'move' | 'copy') {
@@ -2528,15 +2842,49 @@ export default function CalendarPage() {
     }
   }
 
-  function renderEventSummary(event: CalendarEvent) {
+  function renderEventSummary(event: CalendarEvent, options: { enableTouchDrag?: boolean } = {}) {
     const rangeText = eventEndDate(event) === event.date ? event.date : `${event.date} - ${eventEndDate(event)}`
+    const isTimeline = options.enableTouchDrag
     return (
-      <button className={`panel-event ${event.done ? 'done' : ''}`} key={event.id} style={{ '--event-color': eventCalendarColor(event) } as CSSProperties} onClick={() => openEventDetail(event)}>
-        <span />
-        <div>
-          <strong>{eventDisplayTitle(event)}</strong>
-          <small>{rangeText} {event.startTime} - {event.endTime} · {eventCalendarName(event)}</small>
-        </div>
+      <button
+        className={`${isTimeline ? 'day-list-event' : 'panel-event'} ${event.done ? 'done' : ''}`}
+        key={event.id}
+        style={{ '--event-color': eventCalendarColor(event) } as CSSProperties}
+        onPointerDown={(pointerEvent) => {
+          if (options.enableTouchDrag) beginDayListTouchDrag(pointerEvent, event)
+        }}
+        onClick={() => {
+          if (suppressEventClickRef.current) return
+          openEventDetail(event)
+        }}
+      >
+        {isTimeline ? (
+          <>
+            <span className="day-list-time">
+              {event.allDay ? (
+                <b>全天</b>
+              ) : (
+                <>
+                  <b>{event.startTime}</b>
+                  <small>{event.endTime}</small>
+                </>
+              )}
+            </span>
+            <span className="day-list-content">
+              <strong>{eventDisplayTitle(event)}</strong>
+              {(event.note || event.location) && <small>{event.note || event.location}</small>}
+            </span>
+            <span className="day-list-owner">{eventOwnerLabel(event)}</span>
+          </>
+        ) : (
+          <>
+            <span />
+            <div>
+              <strong>{eventDisplayTitle(event)}</strong>
+              <small>{rangeText} {event.startTime} - {event.endTime} · {eventCalendarName(event)}</small>
+            </div>
+          </>
+        )}
       </button>
     )
   }
@@ -2555,8 +2903,58 @@ export default function CalendarPage() {
         <div className="event-detail-header">
           <strong>活動詳情</strong>
           <div>
-            {canManageEvent && <button onClick={() => openEditEvent(selectedEvent)} aria-label="編輯活動">⋮</button>}
-            <button onClick={() => setSelectedEventId(null)} aria-label="關閉活動詳情">×</button>
+            {canManageEvent && (
+              <div className="event-detail-action-wrap">
+                <button
+                  onClick={() => setShowEventActionMenu((open) => !open)}
+                  aria-label="開啟活動選單"
+                  aria-expanded={showEventActionMenu}
+                >
+                  ⋮
+                </button>
+                {showEventActionMenu && (
+                  <div className="event-detail-action-menu">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowEventActionMenu(false)
+                        openEditEvent(selectedEvent)
+                      }}
+                    >
+                      編輯
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowEventActionMenu(false)
+                        openCopyEvent(selectedEvent)
+                      }}
+                    >
+                      複製
+                    </button>
+                    <button
+                      type="button"
+                      className="danger"
+                      onClick={() => {
+                        setShowEventActionMenu(false)
+                        deleteEvent(selectedEvent)
+                      }}
+                    >
+                      刪除
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+            <button
+              onClick={() => {
+                setShowEventActionMenu(false)
+                setSelectedEventId(null)
+              }}
+              aria-label="關閉活動詳情"
+            >
+              ×
+            </button>
           </div>
         </div>
 
@@ -2665,6 +3063,7 @@ export default function CalendarPage() {
         {canManageEvent && (
           <div className="event-detail-footer">
             <button onClick={() => openEditEvent(selectedEvent)}>編輯</button>
+            <button onClick={() => openCopyEvent(selectedEvent)}>複製</button>
             <button className="danger" onClick={() => deleteEvent(selectedEvent)}>刪除</button>
           </div>
         )}
@@ -2683,11 +3082,11 @@ export default function CalendarPage() {
         </div>
         <p className="panel-hint">共 {dayEvents.length} 筆</p>
         <div className="panel-list">
-          {dayEvents.map((event) => renderEventSummary(event))}
+          {dayEvents.map((event) => renderEventSummary(event, { enableTouchDrag: true }))}
           {dayEvents.length === 0 && <p className="panel-empty">這天沒有活動</p>}
         </div>
         {canCreateEvent && (
-          <button className="primary-btn" onClick={() => openAddEvent(dayListDate)}>新增這天活動</button>
+          <button className="day-list-add-btn" onClick={() => openAddEvent(dayListDate)}>新增這天活動</button>
         )}
       </aside>
     )
@@ -3040,6 +3439,9 @@ export default function CalendarPage() {
                 role="menuitem"
                 onClick={() => {
                   setShowAccountMenu(false)
+                  if (import.meta.env.DEV) {
+                    localStorage.setItem('cityPainterCalendarDisableDevAutoLogin', '1')
+                  }
                   signOut(auth)
                 }}
               >
@@ -3140,7 +3542,7 @@ export default function CalendarPage() {
                     className={`day-cell ${selected ? 'selected' : ''} ${day.month() !== month.month() ? 'muted' : ''} ${dragOverDate === date ? 'drag-over' : ''}`}
                     key={date}
                     data-calendar-date={date}
-                    onClick={() => setSelectedDate(date)}
+                    onClick={() => handleMonthDayClick(date)}
                     onDoubleClick={() => canCreateEvent && openAddEvent(date)}
                     onDragOver={(dragEvent) => {
                       dragEvent.preventDefault()
@@ -3159,13 +3561,27 @@ export default function CalendarPage() {
                           draggable={eventDragAllowed(event)}
                           onDragStart={(dragEvent) => startNativeEventDrag(dragEvent, event)}
                           onDragEnd={clearEventDragState}
-                          onPointerDown={(pointerEvent) => beginPointerEventDrag(pointerEvent, event)}
+                          onTouchStart={() => {
+                            lastEventPointerTypeRef.current = 'touch'
+                          }}
+                          onPointerDown={(pointerEvent) => {
+                            lastEventPointerTypeRef.current = pointerEvent.pointerType
+                            beginPointerEventDrag(pointerEvent, event)
+                          }}
                           onPointerMove={movePointerEventDrag}
                           onPointerUp={endPointerEventDrag}
                           onPointerCancel={clearEventDragState}
                           onClick={(clickEvent) => {
                             clickEvent.stopPropagation()
                             if (suppressEventClickRef.current) return
+                            if (shouldUseMobileEventListFlow()) {
+                              handleMonthDayClick(event.date)
+                              window.setTimeout(() => {
+                                lastEventPointerTypeRef.current = ''
+                              }, 0)
+                              return
+                            }
+                            lastEventPointerTypeRef.current = ''
                             openEventDetail(event)
                           }}
                         >
@@ -3229,13 +3645,27 @@ export default function CalendarPage() {
                           draggable={eventDragAllowed(event)}
                           onDragStart={(dragEvent) => startNativeEventDrag(dragEvent, event)}
                           onDragEnd={clearEventDragState}
-                          onPointerDown={(pointerEvent) => beginPointerEventDrag(pointerEvent, event)}
+                          onTouchStart={() => {
+                            lastEventPointerTypeRef.current = 'touch'
+                          }}
+                          onPointerDown={(pointerEvent) => {
+                            lastEventPointerTypeRef.current = pointerEvent.pointerType
+                            beginPointerEventDrag(pointerEvent, event)
+                          }}
                           onPointerMove={movePointerEventDrag}
                           onPointerUp={endPointerEventDrag}
                           onPointerCancel={clearEventDragState}
                           onClick={(clickEvent) => {
                             clickEvent.stopPropagation()
                             if (suppressEventClickRef.current) return
+                            if (shouldUseMobileEventListFlow()) {
+                              handleMonthDayClick(event.date)
+                              window.setTimeout(() => {
+                                lastEventPointerTypeRef.current = ''
+                              }, 0)
+                              return
+                            }
+                            lastEventPointerTypeRef.current = ''
                             openEventDetail(event)
                           }}
                         >
@@ -3282,8 +3712,9 @@ export default function CalendarPage() {
             </div>
           </details>
           <div className="panel-list">
-            {searchEvents.slice(0, 12).map(renderEventSummary)}
-            {searchEvents.length === 0 && <p className="panel-empty">沒有符合條件的工作</p>}
+            {searchIndexFetching && searchEvents.length === 0 && <p className="panel-empty">正在搜尋所有事件…</p>}
+            {searchEvents.slice(0, 12).map((event) => renderEventSummary(event))}
+            {!searchIndexFetching && searchEvents.length === 0 && <p className="panel-empty">沒有符合條件的工作</p>}
           </div>
         </aside>
       )}
@@ -3369,7 +3800,7 @@ export default function CalendarPage() {
 
       {showEventModal && (
         <div className="modal-overlay">
-          <div className="modal event-editor-modal">
+          <div className="modal event-editor-modal" style={{ '--event-color': eventEditorColor } as CSSProperties}>
             <div className="event-editor-header">
               <button className="text-btn" onClick={() => setShowEventModal(false)}>取消</button>
               <strong>{editingEventId ? '編輯活動' : '新增活動'}</strong>
@@ -3527,6 +3958,15 @@ export default function CalendarPage() {
                       <div className="event-visibility-editor">
                         <strong>不顯示給這些部門</strong>
                         <div className="event-assignee-grid event-calendar-grid">
+                          <label>
+                            <input
+                              type="checkbox"
+                              checked={allOtherDepartmentsHidden}
+                              onChange={toggleAllOtherDepartmentsHidden}
+                            />
+                            <span>所有部門</span>
+                            <small>除了自己所屬部門</small>
+                          </label>
                           {departments.map((department) => (
                             <label key={department.id}>
                               <input
@@ -3542,6 +3982,15 @@ export default function CalendarPage() {
 
                         <strong>不顯示給這些同仁</strong>
                         <div className="event-assignee-grid">
+                          <label>
+                            <input
+                              type="checkbox"
+                              checked={allOtherEmployeesHidden}
+                              onChange={toggleAllOtherEmployeesHidden}
+                            />
+                            <span>所有同仁</span>
+                            <small>除了自己</small>
+                          </label>
                           {employees.filter((emp) => emp.status !== 'inactive').map((emp) => (
                             <label key={emp.id}>
                               <input
@@ -3562,20 +4011,45 @@ export default function CalendarPage() {
                               <select
                                 value={override.targetType}
                                 onChange={(event) => {
-                                  const targetType = event.target.value as 'department' | 'employee'
+                                  const targetType = event.target.value as NonNullable<CalendarEvent['titleOverrides']>[number]['targetType']
                                   updateTitleOverride(index, {
                                     targetType,
-                                    targetId: targetType === 'department' ? (departments[0]?.id ?? '') : (employees.find((emp) => emp.status !== 'inactive')?.id ?? '')
+                                    targetId: defaultTitleOverrideTargetId(targetType)
                                   })
                                 }}
                               >
                                 <option value="department">部門</option>
+                                <option value={ALL_DEPARTMENTS_EXCEPT_OWN}>所有部門（除了自己所屬部門）</option>
                                 <option value="employee">同仁</option>
+                                <option value={ALL_EMPLOYEES_EXCEPT_SELF}>所有同仁（除了自己）</option>
                               </select>
-                              <select value={override.targetId} onChange={(event) => updateTitleOverride(index, { targetId: event.target.value })}>
-                                {override.targetType === 'department'
-                                  ? departments.map((department) => <option key={department.id} value={department.id}>{department.name}</option>)
-                                  : employees.filter((emp) => emp.status !== 'inactive').map((emp) => <option key={emp.id} value={emp.id}>{employeeName(emp.id)}</option>)}
+                              <select
+                                value={
+                                  override.targetType === ALL_DEPARTMENTS_EXCEPT_OWN
+                                    ? (override.targetId || ownDepartmentId)
+                                    : override.targetType === ALL_EMPLOYEES_EXCEPT_SELF
+                                      ? (override.targetId || employeeId || '')
+                                      : override.targetId
+                                }
+                                onChange={(event) => updateTitleOverride(index, { targetId: event.target.value })}
+                                disabled={override.targetType === ALL_DEPARTMENTS_EXCEPT_OWN || override.targetType === ALL_EMPLOYEES_EXCEPT_SELF}
+                              >
+                                {override.targetType === 'department' && departments.map((department) => (
+                                  <option key={department.id} value={department.id}>{department.name}</option>
+                                ))}
+                                {override.targetType === 'employee' && employees.filter((emp) => emp.status !== 'inactive').map((emp) => (
+                                  <option key={emp.id} value={emp.id}>{employeeName(emp.id)}</option>
+                                ))}
+                                {override.targetType === ALL_DEPARTMENTS_EXCEPT_OWN && (
+                                  <option value={override.targetId || ownDepartmentId}>
+                                    除了 {departmentName(override.targetId || ownDepartmentId) || '自己所屬部門'}
+                                  </option>
+                                )}
+                                {override.targetType === ALL_EMPLOYEES_EXCEPT_SELF && (
+                                  <option value={override.targetId || employeeId || ''}>
+                                    除了 {override.targetId ? employeeName(override.targetId) : '自己'}
+                                  </option>
+                                )}
                               </select>
                               <input
                                 value={override.title}

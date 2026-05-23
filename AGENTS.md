@@ -5,6 +5,11 @@
 - 路徑：`/Users/henry/Downloads/Henry-agent/city-painter-calendar/`
 - 技術：React + TypeScript + Vite + Firebase + PWA
 
+## 本地預覽
+- 固定網址：`http://localhost:5175/`
+- 啟動指令：`npm run dev`
+- 此專案固定使用 port `5175`，不得與其他專案共用。
+
 ## Firebase
 - 共用 ERP/HR 的 Firebase 專案設定。
 - 登入權限共用 HR 專案的 `userRoles` collection。
@@ -12,6 +17,26 @@
 - 行事曆專用資料：
   - `calendarCalendars`
   - `calendarEvents`
+
+## TimeTree 匯入紀錄
+- 已從 TimeTree 匯入 `2021-01-01` 之後的都市彩繪工作事件；若未來要補更早日期，再沿用同一套匯入方式往前追加。
+- 匯入來源是使用者已登入 Chrome 的 TimeTree IndexedDB：`~/Library/Application Support/Google/Chrome/Default/IndexedDB/https_timetreeapp.com_0.indexeddb.leveldb`。
+- 匯入流程：用 `dfindexeddb` 匯出 IndexedDB，重建 `/timetree` SQLite 資料庫，再讀取 `events` 表寫入 Firestore `calendarEvents`。
+- Firestore 文件 ID 使用 `timeTree_{TimeTree event id}`，避免重跑時產生重複事件。
+- 匯入資料標記：
+  - `source`: `timeTreeImport`
+  - `sourceId`: `timeTreeFullFrom202101`
+  - `timeTreeCalendarId`: `52713068`
+  - `timeTreeEventId` / `timeTreeLabelId` 保留原始 TimeTree 對應資訊。
+- 已匯入判斷規則：
+  - `label_id = 1`：廣告部。
+  - `label_id = 9`：活動部。
+  - `label_id = 4`：早期主工作標籤，歸廣告部。
+  - `label_id = 2`：設計類工作，先歸廣告部。
+  - `label_id = 8`：活動、場刊、心健月、失智月類，歸活動部。
+  - `label_id = 3`：混有私人與工作，只匯入含工作 icon 的事件，例如 `👷`、`📦`、`📐`、`🎪`、`🚗`、`💗`、`👨‍🦳`、`💼`、`🎨`、`🚀`；魚缸、生日、私人雜項不匯入。
+- 目前匯入結果：合計 `3203` 筆，廣告部 `2854` 筆，活動部 `349` 筆，日期範圍 `2021-01-01` 至 `2026-11-07`。
+- 管理部補匯：TimeTree 的 `calendar_id = 2641090` 與 `2641052` 已歸入管理部，`sourceId` 為 `timeTreeManagementCalendarsFrom202101`；合計 `620` 筆，日期範圍 `2021-01-01` 至 `2026-11-28`。
 
 ## 權限
 - `userRoles.role === "admin"`：可建立、編輯、刪除行事曆與工作。
