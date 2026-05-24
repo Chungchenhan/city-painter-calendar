@@ -12,6 +12,7 @@ import { useDepartments, useEmployees, useShifts } from '../hooks/useHrData'
 import type { CalendarActivityLog, CalendarEvent, CalendarGroup, PunchLog, UserNotificationSettings } from '../types'
 
 const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六']
+const DEFAULT_MONTH_DAY_EVENT_ROW_LIMIT = 6
 const COLORS = ['#f6b100', '#1fb6a6', '#3c82f6', '#ef6262', '#8d6df2', '#31a24c', '#f57c35', '#667085']
 const DEPARTMENT_CALENDAR_PREFIX = 'department:'
 const HR_LEAVE_CALENDAR_NAME = 'HR 請假'
@@ -150,6 +151,21 @@ function composeTitleWithIcon(icon: string, title: string, options: TitleIconOpt
 
 function normalizeSearchText(text: string, options: TitleIconOption[] = DEFAULT_TITLE_ICON_OPTIONS) {
   return titleWithoutKnownIcon(text, options).trim().toLowerCase()
+}
+
+function normalizeDepartmentTitleIconDefaults(value: unknown) {
+  const source = (value && typeof value === 'object') ? value as Record<string, unknown> : {}
+  return Object.fromEntries(
+    Object.entries(source)
+      .map(([departmentId, icons]) => {
+        const list = Array.isArray(icons) ? icons : [icons]
+        return [
+          departmentId,
+          Array.from(new Set(list.map((icon) => String(icon || '').trim()).filter(Boolean)))
+        ]
+      })
+      .filter(([, icons]) => icons.length)
+  )
 }
 
 function eventEndDate(event: Pick<CalendarEvent, 'date' | 'endDate'>) {
@@ -597,6 +613,7 @@ export default function CalendarPage() {
   const [showNotificationSettings, setShowNotificationSettings] = useState(false)
   const [showTitleIconSettings, setShowTitleIconSettings] = useState(false)
   const [showTitleIconPicker, setShowTitleIconPicker] = useState(false)
+  const [titleOverrideIconPickerIndex, setTitleOverrideIconPickerIndex] = useState<number | null>(null)
   const [showTitleSuggestions, setShowTitleSuggestions] = useState(false)
   const [showRepeatPicker, setShowRepeatPicker] = useState(false)
   const [showRepeatCustomModal, setShowRepeatCustomModal] = useState(false)
@@ -610,9 +627,12 @@ export default function CalendarPage() {
   const [savingNotificationSettings, setSavingNotificationSettings] = useState(false)
   const [titleIconOptions, setTitleIconOptions] = useState<TitleIconOption[]>(DEFAULT_TITLE_ICON_OPTIONS)
   const [titleIconDraft, setTitleIconDraft] = useState<TitleIconOption[]>(DEFAULT_TITLE_ICON_OPTIONS)
+  const [departmentTitleIconDefaults, setDepartmentTitleIconDefaults] = useState<Record<string, string[]>>({})
+  const [departmentTitleIconDraft, setDepartmentTitleIconDraft] = useState<Record<string, string[]>>({})
   const [savingTitleIcons, setSavingTitleIcons] = useState(false)
   const [lastSeenActivityAt, setLastSeenActivityAt] = useState(() => localStorage.getItem(ACTIVITY_NOTIFICATION_SEEN_KEY) || '')
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null)
+  const [monthDayEventRowLimit, setMonthDayEventRowLimit] = useState(DEFAULT_MONTH_DAY_EVENT_ROW_LIMIT)
   const [showEventActionMenu, setShowEventActionMenu] = useState(false)
   const [showCalendarModal, setShowCalendarModal] = useState(false)
   const [showEventModal, setShowEventModal] = useState(false)
@@ -627,10 +647,14 @@ export default function CalendarPage() {
   const [deletedAttachments, setDeletedAttachments] = useState<EventAttachment[]>([])
   const [dragActionMenu, setDragActionMenu] = useState<DragActionMenu | null>(null)
   const [dragOverDate, setDragOverDate] = useState<string | null>(null)
+  const [calendarSwipeOffset, setCalendarSwipeOffset] = useState(0)
+  const [calendarSwipeAnimating, setCalendarSwipeAnimating] = useState(false)
   const [saving, setSaving] = useState(false)
   const noteTextareaRef = useRef<HTMLTextAreaElement | null>(null)
   const monthInputRef = useRef<HTMLInputElement | null>(null)
-  const calendarTouchStartRef = useRef<{ x: number; y: number } | null>(null)
+  const monthGridRef = useRef<HTMLDivElement | null>(null)
+  const calendarSurfaceRef = useRef<HTMLElement | null>(null)
+  const calendarTouchStartRef = useRef<{ x: number; y: number; deltaX: number; deltaY: number; dragging: boolean } | null>(null)
   const suppressEventClickRef = useRef(false)
   const lastEventPointerTypeRef = useRef('')
   const pointerDragRef = useRef<{
@@ -855,18 +879,24 @@ export default function CalendarPage() {
     async function loadTitleIconOptions() {
       try {
         const snap = await getDoc(doc(db, 'calendarSettings', 'titleIcons'))
-        const options = snap.exists() ? (snap.data().options as TitleIconOption[] | undefined) : undefined
+        const data = snap.exists() ? snap.data() : {}
+        const options = data.options as TitleIconOption[] | undefined
         const cleanOptions = (options ?? DEFAULT_TITLE_ICON_OPTIONS)
           .map((item) => ({ icon: String(item.icon || '').trim(), label: String(item.label || '').trim() }))
           .filter((item) => item.icon && item.label)
         if (cancelled) return
         const nextOptions = cleanOptions.length ? cleanOptions : DEFAULT_TITLE_ICON_OPTIONS
+        const nextDepartmentDefaults = normalizeDepartmentTitleIconDefaults(data.departmentDefaults)
         setTitleIconOptions(nextOptions)
         setTitleIconDraft(nextOptions)
+        setDepartmentTitleIconDefaults(nextDepartmentDefaults)
+        setDepartmentTitleIconDraft(nextDepartmentDefaults)
       } catch {
         if (!cancelled) {
           setTitleIconOptions(DEFAULT_TITLE_ICON_OPTIONS)
           setTitleIconDraft(DEFAULT_TITLE_ICON_OPTIONS)
+          setDepartmentTitleIconDefaults({})
+          setDepartmentTitleIconDraft({})
         }
       }
     }
@@ -1151,16 +1181,19 @@ export default function CalendarPage() {
   }, [showAccountMenu])
 
   useEffect(() => {
-    if (!showTitleIconPicker) return
+    if (!showTitleIconPicker && titleOverrideIconPickerIndex === null) return
 
     function closeTitleIconPicker(event: MouseEvent | TouchEvent) {
       const target = event.target
-      if (target instanceof Element && target.closest('.title-icon-picker')) return
+      if (target instanceof Element && target.closest('.title-icon-picker, .title-override-icon-picker')) return
       setShowTitleIconPicker(false)
+      setTitleOverrideIconPickerIndex(null)
     }
 
     function closeTitleIconPickerWithEscape(event: KeyboardEvent) {
-      if (event.key === 'Escape') setShowTitleIconPicker(false)
+      if (event.key !== 'Escape') return
+      setShowTitleIconPicker(false)
+      setTitleOverrideIconPickerIndex(null)
     }
 
     document.addEventListener('mousedown', closeTitleIconPicker)
@@ -1171,7 +1204,7 @@ export default function CalendarPage() {
       document.removeEventListener('touchstart', closeTitleIconPicker)
       document.removeEventListener('keydown', closeTitleIconPickerWithEscape)
     }
-  }, [showTitleIconPicker])
+  }, [showTitleIconPicker, titleOverrideIconPickerIndex])
 
   useEffect(() => {
     if (!showTitleSuggestions) return
@@ -1213,6 +1246,53 @@ export default function CalendarPage() {
       null
   }, [selectedEventId, visibleEvents, visibleSearchEvents])
   const loading = calendarsLoading || eventsLoading
+
+  useEffect(() => {
+    if (viewMode !== 'month' || loading) return
+    const grid = monthGridRef.current
+    if (!grid) return
+    const currentGrid = grid
+    let frame = 0
+
+    function calculateMonthDayEventLimit() {
+      const cell = currentGrid.querySelector<HTMLElement>('.day-cell')
+      if (!cell) return
+      const dayEvents = cell.querySelector<HTMLElement>('.day-events')
+      const eventRow = currentGrid.querySelector<HTMLElement>('.event-pill, .more-pill')
+      const gridRect = currentGrid.getBoundingClientRect()
+      const cellRect = cell.getBoundingClientRect()
+      const dayEventsRect = dayEvents?.getBoundingClientRect()
+      const eventsStyle = dayEvents ? window.getComputedStyle(dayEvents) : null
+      const rowGap = Number.parseFloat(eventsStyle?.rowGap || eventsStyle?.gap || '1') || 1
+      const rowHeight = eventRow?.getBoundingClientRect().height || (window.matchMedia?.('(max-width: 760px)').matches ? 14 : 17)
+      const cellHeight = gridRect.height > 0 ? gridRect.height / 6 : cellRect.height
+      const eventsTop = dayEventsRect ? Math.max(0, dayEventsRect.top - cellRect.top) : 24
+      const availableHeight = Math.max(0, cellHeight - eventsTop - 2)
+      const nextLimit = Math.max(2, Math.min(16, Math.floor((availableHeight + rowGap) / (rowHeight + rowGap)) || DEFAULT_MONTH_DAY_EVENT_ROW_LIMIT))
+      setMonthDayEventRowLimit((current) => current === nextLimit ? current : nextLimit)
+    }
+
+    function scheduleMonthDayEventLimitCalculation() {
+      if (frame) window.cancelAnimationFrame(frame)
+      frame = window.requestAnimationFrame(calculateMonthDayEventLimit)
+    }
+
+    scheduleMonthDayEventLimitCalculation()
+    const resizeObserver = new ResizeObserver(calculateMonthDayEventLimit)
+    resizeObserver.observe(currentGrid)
+    if (calendarSurfaceRef.current) resizeObserver.observe(calendarSurfaceRef.current)
+    const firstCell = currentGrid.querySelector<HTMLElement>('.day-cell')
+    if (firstCell) resizeObserver.observe(firstCell)
+    window.addEventListener('resize', scheduleMonthDayEventLimitCalculation)
+    window.visualViewport?.addEventListener('resize', scheduleMonthDayEventLimitCalculation)
+    return () => {
+      if (frame) window.cancelAnimationFrame(frame)
+      resizeObserver.disconnect()
+      window.removeEventListener('resize', scheduleMonthDayEventLimitCalculation)
+      window.visualViewport?.removeEventListener('resize', scheduleMonthDayEventLimitCalculation)
+    }
+  }, [loading, month, viewMode])
+
   const selectedDay = dayjs(selectedDate)
   const currentTitle = viewMode === 'week'
     ? `${weekDays[0].format('M/D')} - ${weekDays[6].format('M/D')}`
@@ -1312,27 +1392,35 @@ export default function CalendarPage() {
   function eventTitleOverrideForViewer(event: CalendarEvent) {
     const overrides = event.titleOverrides ?? []
     if (!overrides.length) return ''
+    const displayOverrideTitle = (item?: NonNullable<CalendarEvent['titleOverrides']>[number]) => {
+      const title = item?.title.trim() ?? ''
+      if (!title) return ''
+      return item?.icon ? composeTitleWithIcon(item.icon, title, titleIconOptions) : title
+    }
     const userOverride = employeeId
       ? overrides.find((item) => item.targetType === 'employee' && item.targetId === employeeId)
       : null
-    if (userOverride?.title.trim()) return userOverride.title.trim()
+    const userOverrideTitle = displayOverrideTitle(userOverride ?? undefined)
+    if (userOverrideTitle) return userOverrideTitle
     const departmentId = currentEmployee?.departmentId ?? ''
     const departmentNameValue = currentEmployee?.departmentName ?? ''
     const departmentOverride = overrides.find((item) => (
       item.targetType === 'department' &&
       (item.targetId === departmentId || departmentName(item.targetId) === departmentNameValue)
     ))
-    if (departmentOverride?.title.trim()) return departmentOverride.title.trim()
+    const departmentOverrideTitle = displayOverrideTitle(departmentOverride)
+    if (departmentOverrideTitle) return departmentOverrideTitle
     const allEmployeesOverride = employeeId
       ? overrides.find((item) => item.targetType === ALL_EMPLOYEES_EXCEPT_SELF && item.targetId !== employeeId)
       : null
-    if (allEmployeesOverride?.title.trim()) return allEmployeesOverride.title.trim()
+    const allEmployeesOverrideTitle = displayOverrideTitle(allEmployeesOverride ?? undefined)
+    if (allEmployeesOverrideTitle) return allEmployeesOverrideTitle
     const allDepartmentsOverride = overrides.find((item) => (
       item.targetType === ALL_DEPARTMENTS_EXCEPT_OWN &&
       item.targetId !== departmentId &&
       departmentName(item.targetId) !== departmentNameValue
     ))
-    return allDepartmentsOverride?.title.trim() ?? ''
+    return displayOverrideTitle(allDepartmentsOverride)
   }
 
   function eventDisplayTitle(event: CalendarEvent) {
@@ -1519,11 +1607,18 @@ export default function CalendarPage() {
   function toggleEventCalendar(calendarId: string) {
     setEventForm((form) => {
       const calendarIds = toggle(form.calendarIds, calendarId)
+      const nextDepartmentId = primaryDepartmentIdFromCalendarIds(calendarIds, form.departmentId)
+      const oldDefaultIcons = departmentTitleIconDefaults[form.departmentId] ?? []
+      const nextDefaultIcon = departmentTitleIconDefaults[nextDepartmentId]?.[0] ?? ''
+      const currentIcon = selectedTitleIcon(form.title, titleIconOptions)
+      const currentTitleText = titleWithoutKnownIcon(form.title, titleIconOptions).trim()
+      const shouldApplyDefaultIcon = !currentTitleText && (!currentIcon || oldDefaultIcons.includes(currentIcon))
       return {
         ...form,
         calendarIds,
         calendarId: calendarIds[0] ?? '',
-        departmentId: primaryDepartmentIdFromCalendarIds(calendarIds, form.departmentId)
+        departmentId: nextDepartmentId,
+        title: shouldApplyDefaultIcon && nextDefaultIcon ? composeTitleWithIcon(nextDefaultIcon, '', titleIconOptions) : form.title
       }
     })
   }
@@ -1567,6 +1662,10 @@ export default function CalendarPage() {
   const selectedRepeatText = repeatLabel(eventForm.repeat, eventForm.date, eventForm.repeatCustom)
   const currentTitleIcon = selectedTitleIcon(eventForm.title, titleIconOptions)
   const currentTitleText = titleWithoutKnownIcon(eventForm.title, titleIconOptions)
+  const eventDepartmentTitleIcons = departmentTitleIconDefaults[eventForm.departmentId] ?? []
+  const eventTitleIconOptions = eventDepartmentTitleIcons.length
+    ? titleIconOptions.filter((item) => eventDepartmentTitleIcons.includes(item.icon))
+    : titleIconOptions
   const cachedEventArchive = useMemo(() => readLocalQueryCache<CalendarEvent[]>('calendarEventsArchive') ?? [], [events])
   const titleSuggestionEvents = useMemo(() => {
     const map = new Map<string, CalendarEvent>()
@@ -1663,6 +1762,7 @@ export default function CalendarPage() {
         {
           targetType: firstDepartmentId ? 'department' : 'employee',
           targetId: firstDepartmentId || firstEmployeeId,
+          icon: selectedTitleIcon(form.title, titleIconOptions) || undefined,
           title: ''
         }
       ]
@@ -1754,9 +1854,35 @@ export default function CalendarPage() {
   }
 
   function handleCalendarTouchStart(event: ReactTouchEvent<HTMLElement>) {
+    if (viewMode !== 'month' || showEventModal || selectedEventId || dayListDate) return
     const touch = event.touches[0]
     if (!touch) return
-    calendarTouchStartRef.current = { x: touch.clientX, y: touch.clientY }
+    setCalendarSwipeAnimating(false)
+    calendarTouchStartRef.current = { x: touch.clientX, y: touch.clientY, deltaX: 0, deltaY: 0, dragging: false }
+  }
+
+  function handleCalendarTouchMove(event: ReactTouchEvent<HTMLElement>) {
+    const start = calendarTouchStartRef.current
+    if (!start || viewMode !== 'month') return
+    const touch = event.touches[0]
+    if (!touch) return
+    const deltaX = touch.clientX - start.x
+    const deltaY = touch.clientY - start.y
+    start.deltaX = deltaX
+    start.deltaY = deltaY
+    if (!start.dragging) {
+      if (Math.abs(deltaX) < 8) return
+      if (Math.abs(deltaX) < Math.abs(deltaY) * 1.15) {
+        calendarTouchStartRef.current = null
+        setCalendarSwipeOffset(0)
+        return
+      }
+      start.dragging = true
+    }
+    event.preventDefault()
+    const width = calendarSurfaceRef.current?.clientWidth ?? window.innerWidth
+    const maxOffset = Math.max(90, width * 0.48)
+    setCalendarSwipeOffset(Math.max(-maxOffset, Math.min(maxOffset, deltaX)))
   }
 
   function handleCalendarTouchEnd(event: ReactTouchEvent<HTMLElement>) {
@@ -1764,10 +1890,27 @@ export default function CalendarPage() {
     calendarTouchStartRef.current = null
     const touch = event.changedTouches[0]
     if (!start || !touch) return
-    const deltaX = touch.clientX - start.x
-    const deltaY = touch.clientY - start.y
-    if (Math.abs(deltaX) < 56 || Math.abs(deltaX) < Math.abs(deltaY) * 1.25) return
-    movePeriod(deltaX < 0 ? 1 : -1)
+    const deltaX = start.deltaX || (touch.clientX - start.x)
+    const deltaY = start.deltaY || (touch.clientY - start.y)
+    if (!start.dragging) {
+      setCalendarSwipeOffset(0)
+      return
+    }
+    const width = calendarSurfaceRef.current?.clientWidth ?? window.innerWidth
+    const shouldChangeMonth = Math.abs(deltaX) >= Math.min(120, width * 0.22) && Math.abs(deltaX) > Math.abs(deltaY) * 1.15
+    setCalendarSwipeAnimating(true)
+    if (!shouldChangeMonth) {
+      setCalendarSwipeOffset(0)
+      window.setTimeout(() => setCalendarSwipeAnimating(false), 210)
+      return
+    }
+    const direction = deltaX < 0 ? 1 : -1
+    setCalendarSwipeOffset(direction === 1 ? -width : width)
+    window.setTimeout(() => {
+      movePeriod(direction)
+      setCalendarSwipeAnimating(false)
+      setCalendarSwipeOffset(0)
+    }, 190)
   }
 
   function openAddEvent(date = selectedDate) {
@@ -1780,8 +1923,10 @@ export default function CalendarPage() {
       Boolean(currentEmployee?.departmentName && calendar.name === currentEmployee.departmentName)
     )) ?? writableCalendars[0]
     const defaultDepartmentId = defaultCalendar?.departmentIds[0] ?? currentEmployee?.departmentId ?? departments.find((department) => department.name === currentEmployee?.departmentName)?.id ?? ''
+    const defaultTitleIcon = departmentTitleIconDefaults[defaultDepartmentId]?.[0] ?? ''
     setEventForm({
       ...emptyEvent,
+      title: defaultTitleIcon ? composeTitleWithIcon(defaultTitleIcon, '', titleIconOptions) : '',
       date,
       endDate: date,
       calendarId: defaultCalendar?.id ?? '',
@@ -2090,8 +2235,21 @@ export default function CalendarPage() {
     setShowTitleIconPicker(false)
   }
 
+  function chooseTitleOverrideIcon(index: number, icon: string) {
+    setEventForm((form) => ({
+      ...form,
+      titleOverrides: form.titleOverrides.map((item, itemIndex) => (
+        itemIndex === index
+          ? { ...item, icon, title: titleWithoutKnownIcon(item.title, titleIconOptions) }
+          : item
+      ))
+    }))
+    setTitleOverrideIconPickerIndex(null)
+  }
+
   function openTitleIconSettings() {
     setTitleIconDraft(titleIconOptions)
+    setDepartmentTitleIconDraft(departmentTitleIconDefaults)
     setShowTitleIconSettings(true)
   }
 
@@ -2107,6 +2265,13 @@ export default function CalendarPage() {
     setTitleIconDraft((items) => [...items, { icon: '', label: '' }])
   }
 
+  function toggleDepartmentTitleIconDraft(departmentId: string, icon: string) {
+    setDepartmentTitleIconDraft((draft) => ({
+      ...draft,
+      [departmentId]: toggle(draft[departmentId] ?? [], icon)
+    }))
+  }
+
   async function saveTitleIconSettings() {
     if (!canManageCalendarColors) return
     const options = titleIconDraft
@@ -2116,15 +2281,28 @@ export default function CalendarPage() {
       alert('至少保留一個 icon')
       return
     }
+    const cleanDepartmentDefaults = Object.fromEntries(
+      Object.entries(departmentTitleIconDraft)
+        .map(([departmentId, icons]) => [
+          departmentId,
+          Array.from(new Set((icons ?? [])
+            .map((icon) => String(icon || '').trim())
+            .filter((icon) => icon && options.some((item) => item.icon === icon))))
+        ])
+        .filter(([, icons]) => icons.length)
+    )
     setSavingTitleIcons(true)
     try {
       await setDoc(doc(db, 'calendarSettings', 'titleIcons'), {
         options,
+        departmentDefaults: cleanDepartmentDefaults,
         updatedAt: new Date().toISOString(),
         updatedBy: user?.uid ?? ''
       }, { merge: true })
       setTitleIconOptions(options)
       setTitleIconDraft(options)
+      setDepartmentTitleIconDefaults(cleanDepartmentDefaults)
+      setDepartmentTitleIconDraft(cleanDepartmentDefaults)
       setShowTitleIconSettings(false)
     } catch {
       alert('標題 icon 設定儲存失敗')
@@ -2244,7 +2422,7 @@ export default function CalendarPage() {
         hiddenDepartmentIds: eventForm.visibilityEnabled ? eventForm.hiddenDepartmentIds : [],
         hiddenAssigneeIds: eventForm.visibilityEnabled ? eventForm.hiddenAssigneeIds : [],
         titleOverrides: eventForm.visibilityEnabled ? eventForm.titleOverrides
-          .map((item) => ({ ...item, title: item.title.trim() }))
+          .map((item) => ({ ...item, icon: item.icon?.trim() || undefined, title: titleWithoutKnownIcon(item.title, titleIconOptions).trim() }))
           .filter((item) => item.targetId && item.title) : [],
         note: eventForm.note.trim(),
         reminder: eventForm.reminder ?? 'none',
@@ -2581,7 +2759,7 @@ export default function CalendarPage() {
   }
 
   function handleMonthDayClick(date: string) {
-    if (selectedDate === date) {
+    if (selectedDate === date && shouldUseMobileEventListFlow()) {
       setDayListDate(date)
       return
     }
@@ -3295,25 +3473,54 @@ export default function CalendarPage() {
             <button className="close-btn" onClick={() => setShowTitleIconSettings(false)}>×</button>
           </div>
           <div className="modal-body title-icon-settings-body">
-            {titleIconDraft.map((item, index) => (
-              <div className="title-icon-setting-row" key={index}>
-                <input
-                  className="title-icon-symbol-input"
-                  value={item.icon}
-                  onChange={(event) => updateTitleIconDraft(index, { icon: event.target.value })}
-                  placeholder="👷"
-                  aria-label="icon"
-                />
-                <input
-                  value={item.label}
-                  onChange={(event) => updateTitleIconDraft(index, { label: event.target.value })}
-                  placeholder="名稱"
-                  aria-label="icon 名稱"
-                />
-                <button type="button" onClick={() => removeTitleIconDraft(index)} aria-label="刪除 icon">×</button>
+            <section className="title-icon-settings-section">
+              <strong>可使用 icon</strong>
+              {titleIconDraft.map((item, index) => (
+                <div className="title-icon-setting-row" key={index}>
+                  <input
+                    className="title-icon-symbol-input"
+                    value={item.icon}
+                    onChange={(event) => updateTitleIconDraft(index, { icon: event.target.value })}
+                    placeholder="👷"
+                    aria-label="icon"
+                  />
+                  <input
+                    value={item.label}
+                    onChange={(event) => updateTitleIconDraft(index, { label: event.target.value })}
+                    placeholder="名稱"
+                    aria-label="icon 名稱"
+                  />
+                  <button type="button" onClick={() => removeTitleIconDraft(index)} aria-label="刪除 icon">×</button>
+                </div>
+              ))}
+              <button type="button" className="title-icon-add-row" onClick={addTitleIconDraft}>新增 icon</button>
+            </section>
+
+            <section className="title-icon-settings-section">
+              <strong>部門預設 icon</strong>
+              <div className="department-title-icon-list">
+                {departments.map((department) => (
+                  <div className="department-title-icon-row" key={department.id}>
+                    <span>{department.name}</span>
+                    <div className="department-title-icon-options">
+                      {titleIconDraft
+                        .filter((item) => item.icon.trim() && item.label.trim())
+                        .map((item) => (
+                          <label key={`${department.id}-${item.icon}-${item.label}`}>
+                            <input
+                              type="checkbox"
+                              checked={(departmentTitleIconDraft[department.id] ?? []).includes(item.icon.trim())}
+                              onChange={() => toggleDepartmentTitleIconDraft(department.id, item.icon.trim())}
+                            />
+                            <span>{item.icon.trim()}</span>
+                            <small>{item.label.trim()}</small>
+                          </label>
+                        ))}
+                    </div>
+                  </div>
+                ))}
               </div>
-            ))}
-            <button type="button" className="title-icon-add-row" onClick={addTitleIconDraft}>新增 icon</button>
+            </section>
           </div>
           <div className="modal-footer">
             <button type="button" onClick={() => setShowTitleIconSettings(false)}>取消</button>
@@ -3523,7 +3730,19 @@ export default function CalendarPage() {
           </aside>
         )}
 
-        <section className="tt-calendar-surface" onTouchStart={handleCalendarTouchStart} onTouchEnd={handleCalendarTouchEnd}>
+        <section
+          className="tt-calendar-surface"
+          ref={calendarSurfaceRef}
+          onTouchStart={handleCalendarTouchStart}
+          onTouchMove={handleCalendarTouchMove}
+          onTouchEnd={handleCalendarTouchEnd}
+          onTouchCancel={() => {
+            calendarTouchStartRef.current = null
+            setCalendarSwipeAnimating(true)
+            setCalendarSwipeOffset(0)
+            window.setTimeout(() => setCalendarSwipeAnimating(false), 210)
+          }}
+        >
           {loading ? (
             <div className="calendar-skeleton" />
           ) : (
@@ -3531,10 +3750,17 @@ export default function CalendarPage() {
             <div className="weekday-grid">
               {WEEKDAYS.map((day) => <div key={day}>{day}</div>)}
             </div>
-            {viewMode === 'month' ? <div className="month-grid">
+            {viewMode === 'month' ? <div
+              className={`month-grid calendar-swipe-track ${calendarSwipeAnimating ? 'swipe-animating' : ''}`}
+              ref={monthGridRef}
+              style={{ transform: `translate3d(${calendarSwipeOffset}px, 0, 0)` }}
+            >
               {monthDays.map((day) => {
                 const date = day.format('YYYY-MM-DD')
                 const dayEvents = eventsByDate.get(date) ?? []
+                const visibleDayEventCount = dayEvents.length > monthDayEventRowLimit ? monthDayEventRowLimit - 1 : monthDayEventRowLimit
+                const visibleDayEvents = dayEvents.slice(0, visibleDayEventCount)
+                const hiddenDayEventCount = dayEvents.length - visibleDayEventCount
                 const selected = selectedDate === date
                 const today = dayjs().format('YYYY-MM-DD') === date
                 return (
@@ -3553,7 +3779,7 @@ export default function CalendarPage() {
                   >
                     <span className={`day-number ${today ? 'today' : ''}`}>{day.date()}</span>
                     <span className="day-events">
-                      {dayEvents.slice(0, 7).map((event) => (
+                      {visibleDayEvents.map((event) => (
                         <button
                           className={`event-pill ${event.allDay ? 'all-day' : 'timed'} ${selectedEventId === event.id ? 'active' : ''}`}
                           style={{ '--event-color': eventCalendarColor(event) } as CSSProperties}
@@ -3589,7 +3815,7 @@ export default function CalendarPage() {
                           {!event.allDay && <small>{event.startTime}</small>}
                         </button>
                       ))}
-                      {dayEvents.length > 7 && (
+                      {hiddenDayEventCount > 0 && (
                         <span
                           className="more-pill"
                           role="button"
@@ -3607,7 +3833,7 @@ export default function CalendarPage() {
                             setDayListDate(date)
                           }}
                         >
-                          +{dayEvents.length - 7}
+                          +{hiddenDayEventCount}
                         </span>
                       )}
                     </span>
@@ -3815,7 +4041,7 @@ export default function CalendarPage() {
                   </button>
                   {showTitleIconPicker && (
                     <div className="title-icon-menu">
-                      {titleIconOptions.map((item) => (
+                      {eventTitleIconOptions.map((item) => (
                         <button type="button" key={`${item.icon}-${item.label}`} onClick={() => chooseTitleIcon(item.icon)}>
                           <span>{item.icon}</span>
                           <small>{item.label}</small>
@@ -4006,59 +4232,88 @@ export default function CalendarPage() {
 
                         <strong>替代顯示標題</strong>
                         <div className="title-override-list">
-                          {eventForm.titleOverrides.map((override, index) => (
+                          {eventForm.titleOverrides.map((override, index) => {
+                            const overrideIcon = override.icon || selectedTitleIcon(override.title, titleIconOptions)
+                            const overrideTitleText = titleWithoutKnownIcon(override.title, titleIconOptions)
+                            return (
                             <div className="title-override-row" key={`${override.targetType}-${override.targetId}-${index}`}>
-                              <select
-                                value={override.targetType}
-                                onChange={(event) => {
-                                  const targetType = event.target.value as NonNullable<CalendarEvent['titleOverrides']>[number]['targetType']
-                                  updateTitleOverride(index, {
-                                    targetType,
-                                    targetId: defaultTitleOverrideTargetId(targetType)
-                                  })
-                                }}
-                              >
-                                <option value="department">部門</option>
-                                <option value={ALL_DEPARTMENTS_EXCEPT_OWN}>所有部門（除了自己所屬部門）</option>
-                                <option value="employee">同仁</option>
-                                <option value={ALL_EMPLOYEES_EXCEPT_SELF}>所有同仁（除了自己）</option>
-                              </select>
-                              <select
-                                value={
-                                  override.targetType === ALL_DEPARTMENTS_EXCEPT_OWN
-                                    ? (override.targetId || ownDepartmentId)
-                                    : override.targetType === ALL_EMPLOYEES_EXCEPT_SELF
-                                      ? (override.targetId || employeeId || '')
-                                      : override.targetId
-                                }
-                                onChange={(event) => updateTitleOverride(index, { targetId: event.target.value })}
-                                disabled={override.targetType === ALL_DEPARTMENTS_EXCEPT_OWN || override.targetType === ALL_EMPLOYEES_EXCEPT_SELF}
-                              >
-                                {override.targetType === 'department' && departments.map((department) => (
-                                  <option key={department.id} value={department.id}>{department.name}</option>
-                                ))}
-                                {override.targetType === 'employee' && employees.filter((emp) => emp.status !== 'inactive').map((emp) => (
-                                  <option key={emp.id} value={emp.id}>{employeeName(emp.id)}</option>
-                                ))}
-                                {override.targetType === ALL_DEPARTMENTS_EXCEPT_OWN && (
-                                  <option value={override.targetId || ownDepartmentId}>
-                                    除了 {departmentName(override.targetId || ownDepartmentId) || '自己所屬部門'}
-                                  </option>
-                                )}
-                                {override.targetType === ALL_EMPLOYEES_EXCEPT_SELF && (
-                                  <option value={override.targetId || employeeId || ''}>
-                                    除了 {override.targetId ? employeeName(override.targetId) : '自己'}
-                                  </option>
-                                )}
-                              </select>
-                              <input
-                                value={override.title}
-                                onChange={(event) => updateTitleOverride(index, { title: event.target.value })}
-                                placeholder="此對象看到的標題"
-                              />
-                              <button type="button" onClick={() => removeTitleOverride(index)} aria-label="刪除替代標題">×</button>
+                              <div className="title-override-target-row">
+                                <select
+                                  value={override.targetType}
+                                  onChange={(event) => {
+                                    const targetType = event.target.value as NonNullable<CalendarEvent['titleOverrides']>[number]['targetType']
+                                    updateTitleOverride(index, {
+                                      targetType,
+                                      targetId: defaultTitleOverrideTargetId(targetType)
+                                    })
+                                  }}
+                                >
+                                  <option value="department">部門</option>
+                                  <option value={ALL_DEPARTMENTS_EXCEPT_OWN}>所有部門（除了自己所屬部門）</option>
+                                  <option value="employee">同仁</option>
+                                  <option value={ALL_EMPLOYEES_EXCEPT_SELF}>所有同仁（除了自己）</option>
+                                </select>
+                                <select
+                                  value={
+                                    override.targetType === ALL_DEPARTMENTS_EXCEPT_OWN
+                                      ? (override.targetId || ownDepartmentId)
+                                      : override.targetType === ALL_EMPLOYEES_EXCEPT_SELF
+                                        ? (override.targetId || employeeId || '')
+                                        : override.targetId
+                                  }
+                                  onChange={(event) => updateTitleOverride(index, { targetId: event.target.value })}
+                                  disabled={override.targetType === ALL_DEPARTMENTS_EXCEPT_OWN || override.targetType === ALL_EMPLOYEES_EXCEPT_SELF}
+                                >
+                                  {override.targetType === 'department' && departments.map((department) => (
+                                    <option key={department.id} value={department.id}>{department.name}</option>
+                                  ))}
+                                  {override.targetType === 'employee' && employees.filter((emp) => emp.status !== 'inactive').map((emp) => (
+                                    <option key={emp.id} value={emp.id}>{employeeName(emp.id)}</option>
+                                  ))}
+                                  {override.targetType === ALL_DEPARTMENTS_EXCEPT_OWN && (
+                                    <option value={override.targetId || ownDepartmentId}>
+                                      除了 {departmentName(override.targetId || ownDepartmentId) || '自己所屬部門'}
+                                    </option>
+                                  )}
+                                  {override.targetType === ALL_EMPLOYEES_EXCEPT_SELF && (
+                                    <option value={override.targetId || employeeId || ''}>
+                                      除了 {override.targetId ? employeeName(override.targetId) : '自己'}
+                                    </option>
+                                  )}
+                                </select>
+                                <button type="button" onClick={() => removeTitleOverride(index)} aria-label="刪除替代標題">×</button>
+                              </div>
+                              <div className="title-override-title-row">
+                                <div className="title-override-icon-picker">
+                                  <button
+                                    type="button"
+                                    onClick={() => setTitleOverrideIconPickerIndex((current) => current === index ? null : index)}
+                                    aria-label="選擇替代標題圖示"
+                                  >
+                                    {overrideIcon || '＋'}
+                                  </button>
+                                  {titleOverrideIconPickerIndex === index && (
+                                    <div className="title-icon-menu">
+                                      {titleIconOptions.map((item) => (
+                                        <button type="button" key={`${item.icon}-${item.label}`} onClick={() => chooseTitleOverrideIcon(index, item.icon)}>
+                                          <span>{item.icon}</span>
+                                          <small>{item.label}</small>
+                                        </button>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                                <input
+                                  value={overrideTitleText}
+                                  onChange={(event) => updateTitleOverride(index, {
+                                    icon: overrideIcon || undefined,
+                                    title: event.target.value
+                                  })}
+                                  placeholder="此對象看到的標題"
+                                />
+                              </div>
                             </div>
-                          ))}
+                          )})}
                           <button type="button" className="todo-add-btn" onClick={addTitleOverride}>新增替代標題</button>
                         </div>
                       </div>

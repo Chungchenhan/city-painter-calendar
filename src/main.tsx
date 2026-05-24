@@ -14,6 +14,10 @@ import './styles.css'
 
 const queryClient = new QueryClient()
 
+if (import.meta.env.DEV && window.location.hostname === '127.0.0.1') {
+  window.location.replace(`http://localhost:${window.location.port}${window.location.pathname}${window.location.search}${window.location.hash}`)
+}
+
 setupAppUpdateChecks()
 
 function AuthGuard({ children }: { children: React.ReactNode }) {

@@ -73,6 +73,7 @@ export interface CalendarEvent {
   titleOverrides?: {
     targetType: 'department' | 'employee' | 'allDepartmentsExceptOwn' | 'allEmployeesExceptSelf'
     targetId: string
+    icon?: string
     title: string
   }[]
   note: string
