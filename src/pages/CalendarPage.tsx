@@ -732,6 +732,14 @@ export default function CalendarPage() {
   const [deletedAttachments, setDeletedAttachments] = useState<EventAttachment[]>([])
   const [dragActionMenu, setDragActionMenu] = useState<DragActionMenu | null>(null)
   const [dragOverDate, setDragOverDate] = useState<string | null>(null)
+  const [dragPreview, setDragPreview] = useState<{
+    title: string
+    x: number
+    y: number
+    width: number
+    height: number
+    color: string
+  } | null>(null)
   const [calendarSwipeOffset, setCalendarSwipeOffset] = useState(0)
   const [calendarSwipeAnimating, setCalendarSwipeAnimating] = useState(false)
   const [dayListSwipeOffset, setDayListSwipeOffset] = useState(0)
@@ -761,6 +769,10 @@ export default function CalendarPage() {
     timer: number
     active: boolean
     dragging: boolean
+    title: string
+    width: number
+    height: number
+    color: string
   } | null>(null)
   const dayListSwipeRef = useRef<{
     identifier: number
@@ -857,8 +869,8 @@ export default function CalendarPage() {
   }, [currentEmployee?.departmentId, currentEmployee?.departmentName, employeeId, events, selectedCalendarIds, visibleCalendarMap, departments, employees, hrLeaveCalendar])
 
   const visibleEvents = useMemo(() => {
-    const rangeStart = month.subtract(1, 'month').startOf('month').format('YYYY-MM-DD')
-    const rangeEnd = month.add(1, 'month').endOf('month').format('YYYY-MM-DD')
+    const rangeStart = month.subtract(2, 'month').startOf('month').format('YYYY-MM-DD')
+    const rangeEnd = month.add(2, 'month').endOf('month').format('YYYY-MM-DD')
     return expandRecurringEvents(visibleSourceEvents, rangeStart, rangeEnd)
   }, [month, visibleSourceEvents])
 
@@ -2238,12 +2250,12 @@ export default function CalendarPage() {
     startEditEvent(event, 'all')
   }
 
-  function openCopyEvent(event: CalendarEvent) {
+  function openCopyEvent(event: CalendarEvent, copyDate?: string) {
     if (!canCreateEvent) {
       alert('沒有新增活動的權限')
       return
     }
-    const targetDate = selectedDate || event.date
+    const targetDate = copyDate || selectedDate || event.date
     const range = shiftedEventDateRange(event, targetDate)
     const hiddenDepartmentIds = event.hiddenDepartmentIds ?? []
     const hiddenAssigneeIds = event.hiddenAssigneeIds ?? []
@@ -3226,6 +3238,7 @@ export default function CalendarPage() {
 
   function clearEventDragState() {
     setDragOverDate(null)
+    setDragPreview(null)
     pointerDragRef.current = null
   }
 
@@ -3233,7 +3246,6 @@ export default function CalendarPage() {
     const draggedEvent = events.find((event) => event.id === eventId)
     if (!draggedEvent || !eventDragAllowed(draggedEvent)) return
     setSelectedDate(targetDate)
-    setMonth(dayjs(targetDate).startOf('month'))
     setDragActionMenu({
       eventId,
       targetDate,
@@ -3334,6 +3346,7 @@ export default function CalendarPage() {
     const drag = dayListTouchDragRef.current
     if (drag?.timer) window.clearTimeout(drag.timer)
     dayListTouchDragRef.current = null
+    setDragPreview(null)
     clearDayListTouchDragListeners()
   }
 
@@ -3344,10 +3357,21 @@ export default function CalendarPage() {
     const pointerId = event.pointerId
     const startX = event.clientX
     const startY = event.clientY
+    const rect = event.currentTarget.getBoundingClientRect()
+    const previewWidth = Math.max(112, Math.min(rect.width || 160, 220))
+    const previewHeight = Math.max(28, Math.min(rect.height || 36, 56))
     const timer = window.setTimeout(() => {
       const drag = dayListTouchDragRef.current
       if (!drag || drag.pointerId !== pointerId) return
       drag.active = true
+      setDragPreview({
+        title: drag.title,
+        x: drag.latestX,
+        y: drag.latestY,
+        width: drag.width,
+        height: drag.height,
+        color: drag.color
+      })
     }, 420)
 
     dayListTouchDragRef.current = {
@@ -3359,7 +3383,11 @@ export default function CalendarPage() {
       latestY: startY,
       timer,
       active: false,
-      dragging: false
+      dragging: false,
+      title: eventDisplayTitle(calendarEvent),
+      width: previewWidth,
+      height: previewHeight,
+      color: eventCalendarColor(calendarEvent)
     }
     document.addEventListener('pointermove', moveDayListTouchDrag)
     document.addEventListener('pointerup', endDayListTouchDrag)
@@ -3371,6 +3399,16 @@ export default function CalendarPage() {
     if (!drag || drag.pointerId !== event.pointerId) return
     drag.latestX = event.clientX
     drag.latestY = event.clientY
+    if (drag.active) {
+      setDragPreview({
+        title: drag.title,
+        x: event.clientX,
+        y: event.clientY,
+        width: drag.width,
+        height: drag.height,
+        color: drag.color
+      })
+    }
     if (!drag.active) {
       const distance = Math.abs(event.clientX - drag.startX) + Math.abs(event.clientY - drag.startY)
       if (distance > 22) resetDayListTouchDrag()
@@ -3472,6 +3510,14 @@ export default function CalendarPage() {
       setDragActionMenu(null)
       return
     }
+    if (action === 'copy') {
+      const targetDate = dragActionMenu.targetDate
+      setSelectedDate(targetDate)
+      setDragActionMenu(null)
+      setDragOverDate(null)
+      openCopyEvent(sourceEvent, targetDate)
+      return
+    }
 
     setSaving(true)
     try {
@@ -3502,45 +3548,6 @@ export default function CalendarPage() {
           }]
         })
         setSelectedEventId(sourceEvent.id)
-      } else {
-        const { id: _id, createdAt: _createdAt, updatedAt: _updatedAt, ...eventPayload } = sourceEvent
-        const created = await addDoc(collection(db, 'calendarEvents'), {
-          ...eventPayload,
-          ...nextDateRange,
-          source: '',
-          sourceId: '',
-          sourceDate: '',
-          createdBy: user?.uid ?? sourceEvent.createdBy ?? '',
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString()
-        })
-        await syncCalendarEventViews({
-          id: created.id,
-          ...eventPayload,
-          ...nextDateRange,
-          source: '',
-          sourceId: '',
-          sourceDate: '',
-          createdBy: user?.uid ?? sourceEvent.createdBy ?? '',
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString()
-        } as CalendarEvent)
-        await writeActivityLog({
-          action: 'copy',
-          eventId: created.id,
-          eventTitle: eventDisplayTitle(sourceEvent),
-          calendarId: eventDisplayCalendarId(sourceEvent),
-          departmentId: sourceEvent.departmentId,
-          assigneeIds: sourceEvent.assigneeIds,
-          date: dragActionMenu.targetDate,
-          changes: [{
-            field: 'date',
-            label: '日期',
-            before: eventEndDate(sourceEvent) === sourceEvent.date ? sourceEvent.date : `${sourceEvent.date} - ${eventEndDate(sourceEvent)}`,
-            after: nextDateRange.endDate === nextDateRange.date ? nextDateRange.date : `${nextDateRange.date} - ${nextDateRange.endDate}`
-          }]
-        })
-        setSelectedEventId(created.id)
       }
       setDragActionMenu(null)
       await refreshCalendarData()
@@ -4641,6 +4648,21 @@ export default function CalendarPage() {
       {renderTitleIconSettingsModal()}
       {renderDayListPanel()}
       {renderEventDetailPanel()}
+
+      {dragPreview && (
+        <div
+          className="event-drag-preview"
+          style={{
+            '--event-color': dragPreview.color,
+            left: dragPreview.x,
+            top: dragPreview.y,
+            width: dragPreview.width,
+            minHeight: dragPreview.height
+          } as CSSProperties}
+        >
+          {dragPreview.title}
+        </div>
+      )}
 
       {dragActionMenu && (
         <div className="event-drag-menu" style={{ left: dragActionMenu.x, top: dragActionMenu.y } as CSSProperties}>

@@ -583,7 +583,7 @@ textarea {
 .tt-calendar-surface .event-pill {
   height: 17px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) 34px;
   align-items: center;
   gap: 3px;
   overflow: hidden;
@@ -630,7 +630,7 @@ textarea {
   position: relative;
   height: 20px;
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: minmax(0, 1fr) 34px;
   align-items: center;
   gap: 4px;
   overflow: hidden;
@@ -665,13 +665,19 @@ textarea {
 .tt-calendar-surface .event-pill small,
 .tt-calendar-surface .event-line small {
   color: inherit;
+  justify-self: end;
+  width: 34px;
   font-size: 9px;
   font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+  line-height: inherit;
   opacity: 0.72;
+  text-align: right;
 }
 
 .tt-calendar-surface .event-pill small {
-  margin-left: 2px;
+  margin-left: 0;
 }
 
 .done-dot {
@@ -734,6 +740,28 @@ textarea {
 
 .event-drag-menu button:hover {
   background: #f8fafc;
+}
+
+.event-drag-preview {
+  position: fixed;
+  z-index: 95;
+  display: flex;
+  align-items: center;
+  max-width: min(240px, calc(100vw - 32px));
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--event-color) 86%, #111);
+  color: #fff;
+  box-shadow: 0 14px 30px rgba(15, 23, 42, 0.28);
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.25;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  opacity: 0.92;
+  overflow: hidden;
+  text-overflow: clip;
+  white-space: nowrap;
 }
 
 .tt-calendar-drawer,
@@ -3425,27 +3453,67 @@ p {
   display: grid;
   place-items: center;
   padding: 20px;
-  background: linear-gradient(135deg, #f6b100 0%, #ffe8a0 48%, #f7f1e5 100%);
+  background:
+    radial-gradient(circle at 28% 24%, color-mix(in srgb, var(--login-accent) 28%, transparent) 0, transparent 34%),
+    linear-gradient(135deg, var(--login-start) 0%, var(--login-mid) 46%, var(--login-end) 100%);
+  font-family: '微軟正黑體', 'Noto Sans TC', Arial, sans-serif;
+}
+
+.login-page--calendar {
+  --login-accent: #1f8f6b;
+  --login-start: #dff6ed;
+  --login-mid: #f1fbf6;
+  --login-end: #fbf7ec;
+  --login-brand: #16775a;
+  --login-button: #1f8f6b;
+  --login-button-hover: #19775a;
+}
+
+.login-page--hr {
+  --login-accent: #d89600;
+  --login-start: #f6b100;
+  --login-mid: #ffe8a0;
+  --login-end: #f7f1e5;
+  --login-brand: #ad7800;
+  --login-button: #f6b100;
+  --login-button-hover: #d89600;
+}
+
+.login-page--erp {
+  --login-accent: #2563eb;
+  --login-start: #dbeafe;
+  --login-mid: #edf5ff;
+  --login-end: #f4f7fb;
+  --login-brand: #1d4ed8;
+  --login-button: #2563eb;
+  --login-button-hover: #1d4ed8;
 }
 
 .login-panel {
   width: min(400px, 100%);
   padding: 28px;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid rgba(229, 223, 210, 0.92);
+  border-radius: 8px;
+  box-shadow: 0 18px 42px rgba(66, 52, 27, 0.12);
 }
 
 .login-logo {
-  color: #ad7800;
+  color: var(--login-brand);
   font-size: 15px;
   font-weight: 900;
 }
 
 .login-panel h1 {
-  margin-top: 8px;
+  margin: 8px 0 0;
   font-size: 34px;
+  line-height: 1.18;
+  color: #202124;
+  letter-spacing: 0;
 }
 
 .login-panel p {
-  margin-top: 10px;
+  margin: 10px 0 0;
   color: #736a5f;
   line-height: 1.6;
 }
@@ -3457,6 +3525,22 @@ p {
   align-items: center;
   justify-content: center;
   margin-top: 22px;
+  border: none;
+  border-radius: 8px;
+  background: var(--login-button);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.login-btn:hover:not(:disabled) {
+  background: var(--login-button-hover);
+}
+
+.login-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
 }
 
 .login-form {

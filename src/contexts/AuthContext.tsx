@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
-import { onAuthStateChanged, type User } from 'firebase/auth'
-import { doc, getDoc } from 'firebase/firestore'
+import { onAuthStateChanged, signOut, type User } from 'firebase/auth'
+import { doc, getDoc, onSnapshot } from 'firebase/firestore'
 import { auth, db } from '../lib/firebase'
 import type { UserRole } from '../types'
 
@@ -47,6 +47,18 @@ function writeCachedAuthProfile(profile: CachedAuthProfile) {
   }
 }
 
+function clearCachedAuthProfile() {
+  try {
+    window.localStorage.removeItem(AUTH_PROFILE_CACHE_KEY)
+  } catch {
+    // 忽略本機快取清除失敗。
+  }
+}
+
+function employeeCanAccess(data: { status?: string; resignDate?: string | null } | null): boolean {
+  return Boolean(data && data.status !== 'inactive' && !data.resignDate)
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
   const [role, setRole] = useState<AuthContextType['role']>('loading')
@@ -63,11 +75,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setRole('unknown')
         setEmployeeId(null)
         setDisplayName('')
-        try {
-          window.localStorage.removeItem(AUTH_PROFILE_CACHE_KEY)
-        } catch {
-          // 忽略本機快取清除失敗。
-        }
+        clearCachedAuthProfile()
         setLoading(false)
         return
       }
@@ -85,6 +93,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const roleSnap = await getDoc(doc(db, 'userRoles', nextUser.uid))
 
         if (!roleSnap.exists()) {
+          clearCachedAuthProfile()
           setRole('unknown')
           setEmployeeId(null)
           setDisplayName(nextUser.displayName ?? nextUser.email ?? '')
@@ -94,15 +103,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
         const roleData = roleSnap.data() as UserRole
         const nextEmployeeId = roleData.employeeId ?? null
+        if (!nextEmployeeId) {
+          clearCachedAuthProfile()
+          setRole('unknown')
+          setEmployeeId(null)
+          setDisplayName('')
+          await signOut(auth)
+          setLoading(false)
+          return
+        }
+
         setRole(roleData.role)
         setEmployeeId(nextEmployeeId)
         let nextDisplayName = roleData.displayName || nextUser.displayName || ''
 
-        if (nextEmployeeId) {
-          const empSnap = await getDoc(doc(db, 'employees', nextEmployeeId))
-          const empData = empSnap.exists() ? (empSnap.data() as { name?: string; nickname?: string }) : {}
-          nextDisplayName = empData.nickname || empData.name || nextDisplayName
+        const empSnap = await getDoc(doc(db, 'employees', nextEmployeeId))
+        const empData = empSnap.exists() ? (empSnap.data() as { name?: string; nickname?: string; status?: string; resignDate?: string | null }) : null
+        if (!empData || !employeeCanAccess(empData)) {
+          clearCachedAuthProfile()
+          setRole('unknown')
+          setEmployeeId(null)
+          setDisplayName('')
+          await signOut(auth)
+          setLoading(false)
+          return
         }
+        nextDisplayName = empData.nickname || empData.name || nextDisplayName
         setDisplayName(nextDisplayName)
         writeCachedAuthProfile({
           uid: nextUser.uid,
@@ -123,6 +149,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     return unsub
   }, [])
+
+  useEffect(() => {
+    if (!user || !employeeId) return
+
+    return onSnapshot(doc(db, 'employees', employeeId), async (snapshot) => {
+      const employee = snapshot.exists() ? snapshot.data() as { status?: string; resignDate?: string | null } : null
+      if (employeeCanAccess(employee)) return
+
+      clearCachedAuthProfile()
+      setRole('unknown')
+      setEmployeeId(null)
+      setDisplayName('')
+      await signOut(auth)
+    })
+  }, [employeeId, user])
 
   return (
     <AuthContext.Provider value={{ user, role, employeeId, displayName, loading }}>

@@ -80,7 +80,7 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="login-page">
+    <div className="login-page login-page--calendar">
       <section className="login-panel">
         <div className="login-logo">都市彩繪</div>
         <h1>行事曆</h1>
@@ -118,7 +118,7 @@ export default function LoginPage() {
             />
             <span>記憶帳號密碼</span>
           </label>
-          <button type="button" className="primary-btn login-btn" onClick={login} disabled={submitting}>
+          <button type="button" className="login-btn" onClick={login} disabled={submitting}>
             {submitting ? '登入中...' : '登入'}
           </button>
         </div>
