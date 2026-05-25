@@ -7,39 +7,39 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		02FFB00A3E1C2E792AFC7701 /* CityPainterCalendarApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC80B8F4FB0FAACE566FCB4C /* CityPainterCalendarApp.swift */; };
-		1798FECB2E8FEE7B8698A2AB /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5F5B55BF056BC12002D2D54C /* WebKit.framework */; };
-		1D4C3A0BCA03B3449678063A /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 19A2A9906FEE69B6400B6644 /* SwiftUI.framework */; };
-		2411CDAE124D7740CB4E5F6D /* WebCalendarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAD08D8B668567418109E1B4 /* WebCalendarView.swift */; };
-		284DCA8E6FCBA11FC2EBD267 /* WidgetModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C17F67811A1762BA33163AC8 /* WidgetModels.swift */; };
-		30EE809385F3D42EC98681E1 /* WidgetConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DB92D02BB8C7C94A0132ABB /* WidgetConfig.swift */; };
-		90B2966B6DF3917B98138B02 /* WidgetConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DB92D02BB8C7C94A0132ABB /* WidgetConfig.swift */; };
-		AAC1C982D6077CD9896AF503 /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A3DBCC6D17506383898AE3ED /* SwiftUI.framework */; };
-		C103B77E0D5061AF878C00F3 /* CityPainterCalendarWidget.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 23A94FFCB4ECF7491ACE7A79 /* CityPainterCalendarWidget.appex */; };
-		D04EA433888B928D03191DDA /* CityPainterCalendarWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8917AEA428BF2598981E02BF /* CityPainterCalendarWidget.swift */; };
-		D2A56B55C21989682FF10682 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 15A69A2F2D6308E3340B36CD /* Foundation.framework */; };
-		F6EE43936F3F62E73BF84F41 /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AAD97A7AB2EC3D921E276947 /* WidgetKit.framework */; };
-		F9412CF7B68F54797CCBF6B9 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 15A69A2F2D6308E3340B36CD /* Foundation.framework */; };
+		0BAA6E4BDF751ABCFF82353D /* CityPainterCalendarApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5074FD19888E7A7DD9471D3 /* CityPainterCalendarApp.swift */; };
+		23B80D256C29EED992511B54 /* CityPainterCalendarWidget.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = ED57612617D1B2C0EBDBAFB9 /* CityPainterCalendarWidget.appex */; };
+		314C56633DB96A7270CAA294 /* WidgetModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6536AD96CC8F2B54752DCB62 /* WidgetModels.swift */; };
+		3C4FF601729550267C215150 /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 40BBA97E9807C38864BC57CC /* WidgetKit.framework */; };
+		53B31A4078519F13171F80B6 /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 24E7F2B3D1403F5AFF83A200 /* WebKit.framework */; };
+		63E9FEA9A36FB81D0275C464 /* CityPainterCalendarWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8729ADDDEA3F78687A2B6CC8 /* CityPainterCalendarWidget.swift */; };
+		6D0E85B64059C9AE8B82E6AA /* WebCalendarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3754EF315ED4A549C903E25 /* WebCalendarView.swift */; };
+		72242338177FC6B4033134A1 /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 2AC8C74EA155ADA419C481C0 /* SwiftUI.framework */; };
+		8296BC2C2AD02F5C12DDA2EF /* WidgetConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42B447A3F2D8324FE1EF8B71 /* WidgetConfig.swift */; };
+		BABCF4C6FBCCA949986CB355 /* WidgetConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42B447A3F2D8324FE1EF8B71 /* WidgetConfig.swift */; };
+		BDBB7376191570E5C85469DE /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5A9F9668BF646FBFA9DEA9F5 /* SwiftUI.framework */; };
+		C1AB5FEC7420E702461FB4C3 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 853566234FCE3D3E7617C6ED /* Foundation.framework */; };
+		E232328731BC6E20A06584C3 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 853566234FCE3D3E7617C6ED /* Foundation.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
-		25EB50CF48B6AFCF6CBB1162 /* PBXContainerItemProxy */ = {
+		0725F0A7E6359BCD7E86BAB8 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
-			containerPortal = 5E9921298DD8EC19AD75CA07 /* Project object */;
+			containerPortal = 0297C86CEF6E9027DA718C99 /* Project object */;
 			proxyType = 1;
-			remoteGlobalIDString = 9D2A4A04E74447AA65A0FCA6;
+			remoteGlobalIDString = C897AEB625D0C6A8ADF0EB90;
 			remoteInfo = CityPainterCalendarWidget;
 		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
-		80DC5402B40BC4B9DC565780 /* Embed App Extensions */ = {
+		5C47BCF56A7B8409BB7D442B /* Embed App Extensions */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
 			dstPath = "";
 			dstSubfolderSpec = 13;
 			files = (
-				C103B77E0D5061AF878C00F3 /* CityPainterCalendarWidget.appex in Embed App Extensions */,
+				23B80D256C29EED992511B54 /* CityPainterCalendarWidget.appex in Embed App Extensions */,
 			);
 			name = "Embed App Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -47,109 +47,109 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		15A69A2F2D6308E3340B36CD /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
-		19A2A9906FEE69B6400B6644 /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; path = SwiftUI.framework; sourceTree = "<group>"; };
-		23A94FFCB4ECF7491ACE7A79 /* CityPainterCalendarWidget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = CityPainterCalendarWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
-		5F5B55BF056BC12002D2D54C /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; path = WebKit.framework; sourceTree = "<group>"; };
-		6DB92D02BB8C7C94A0132ABB /* WidgetConfig.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WidgetConfig.swift; sourceTree = "<group>"; };
-		8917AEA428BF2598981E02BF /* CityPainterCalendarWidget.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CityPainterCalendarWidget.swift; sourceTree = "<group>"; };
-		A3DBCC6D17506383898AE3ED /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; path = SwiftUI.framework; sourceTree = "<group>"; };
-		AAD97A7AB2EC3D921E276947 /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; path = WidgetKit.framework; sourceTree = "<group>"; };
-		C17F67811A1762BA33163AC8 /* WidgetModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WidgetModels.swift; sourceTree = "<group>"; };
-		DAD08D8B668567418109E1B4 /* WebCalendarView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WebCalendarView.swift; sourceTree = "<group>"; };
-		DC80B8F4FB0FAACE566FCB4C /* CityPainterCalendarApp.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CityPainterCalendarApp.swift; sourceTree = "<group>"; };
-		EC18C4D257795E07083D7738 /* CityPainterCalendarApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CityPainterCalendarApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		24E7F2B3D1403F5AFF83A200 /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; path = WebKit.framework; sourceTree = "<group>"; };
+		2AC8C74EA155ADA419C481C0 /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; path = SwiftUI.framework; sourceTree = "<group>"; };
+		40BBA97E9807C38864BC57CC /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; path = WidgetKit.framework; sourceTree = "<group>"; };
+		42B447A3F2D8324FE1EF8B71 /* WidgetConfig.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WidgetConfig.swift; sourceTree = "<group>"; };
+		5A9F9668BF646FBFA9DEA9F5 /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; path = SwiftUI.framework; sourceTree = "<group>"; };
+		6536AD96CC8F2B54752DCB62 /* WidgetModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WidgetModels.swift; sourceTree = "<group>"; };
+		853566234FCE3D3E7617C6ED /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
+		8729ADDDEA3F78687A2B6CC8 /* CityPainterCalendarWidget.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CityPainterCalendarWidget.swift; sourceTree = "<group>"; };
+		C4FF7541AEDC7EE7DC6C2038 /* CityPainterCalendarApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CityPainterCalendarApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		D3754EF315ED4A549C903E25 /* WebCalendarView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WebCalendarView.swift; sourceTree = "<group>"; };
+		ED57612617D1B2C0EBDBAFB9 /* CityPainterCalendarWidget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = CityPainterCalendarWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		F5074FD19888E7A7DD9471D3 /* CityPainterCalendarApp.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CityPainterCalendarApp.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
-		3F1E49A5FE76350F8364CDC3 /* Frameworks */ = {
+		65F2D1C11F0BD9A7586E4ACF /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				F9412CF7B68F54797CCBF6B9 /* Foundation.framework in Frameworks */,
-				AAC1C982D6077CD9896AF503 /* SwiftUI.framework in Frameworks */,
-				1798FECB2E8FEE7B8698A2AB /* WebKit.framework in Frameworks */,
+				C1AB5FEC7420E702461FB4C3 /* Foundation.framework in Frameworks */,
+				72242338177FC6B4033134A1 /* SwiftUI.framework in Frameworks */,
+				3C4FF601729550267C215150 /* WidgetKit.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		CE1BABBEC80A902D154DE4A3 /* Frameworks */ = {
+		AEFFFC604FA9FFF964AA51E4 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				D2A56B55C21989682FF10682 /* Foundation.framework in Frameworks */,
-				1D4C3A0BCA03B3449678063A /* SwiftUI.framework in Frameworks */,
-				F6EE43936F3F62E73BF84F41 /* WidgetKit.framework in Frameworks */,
+				E232328731BC6E20A06584C3 /* Foundation.framework in Frameworks */,
+				BDBB7376191570E5C85469DE /* SwiftUI.framework in Frameworks */,
+				53B31A4078519F13171F80B6 /* WebKit.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		0366EEAE86BE996415B2B409 /* CityPainterCalendarWidget */ = {
+		01716619ABE85D3304D189BF /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
-				8917AEA428BF2598981E02BF /* CityPainterCalendarWidget.swift */,
-				C17F67811A1762BA33163AC8 /* WidgetModels.swift */,
+				F6C2CB5406226122F3D68816 /* iOS */,
+				5A9F9668BF646FBFA9DEA9F5 /* SwiftUI.framework */,
+				2AC8C74EA155ADA419C481C0 /* SwiftUI.framework */,
+				24E7F2B3D1403F5AFF83A200 /* WebKit.framework */,
+				40BBA97E9807C38864BC57CC /* WidgetKit.framework */,
 			);
-			name = CityPainterCalendarWidget;
-			path = CityPainterCalendarWidget;
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
-		1D22C4203EEF5025C4FA4661 = {
+		2DF70A4A430657E1EFE273CF /* CityPainterCalendarApp */ = {
 			isa = PBXGroup;
 			children = (
-				2F510BF353377A4563CFDD3C /* Products */,
-				C2D2CA206E2CB7A9EF98B058 /* Frameworks */,
-				4026039DA0063C5AACF5E871 /* CityPainterCalendarApp */,
-				0366EEAE86BE996415B2B409 /* CityPainterCalendarWidget */,
-				C54893C2992CA0725BEACE3B /* Shared */,
-			);
-			sourceTree = "<group>";
-		};
-		2F510BF353377A4563CFDD3C /* Products */ = {
-			isa = PBXGroup;
-			children = (
-				EC18C4D257795E07083D7738 /* CityPainterCalendarApp.app */,
-				23A94FFCB4ECF7491ACE7A79 /* CityPainterCalendarWidget.appex */,
-			);
-			name = Products;
-			sourceTree = "<group>";
-		};
-		4026039DA0063C5AACF5E871 /* CityPainterCalendarApp */ = {
-			isa = PBXGroup;
-			children = (
-				DC80B8F4FB0FAACE566FCB4C /* CityPainterCalendarApp.swift */,
-				DAD08D8B668567418109E1B4 /* WebCalendarView.swift */,
+				F5074FD19888E7A7DD9471D3 /* CityPainterCalendarApp.swift */,
+				D3754EF315ED4A549C903E25 /* WebCalendarView.swift */,
 			);
 			name = CityPainterCalendarApp;
 			path = CityPainterCalendarApp;
 			sourceTree = "<group>";
 		};
-		C2D2CA206E2CB7A9EF98B058 /* Frameworks */ = {
+		5E71E8521DC5DA15559CB3E6 /* Shared */ = {
 			isa = PBXGroup;
 			children = (
-				FE76C466977E425C4F1FCB41 /* iOS */,
-				A3DBCC6D17506383898AE3ED /* SwiftUI.framework */,
-				19A2A9906FEE69B6400B6644 /* SwiftUI.framework */,
-				5F5B55BF056BC12002D2D54C /* WebKit.framework */,
-				AAD97A7AB2EC3D921E276947 /* WidgetKit.framework */,
-			);
-			name = Frameworks;
-			sourceTree = "<group>";
-		};
-		C54893C2992CA0725BEACE3B /* Shared */ = {
-			isa = PBXGroup;
-			children = (
-				6DB92D02BB8C7C94A0132ABB /* WidgetConfig.swift */,
+				42B447A3F2D8324FE1EF8B71 /* WidgetConfig.swift */,
 			);
 			name = Shared;
 			path = Shared;
 			sourceTree = "<group>";
 		};
-		FE76C466977E425C4F1FCB41 /* iOS */ = {
+		81BCEEEF4A21B2F963645DC3 /* CityPainterCalendarWidget */ = {
 			isa = PBXGroup;
 			children = (
-				15A69A2F2D6308E3340B36CD /* Foundation.framework */,
+				8729ADDDEA3F78687A2B6CC8 /* CityPainterCalendarWidget.swift */,
+				6536AD96CC8F2B54752DCB62 /* WidgetModels.swift */,
+			);
+			name = CityPainterCalendarWidget;
+			path = CityPainterCalendarWidget;
+			sourceTree = "<group>";
+		};
+		C27FC71423AB37DED18ABC61 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				C4FF7541AEDC7EE7DC6C2038 /* CityPainterCalendarApp.app */,
+				ED57612617D1B2C0EBDBAFB9 /* CityPainterCalendarWidget.appex */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		DCC82FECA75F21D46A41F302 = {
+			isa = PBXGroup;
+			children = (
+				C27FC71423AB37DED18ABC61 /* Products */,
+				01716619ABE85D3304D189BF /* Frameworks */,
+				2DF70A4A430657E1EFE273CF /* CityPainterCalendarApp */,
+				81BCEEEF4A21B2F963645DC3 /* CityPainterCalendarWidget */,
+				5E71E8521DC5DA15559CB3E6 /* Shared */,
+			);
+			sourceTree = "<group>";
+		};
+		F6C2CB5406226122F3D68816 /* iOS */ = {
+			isa = PBXGroup;
+			children = (
+				853566234FCE3D3E7617C6ED /* Foundation.framework */,
 			);
 			name = iOS;
 			sourceTree = "<group>";
@@ -157,32 +157,32 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		77DFE33E8F2D3C287F1D022F /* CityPainterCalendarApp */ = {
+		7C4A0CFC99D1EE3BA4D407CB /* CityPainterCalendarApp */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 0C3D36D475F048C0334C8E22 /* Build configuration list for PBXNativeTarget "CityPainterCalendarApp" */;
+			buildConfigurationList = C82A93AFEA70B8C7211A186D /* Build configuration list for PBXNativeTarget "CityPainterCalendarApp" */;
 			buildPhases = (
-				D9F07101C757D4255717560C /* Sources */,
-				3F1E49A5FE76350F8364CDC3 /* Frameworks */,
-				AD6DD7D4840CBCDA7D31F4AB /* Resources */,
-				80DC5402B40BC4B9DC565780 /* Embed App Extensions */,
+				4FD68C64C0942BFB7FC3CDA3 /* Sources */,
+				AEFFFC604FA9FFF964AA51E4 /* Frameworks */,
+				A542CE218A12CFF43E3E5231 /* Resources */,
+				5C47BCF56A7B8409BB7D442B /* Embed App Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
-				A3B741AAAA9F9228CBFEE836 /* PBXTargetDependency */,
+				D8BFCC2EEA54CA1A00F68223 /* PBXTargetDependency */,
 			);
 			name = CityPainterCalendarApp;
 			productName = CityPainterCalendarApp;
-			productReference = EC18C4D257795E07083D7738 /* CityPainterCalendarApp.app */;
+			productReference = C4FF7541AEDC7EE7DC6C2038 /* CityPainterCalendarApp.app */;
 			productType = "com.apple.product-type.application";
 		};
-		9D2A4A04E74447AA65A0FCA6 /* CityPainterCalendarWidget */ = {
+		C897AEB625D0C6A8ADF0EB90 /* CityPainterCalendarWidget */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 72009733A2A55BA71929E568 /* Build configuration list for PBXNativeTarget "CityPainterCalendarWidget" */;
+			buildConfigurationList = 6A756564166BA8C174B4D8EE /* Build configuration list for PBXNativeTarget "CityPainterCalendarWidget" */;
 			buildPhases = (
-				06C0EAAFB9031202F11807A0 /* Sources */,
-				CE1BABBEC80A902D154DE4A3 /* Frameworks */,
-				5789FF8C4C99C7E2CF723F7D /* Resources */,
+				42DC81B9EEBA1CC073608ABE /* Sources */,
+				65F2D1C11F0BD9A7586E4ACF /* Frameworks */,
+				EF51E9D59940E411939669B9 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -190,19 +190,19 @@
 			);
 			name = CityPainterCalendarWidget;
 			productName = CityPainterCalendarWidget;
-			productReference = 23A94FFCB4ECF7491ACE7A79 /* CityPainterCalendarWidget.appex */;
+			productReference = ED57612617D1B2C0EBDBAFB9 /* CityPainterCalendarWidget.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
-		5E9921298DD8EC19AD75CA07 /* Project object */ = {
+		0297C86CEF6E9027DA718C99 /* Project object */ = {
 			isa = PBXProject;
 			attributes = {
 				LastSwiftUpdateCheck = 1600;
 				LastUpgradeCheck = 1600;
 			};
-			buildConfigurationList = 12084D5E3B0DBDD0B456CD44 /* Build configuration list for PBXProject "CityPainterCalendar" */;
+			buildConfigurationList = 185C435931A40595C628DED1 /* Build configuration list for PBXProject "CityPainterCalendar" */;
 			compatibilityVersion = "Xcode 3.2";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
@@ -210,28 +210,28 @@
 				en,
 				Base,
 			);
-			mainGroup = 1D22C4203EEF5025C4FA4661;
+			mainGroup = DCC82FECA75F21D46A41F302;
 			minimizedProjectReferenceProxies = 0;
 			preferredProjectObjectVersion = 77;
-			productRefGroup = 2F510BF353377A4563CFDD3C /* Products */;
+			productRefGroup = C27FC71423AB37DED18ABC61 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				77DFE33E8F2D3C287F1D022F /* CityPainterCalendarApp */,
-				9D2A4A04E74447AA65A0FCA6 /* CityPainterCalendarWidget */,
+				7C4A0CFC99D1EE3BA4D407CB /* CityPainterCalendarApp */,
+				C897AEB625D0C6A8ADF0EB90 /* CityPainterCalendarWidget */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
-		5789FF8C4C99C7E2CF723F7D /* Resources */ = {
+		A542CE218A12CFF43E3E5231 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		AD6DD7D4840CBCDA7D31F4AB /* Resources */ = {
+		EF51E9D59940E411939669B9 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -241,39 +241,75 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		06C0EAAFB9031202F11807A0 /* Sources */ = {
+		42DC81B9EEBA1CC073608ABE /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				D04EA433888B928D03191DDA /* CityPainterCalendarWidget.swift in Sources */,
-				284DCA8E6FCBA11FC2EBD267 /* WidgetModels.swift in Sources */,
-				30EE809385F3D42EC98681E1 /* WidgetConfig.swift in Sources */,
+				63E9FEA9A36FB81D0275C464 /* CityPainterCalendarWidget.swift in Sources */,
+				314C56633DB96A7270CAA294 /* WidgetModels.swift in Sources */,
+				8296BC2C2AD02F5C12DDA2EF /* WidgetConfig.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		D9F07101C757D4255717560C /* Sources */ = {
+		4FD68C64C0942BFB7FC3CDA3 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				02FFB00A3E1C2E792AFC7701 /* CityPainterCalendarApp.swift in Sources */,
-				2411CDAE124D7740CB4E5F6D /* WebCalendarView.swift in Sources */,
-				90B2966B6DF3917B98138B02 /* WidgetConfig.swift in Sources */,
+				0BAA6E4BDF751ABCFF82353D /* CityPainterCalendarApp.swift in Sources */,
+				6D0E85B64059C9AE8B82E6AA /* WebCalendarView.swift in Sources */,
+				BABCF4C6FBCCA949986CB355 /* WidgetConfig.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
-		A3B741AAAA9F9228CBFEE836 /* PBXTargetDependency */ = {
+		D8BFCC2EEA54CA1A00F68223 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			name = CityPainterCalendarWidget;
-			target = 9D2A4A04E74447AA65A0FCA6 /* CityPainterCalendarWidget */;
-			targetProxy = 25EB50CF48B6AFCF6CBB1162 /* PBXContainerItemProxy */;
+			target = C897AEB625D0C6A8ADF0EB90 /* CityPainterCalendarWidget */;
+			targetProxy = 0725F0A7E6359BCD7E86BAB8 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
-		34D3C54138FD679A415E9523 /* Release */ = {
+		2FD9F4B814DF5CDFA9681AA6 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = YMV24PTPJ5;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = CityPainterCalendarApp/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+				PRODUCT_BUNDLE_IDENTIFIER = com.citypainter.calendar;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		3F16C6F15A2C26FC0742C50D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = YMV24PTPJ5;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = CityPainterCalendarWidget/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.citypainter.calendar.widget;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		5DEB294D788C5368DA5A8DAC /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -330,28 +366,15 @@
 			};
 			name = Release;
 		};
-		3520FA9A0E938DF20C62CB4D /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
-				CLANG_ENABLE_OBJC_WEAK = NO;
-				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = CityPainterCalendarWidget/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.citypainter.calendar.widget;
-				SDKROOT = iphoneos;
-				SWIFT_VERSION = 5.0;
-				VALIDATE_PRODUCT = YES;
-			};
-			name = Release;
-		};
-		50874D5DACEC5615C4B0C6A4 /* Release */ = {
+		A3E5B4951863A260BC0167B9 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = YMV24PTPJ5;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = CityPainterCalendarApp/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -364,39 +387,24 @@
 			};
 			name = Release;
 		};
-		A26E1081485D96D11F5DC80E /* Debug */ = {
+		E18B81BA4B1F118E90141421 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = YMV24PTPJ5;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = CityPainterCalendarWidget/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.citypainter.calendar.widget;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.0;
+				VALIDATE_PRODUCT = YES;
 			};
-			name = Debug;
+			name = Release;
 		};
-		CC67F62B5D8D85C56425A6E0 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
-				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CLANG_ENABLE_OBJC_WEAK = NO;
-				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = CityPainterCalendarApp/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
-				PRODUCT_BUNDLE_IDENTIFIER = com.citypainter.calendar;
-				SDKROOT = iphoneos;
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
-			};
-			name = Debug;
-		};
-		D30F400C35C948391103EEF3 /* Debug */ = {
+		EC30D371EEF8FA60EE3395DC /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -463,34 +471,34 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		0C3D36D475F048C0334C8E22 /* Build configuration list for PBXNativeTarget "CityPainterCalendarApp" */ = {
+		185C435931A40595C628DED1 /* Build configuration list for PBXProject "CityPainterCalendar" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				50874D5DACEC5615C4B0C6A4 /* Release */,
-				CC67F62B5D8D85C56425A6E0 /* Debug */,
+				EC30D371EEF8FA60EE3395DC /* Debug */,
+				5DEB294D788C5368DA5A8DAC /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		12084D5E3B0DBDD0B456CD44 /* Build configuration list for PBXProject "CityPainterCalendar" */ = {
+		6A756564166BA8C174B4D8EE /* Build configuration list for PBXNativeTarget "CityPainterCalendarWidget" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				D30F400C35C948391103EEF3 /* Debug */,
-				34D3C54138FD679A415E9523 /* Release */,
+				E18B81BA4B1F118E90141421 /* Release */,
+				3F16C6F15A2C26FC0742C50D /* Debug */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		72009733A2A55BA71929E568 /* Build configuration list for PBXNativeTarget "CityPainterCalendarWidget" */ = {
+		C82A93AFEA70B8C7211A186D /* Build configuration list for PBXNativeTarget "CityPainterCalendarApp" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				3520FA9A0E938DF20C62CB4D /* Release */,
-				A26E1081485D96D11F5DC80E /* Debug */,
+				A3E5B4951863A260BC0167B9 /* Release */,
+				2FD9F4B814DF5CDFA9681AA6 /* Debug */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
 	};
-	rootObject = 5E9921298DD8EC19AD75CA07 /* Project object */;
+	rootObject = 0297C86CEF6E9027DA718C99 /* Project object */;
 }

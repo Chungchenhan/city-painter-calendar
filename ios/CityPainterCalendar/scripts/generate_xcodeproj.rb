@@ -11,6 +11,7 @@ PROJECT_NAME = 'CityPainterCalendar'
 APP_TARGET = 'CityPainterCalendarApp'
 WIDGET_TARGET = 'CityPainterCalendarWidget'
 DEPLOYMENT_TARGET = '17.0'
+DEVELOPMENT_TEAM = 'YMV24PTPJ5'
 
 FileUtils.rm_rf(PROJECT_PATH)
 project = Xcodeproj::Project.new(PROJECT_PATH)
@@ -32,6 +33,8 @@ def configure_target(target, bundle_id, plist)
     config.build_settings['GENERATE_INFOPLIST_FILE'] = 'NO'
     config.build_settings['SWIFT_VERSION'] = '5.0'
     config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = DEPLOYMENT_TARGET
+    config.build_settings['CODE_SIGN_STYLE'] = 'Automatic'
+    config.build_settings['DEVELOPMENT_TEAM'] = DEVELOPMENT_TEAM
     config.build_settings['ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS'] = 'YES'
   end
 end
