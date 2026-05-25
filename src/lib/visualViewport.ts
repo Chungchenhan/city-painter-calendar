@@ -10,10 +10,12 @@ function isStandalonePwa() {
 
 function applyVisualViewportVars() {
   const viewport = window.visualViewport
-  const height = Math.round(viewport?.height ?? window.innerHeight)
-  const offsetTop = isStandalonePwa() ? 0 : Math.round(viewport?.offsetTop ?? 0)
-  const keyboardInset = Math.max(0, Math.round(window.innerHeight - height - offsetTop))
-  const heightValue = `${height}px`
+  const standalonePwa = isStandalonePwa()
+  const viewportHeight = Math.round(viewport?.height ?? window.innerHeight)
+  const height = standalonePwa ? window.innerHeight : viewportHeight
+  const offsetTop = standalonePwa ? 0 : Math.round(viewport?.offsetTop ?? 0)
+  const keyboardInset = Math.max(0, Math.round(window.innerHeight - viewportHeight - offsetTop))
+  const heightValue = `${Math.round(height)}px`
   const offsetTopValue = `${offsetTop}px`
   const keyboardInsetValue = `${keyboardInset}px`
 
@@ -29,6 +31,7 @@ function applyVisualViewportVars() {
     document.documentElement.style.setProperty('--app-keyboard-inset', keyboardInsetValue)
     lastKeyboardInset = keyboardInsetValue
   }
+  document.documentElement.classList.toggle('pwa-standalone', standalonePwa)
   document.documentElement.classList.toggle('keyboard-open', keyboardInset > 80)
 }
 
