@@ -3655,6 +3655,10 @@ export default function CalendarPage() {
                 onPointerDown={(pointerEvent) => {
                   if (!activeMonth) return
                   lastEventPointerTypeRef.current = pointerEvent.pointerType
+                  if (isTouchDragPointer(pointerEvent)) {
+                    beginDayListTouchDrag(pointerEvent, event)
+                    return
+                  }
                   beginPointerEventDrag(pointerEvent, event)
                 }}
                 onPointerMove={activeMonth ? movePointerEventDrag : undefined}
@@ -3751,6 +3755,10 @@ export default function CalendarPage() {
                 onPointerDown={(pointerEvent) => {
                   if (!activeWeek) return
                   lastEventPointerTypeRef.current = pointerEvent.pointerType
+                  if (isTouchDragPointer(pointerEvent)) {
+                    beginDayListTouchDrag(pointerEvent, event)
+                    return
+                  }
                   beginPointerEventDrag(pointerEvent, event)
                 }}
                 onPointerMove={activeWeek ? movePointerEventDrag : undefined}
