@@ -4,7 +4,6 @@
 
 :root {
   --app-visual-viewport-height: 100dvh;
-  --app-visual-viewport-offset-top: 0px;
   --app-keyboard-inset: 0px;
 }
 
@@ -49,13 +48,13 @@ textarea {
 }
 
 .app-shell {
-  height: var(--app-visual-viewport-height);
+  height: 100dvh;
   min-height: 0;
   overflow: hidden;
 }
 
 .timetree-page {
-  height: var(--app-visual-viewport-height);
+  height: 100dvh;
   min-height: 0;
   display: grid;
   grid-template-rows: 58px minmax(0, 1fr);
@@ -2404,10 +2403,7 @@ p {
 
 .modal-overlay {
   position: fixed;
-  top: var(--app-visual-viewport-offset-top);
-  right: 0;
-  bottom: auto;
-  left: 0;
+  inset: 0;
   z-index: 60;
   height: var(--app-visual-viewport-height);
   display: flex;
@@ -4112,6 +4108,10 @@ p {
   .modal-overlay {
     align-items: flex-end;
     padding: 8px;
+  }
+
+  .keyboard-open .modal-overlay {
+    align-items: flex-start;
   }
 
   .modal {

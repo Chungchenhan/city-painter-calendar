@@ -1,13 +1,32 @@
-function updateVisualViewportVars() {
-  const viewport = window.visualViewport
-  const height = viewport?.height ?? window.innerHeight
-  const offsetTop = viewport?.offsetTop ?? 0
-  const keyboardInset = Math.max(0, window.innerHeight - height - offsetTop)
+let updateFrame = 0
+let lastHeight = ''
+let lastKeyboardInset = ''
 
-  document.documentElement.style.setProperty('--app-visual-viewport-height', `${height}px`)
-  document.documentElement.style.setProperty('--app-visual-viewport-offset-top', `${offsetTop}px`)
-  document.documentElement.style.setProperty('--app-keyboard-inset', `${keyboardInset}px`)
+function applyVisualViewportVars() {
+  const viewport = window.visualViewport
+  const height = Math.round(viewport?.height ?? window.innerHeight)
+  const offsetTop = viewport?.offsetTop ?? 0
+  const keyboardInset = Math.max(0, Math.round(window.innerHeight - height - offsetTop))
+  const heightValue = `${height}px`
+  const keyboardInsetValue = `${keyboardInset}px`
+
+  if (heightValue !== lastHeight) {
+    document.documentElement.style.setProperty('--app-visual-viewport-height', heightValue)
+    lastHeight = heightValue
+  }
+  if (keyboardInsetValue !== lastKeyboardInset) {
+    document.documentElement.style.setProperty('--app-keyboard-inset', keyboardInsetValue)
+    lastKeyboardInset = keyboardInsetValue
+  }
   document.documentElement.classList.toggle('keyboard-open', keyboardInset > 80)
+}
+
+function updateVisualViewportVars() {
+  if (updateFrame) window.cancelAnimationFrame(updateFrame)
+  updateFrame = window.requestAnimationFrame(() => {
+    updateFrame = 0
+    applyVisualViewportVars()
+  })
 }
 
 export function setupVisualViewportVars() {
