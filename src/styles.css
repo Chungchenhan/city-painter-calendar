@@ -1330,23 +1330,26 @@ textarea {
 }
 
 .department-title-icon-options {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
 }
 
 .department-title-icon-options label {
+  min-width: 0;
   min-height: 34px;
-  display: inline-flex;
+  display: grid;
+  grid-template-columns: 24px auto minmax(0, 1fr);
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   border: 1px solid #ececec;
   border-radius: 999px;
-  padding: 0 9px;
+  padding: 0 10px 0 8px;
   background: #fafafa;
   color: #202124;
   font-size: 12px;
   font-weight: 800;
+  overflow: hidden;
 }
 
 .department-title-icon-options label:has(input:checked) {
@@ -1356,14 +1359,29 @@ textarea {
 }
 
 .department-title-icon-options input {
-  width: 14px;
-  height: 14px;
+  width: 22px;
+  height: 22px;
+  min-height: 22px;
   margin: 0;
+  accent-color: #1d9bf0;
+}
+
+.department-title-icon-options label span {
+  min-width: 0;
+  overflow: visible;
+  font-size: 18px;
+  line-height: 1;
+  text-overflow: clip;
 }
 
 .department-title-icon-options small {
+  min-width: 0;
+  overflow: hidden;
   color: inherit;
   font-size: 12px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .drawer-calendar-item {
@@ -4202,7 +4220,18 @@ p {
   .notification-settings-modal,
   .title-icon-settings-modal {
     width: 100%;
-    max-height: calc(100dvh - 16px);
+    max-height: calc(var(--app-visual-viewport-height) - 16px);
+  }
+
+  .department-title-icon-options {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .department-title-icon-options label {
+    min-height: 40px;
+    grid-template-columns: 24px auto minmax(0, 1fr);
+    padding: 0 8px;
   }
 
   .repeat-custom-header,
