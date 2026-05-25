@@ -23,30 +23,37 @@ function localApiPlugin(): Plugin {
     name: 'local-api',
     configureServer(server) {
       loadLocalServerEnv()
-      server.middlewares.use('/api/upload-drive', async (req, res) => {
-        const apiRes = res as typeof res & {
-          status: (code: number) => typeof apiRes
-          json: (body: unknown) => void
-        }
-        apiRes.status = (code: number) => {
-          apiRes.statusCode = code
-          return apiRes
-        }
-        apiRes.json = (body: unknown) => {
-          if (!apiRes.getHeader('Content-Type')) {
-            apiRes.setHeader('Content-Type', 'application/json; charset=utf-8')
-          }
-          apiRes.end(JSON.stringify(body))
-        }
+      const localApiHandlers: Record<string, string> = {
+        '/api/upload-drive': './api/upload-drive.js',
+        '/api/widget-calendar': './api/widget-calendar.js'
+      }
 
-        try {
-          const { default: handler } = await import('./api/upload-drive.js')
-          await handler(req, apiRes)
-        } catch (error) {
-          const message = error instanceof Error ? error.message : 'Local API failed'
-          server.config.logger.error(message)
-          apiRes.status(500).json({ error: message })
-        }
+      Object.entries(localApiHandlers).forEach(([route, handlerPath]) => {
+        server.middlewares.use(route, async (req, res) => {
+          const apiRes = res as typeof res & {
+            status: (code: number) => typeof apiRes
+            json: (body: unknown) => void
+          }
+          apiRes.status = (code: number) => {
+            apiRes.statusCode = code
+            return apiRes
+          }
+          apiRes.json = (body: unknown) => {
+            if (!apiRes.getHeader('Content-Type')) {
+              apiRes.setHeader('Content-Type', 'application/json; charset=utf-8')
+            }
+            apiRes.end(JSON.stringify(body))
+          }
+
+          try {
+            const { default: handler } = await import(handlerPath)
+            await handler(req, apiRes)
+          } catch (error) {
+            const message = error instanceof Error ? error.message : 'Local API failed'
+            server.config.logger.error(message)
+            apiRes.status(500).json({ error: message })
+          }
+        })
       })
     }
   }
