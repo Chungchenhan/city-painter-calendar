@@ -47,11 +47,11 @@ struct CalendarProvider: TimelineProvider {
 struct CityPainterCalendarWidgetEntryView: View {
     let entry: CalendarEntry
 
-    private let columns = Array(repeating: GridItem(.flexible(), spacing: 2), count: 7)
+    private let columns = Array(repeating: GridItem(.flexible(), spacing: 1), count: 7)
     private let weekdays = ["日", "一", "二", "三", "四", "五", "六"]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Text(entry.month.title)
                     .font(.headline.weight(.bold))
@@ -61,7 +61,7 @@ struct CityPainterCalendarWidgetEntryView: View {
                     .foregroundStyle(.green)
             }
 
-            LazyVGrid(columns: columns, spacing: 4) {
+            LazyVGrid(columns: columns, spacing: 2) {
                 ForEach(weekdays, id: \.self) { weekday in
                     Text(weekday)
                         .font(.caption2)
@@ -73,7 +73,7 @@ struct CityPainterCalendarWidgetEntryView: View {
                 }
             }
         }
-        .padding(10)
+        .padding(9)
         .containerBackground(.background, for: .widget)
         .widgetURL(WidgetConfig.appURL)
     }
@@ -88,7 +88,7 @@ struct DayCell: View {
     }
 
     var body: some View {
-        VStack(spacing: 2) {
+        VStack(spacing: 1) {
             Text("\(day.day)")
                 .font(.caption2.weight(day.isToday ? .bold : .regular))
                 .frame(width: 20, height: 16)
@@ -96,16 +96,22 @@ struct DayCell: View {
                 .foregroundStyle(numberColor)
                 .clipShape(Capsule())
 
-            VStack(spacing: 1) {
+            VStack(spacing: 1.5) {
                 ForEach(day.events.prefix(3)) { event in
-                    Capsule()
-                        .fill(Color(hex: event.color))
-                        .frame(height: 2)
+                    Text(event.title)
+                        .font(.system(size: 7, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.72)
+                        .padding(.horizontal, 2)
+                        .frame(maxWidth: .infinity, minHeight: 8, alignment: .leading)
+                        .background(Color(hex: event.color))
+                        .clipShape(RoundedRectangle(cornerRadius: 2))
                 }
             }
-            .frame(height: 8, alignment: .top)
+            .frame(height: 29, alignment: .top)
         }
-        .frame(minHeight: 28)
+        .frame(minHeight: 46, alignment: .top)
     }
 }
 
