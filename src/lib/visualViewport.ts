@@ -3,10 +3,15 @@ let lastHeight = ''
 let lastOffsetTop = ''
 let lastKeyboardInset = ''
 
+function isStandalonePwa() {
+  return window.matchMedia('(display-mode: standalone)').matches ||
+    ('standalone' in window.navigator && Boolean(window.navigator.standalone))
+}
+
 function applyVisualViewportVars() {
   const viewport = window.visualViewport
   const height = Math.round(viewport?.height ?? window.innerHeight)
-  const offsetTop = Math.round(viewport?.offsetTop ?? 0)
+  const offsetTop = isStandalonePwa() ? 0 : Math.round(viewport?.offsetTop ?? 0)
   const keyboardInset = Math.max(0, Math.round(window.innerHeight - height - offsetTop))
   const heightValue = `${height}px`
   const offsetTopValue = `${offsetTop}px`
