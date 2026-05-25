@@ -14,6 +14,7 @@ export interface Employee {
   shiftId?: string
   shiftName?: string
   status?: string
+  resignDate?: string
 }
 
 export interface Shift {
@@ -68,6 +69,8 @@ export interface CalendarEvent {
   allDay?: boolean
   departmentId: string
   assigneeIds: string[]
+  visibleDepartmentIds?: string[]
+  visibleAssigneeIds?: string[]
   hiddenDepartmentIds?: string[]
   hiddenAssigneeIds?: string[]
   titleOverrides?: {
