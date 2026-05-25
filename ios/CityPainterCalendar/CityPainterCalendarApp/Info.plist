@@ -11,7 +11,7 @@
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleDisplayName</key>
-  <string>都市彩繪行事曆</string>
+  <string>行事曆</string>
   <key>CFBundleShortVersionString</key>
   <string>$(MARKETING_VERSION)</string>
   <key>CFBundleVersion</key>

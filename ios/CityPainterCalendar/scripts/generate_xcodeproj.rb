@@ -19,7 +19,7 @@ project = Xcodeproj::Project.new(PROJECT_PATH)
 project.build_configurations.each do |config|
   config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = DEPLOYMENT_TARGET
   config.build_settings['MARKETING_VERSION'] = '0.1.0'
-  config.build_settings['CURRENT_PROJECT_VERSION'] = '1'
+  config.build_settings['CURRENT_PROJECT_VERSION'] = '2'
   config.build_settings['SWIFT_VERSION'] = '5.0'
 end
 
@@ -73,6 +73,13 @@ add_sources(widget_group, widget_target, [
 shared_ref = shared_group.new_file('WidgetConfig.swift')
 app_target.add_file_references([shared_ref])
 widget_target.add_file_references([shared_ref])
+
+assets_ref = app_group.new_file('Assets.xcassets')
+app_target.resources_build_phase.add_file_reference(assets_ref)
+app_target.build_configurations.each do |config|
+  config.build_settings['ASSETCATALOG_COMPILER_APPICON_NAME'] = 'AppIcon'
+  config.build_settings['ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME'] = 'AccentColor'
+end
 
 [app_target, widget_target].each do |target|
   target.frameworks_build_phase.add_file_reference(project.frameworks_group.new_file('SwiftUI.framework'))
