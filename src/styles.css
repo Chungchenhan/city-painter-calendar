@@ -1336,11 +1336,11 @@ textarea {
 
 .department-title-icon-options label {
   min-width: 0;
-  min-height: 34px;
+  min-height: 42px;
   display: grid;
-  grid-template-columns: 24px auto minmax(0, 1fr);
+  grid-template-columns: 26px 26px minmax(0, 1fr);
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   border: 1px solid #ececec;
   border-radius: 999px;
   padding: 0 10px 0 8px;
@@ -1363,11 +1363,14 @@ textarea {
   min-height: 22px;
   margin: 0;
   accent-color: #1d9bf0;
+  justify-self: center;
 }
 
 .department-title-icon-options label span {
   min-width: 0;
-  overflow: visible;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
   font-size: 18px;
   line-height: 1;
   text-overflow: clip;
@@ -1380,7 +1383,8 @@ textarea {
   font-size: 12px;
   line-height: 1.2;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  word-break: keep-all;
 }
 
 .drawer-calendar-item {
@@ -4229,8 +4233,8 @@ p {
   }
 
   .department-title-icon-options label {
-    min-height: 40px;
-    grid-template-columns: 24px auto minmax(0, 1fr);
+    min-height: 42px;
+    grid-template-columns: 26px 26px minmax(0, 1fr);
     padding: 0 8px;
   }
 
