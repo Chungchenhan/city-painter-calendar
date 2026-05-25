@@ -651,12 +651,13 @@ export default function CalendarPage() {
   const { user, role, employeeId, displayName } = useAuth()
   const isAdmin = role === 'admin'
   const [month, setMonth] = useState(dayjs().startOf('month'))
+  const [backgroundDataReady, setBackgroundDataReady] = useState(false)
   const { data: calendars = [], isLoading: calendarsLoading } = useCalendarGroups()
   const { data: events = [], isLoading: eventsLoading } = useCalendarEvents(month.format('YYYY-MM'))
-  const { data: activityLogs = [] } = useCalendarActivityLogs()
+  const { data: activityLogs = [] } = useCalendarActivityLogs(backgroundDataReady)
   const { data: employees = [] } = useEmployees()
   const { data: departments = [] } = useDepartments()
-  const { data: shifts = [] } = useShifts()
+  const { data: shifts = [] } = useShifts(backgroundDataReady)
 
   const [selectedDate, setSelectedDate] = useState(dayjs().format('YYYY-MM-DD'))
   const [viewMode, setViewMode] = useState<ViewMode>('month')
@@ -921,6 +922,7 @@ export default function CalendarPage() {
   }, [currentShift, employeeId, hasTodayLeave, notificationSettings.shiftEndEnabled, notificationSettings.shiftStartEnabled])
 
   useEffect(() => {
+    if (!backgroundDataReady) return
     if (!user?.uid) {
       setNotificationSettings(DEFAULT_USER_NOTIFICATION_SETTINGS)
       return
@@ -943,14 +945,16 @@ export default function CalendarPage() {
     return () => {
       cancelled = true
     }
-  }, [user?.uid])
+  }, [backgroundDataReady, user?.uid])
 
   useEffect(() => {
+    if (!backgroundDataReady) return
     if (!user?.uid || !('Notification' in window) || Notification.permission === 'granted') return
     setShowStartupNotificationPrompt(true)
-  }, [user?.uid])
+  }, [backgroundDataReady, user?.uid])
 
   useEffect(() => {
+    if (!backgroundDataReady) return
     let cancelled = false
     async function loadTitleIconOptions() {
       try {
@@ -980,9 +984,10 @@ export default function CalendarPage() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [backgroundDataReady])
 
   useEffect(() => {
+    if (!backgroundDataReady) return
     if (!('Notification' in window) || Notification.permission !== 'granted') return
     const timers = visibleEvents.flatMap((event) => {
       if (!event.reminder || event.reminder === 'none') return []
@@ -1004,9 +1009,10 @@ export default function CalendarPage() {
       return [timer]
     })
     return () => timers.forEach((timer) => window.clearTimeout(timer))
-  }, [canSendCalendarNotificationAt, employeeId, visibleEvents])
+  }, [backgroundDataReady, canSendCalendarNotificationAt, employeeId, visibleEvents])
 
   useEffect(() => {
+    if (!backgroundDataReady) return
     if (!employeeId || !currentShift || hasTodayLeave) return
     if (!('Notification' in window) || notificationPermission !== 'granted') return
 
@@ -1068,13 +1074,15 @@ export default function CalendarPage() {
       return [timer]
     })
     return () => timers.forEach((timer) => window.clearTimeout(timer))
-  }, [currentShift, employeeId, hasTodayLeave, notificationPermission, notificationSettings])
+  }, [backgroundDataReady, currentShift, employeeId, hasTodayLeave, notificationPermission, notificationSettings])
 
   useEffect(() => {
+    if (!backgroundDataReady) return
     void setLocalBadge(unreadActivityCount)
-  }, [unreadActivityCount])
+  }, [backgroundDataReady, unreadActivityCount])
 
   useEffect(() => {
+    if (!backgroundDataReady) return
     const currentIds = new Set(pushActivityLogs.map((log) => log.id))
     if (!seenActivityLogIdsRef.current && pushActivityLogs.length === 0) return
     if (!seenActivityLogIdsRef.current) {
@@ -1099,7 +1107,7 @@ export default function CalendarPage() {
         data: { url: '/' }
       })
     })
-  }, [canSendCalendarNotificationAt, notificationPermission, pushActivityLogs, user?.uid])
+  }, [backgroundDataReady, canSendCalendarNotificationAt, notificationPermission, pushActivityLogs, user?.uid])
 
   useEffect(() => {
     const textarea = noteTextareaRef.current
@@ -1336,6 +1344,16 @@ export default function CalendarPage() {
       null
   }, [selectedEventId, visibleEvents, visibleSearchEvents])
   const loading = calendarsLoading || eventsLoading
+
+  useEffect(() => {
+    const run = () => setBackgroundDataReady(true)
+    const idleCallback = window.requestIdleCallback?.(run, { timeout: 1200 })
+    const timer = window.setTimeout(run, 900)
+    return () => {
+      if (idleCallback) window.cancelIdleCallback?.(idleCallback)
+      window.clearTimeout(timer)
+    }
+  }, [])
 
   useEffect(() => {
     function syncMobileOrientationView() {

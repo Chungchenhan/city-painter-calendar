@@ -44,9 +44,10 @@ export function useDepartments() {
   })
 }
 
-export function useShifts() {
+export function useShifts(enabled = true) {
   return useQuery({
     queryKey: ['shifts'],
+    enabled,
     queryFn: async () => {
       const snap = await getDocs(collection(db, 'shifts'))
       const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() })) as Shift[]

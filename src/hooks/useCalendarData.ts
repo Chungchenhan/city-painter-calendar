@@ -113,6 +113,8 @@ export function useCalendarEvents(activeMonth: string) {
   useEffect(() => {
     let rangeRows: CalendarEvent[] | null = null
     let repeatRows: CalendarEvent[] | null = null
+    let unsubscribeRange: (() => void) | null = null
+    let unsubscribeRepeat: (() => void) | null = null
 
     const publishRows = () => {
       if (!rangeRows || !repeatRows) return
@@ -136,18 +138,21 @@ export function useCalendarEvents(activeMonth: string) {
       where('repeat', 'in', REPEAT_VALUES)
     )
 
-    const unsubscribeRange = onSnapshot(rangeQuery, (snap) => {
-      rangeRows = snap.docs.map((d) => ({ id: d.id, ...d.data() })) as CalendarEvent[]
-      publishRows()
-    })
-    const unsubscribeRepeat = onSnapshot(repeatQuery, (snap) => {
-      repeatRows = snap.docs.map((d) => ({ id: d.id, ...d.data() })) as CalendarEvent[]
-      publishRows()
-    })
+    const timer = window.setTimeout(() => {
+      unsubscribeRange = onSnapshot(rangeQuery, (snap) => {
+        rangeRows = snap.docs.map((d) => ({ id: d.id, ...d.data() })) as CalendarEvent[]
+        publishRows()
+      })
+      unsubscribeRepeat = onSnapshot(repeatQuery, (snap) => {
+        repeatRows = snap.docs.map((d) => ({ id: d.id, ...d.data() })) as CalendarEvent[]
+        publishRows()
+      })
+    }, 900)
 
     return () => {
-      unsubscribeRange()
-      unsubscribeRepeat()
+      window.clearTimeout(timer)
+      unsubscribeRange?.()
+      unsubscribeRepeat?.()
     }
   }, [endDate, queryClient, startDate])
 
@@ -198,11 +203,16 @@ export function useCalendarSearchEvents(enabled: boolean) {
   })
 }
 
-export function useCalendarActivityLogs() {
+export function useCalendarActivityLogs(enabled = true) {
   const [data, setData] = useState<CalendarActivityLog[]>([])
-  const [isLoading, setIsLoading] = useState(true)
+  const [isLoading, setIsLoading] = useState(enabled)
 
   useEffect(() => {
+    if (!enabled) {
+      setIsLoading(false)
+      return
+    }
+    setIsLoading(true)
     const q = query(collection(db, 'calendarActivityLogs'), orderBy('createdAt', 'desc'), limit(40))
     return onSnapshot(q, (snap) => {
       setData(snap.docs.map((d) => ({ id: d.id, ...d.data() })) as CalendarActivityLog[])
@@ -210,7 +220,7 @@ export function useCalendarActivityLogs() {
     }, () => {
       setIsLoading(false)
     })
-  }, [])
+  }, [enabled])
 
   return { data, isLoading }
 }
