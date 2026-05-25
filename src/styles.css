@@ -1337,10 +1337,12 @@ textarea {
 
 .department-title-icon-options label {
   min-width: 0;
+  height: 40px;
   min-height: 40px;
-  display: grid;
-  grid-template-columns: 24px auto minmax(0, 1fr);
-  align-items: center;
+  max-height: 40px;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: flex-start;
   gap: 5px;
   border: 1px solid #ececec;
   border-radius: 999px;
@@ -1359,20 +1361,23 @@ textarea {
 }
 
 .department-title-icon-options input {
+  flex: 0 0 22px;
   width: 22px;
   height: 22px;
   min-height: 22px;
+  max-height: 22px;
   margin: 0;
   accent-color: #1d9bf0;
-  align-self: center;
-  justify-self: center;
+  align-self: center !important;
 }
 
 .department-title-icon-options label span {
+  flex: 0 0 22px;
   min-width: 0;
-  display: grid;
+  width: 22px;
+  display: inline-grid;
   place-items: center;
-  align-self: center;
+  align-self: center !important;
   overflow: hidden;
   font-size: 18px;
   line-height: 1;
@@ -1380,8 +1385,9 @@ textarea {
 }
 
 .department-title-icon-options small {
+  flex: 1 1 auto;
   min-width: 0;
-  align-self: center;
+  align-self: center !important;
   overflow: hidden;
   color: inherit;
   font-size: 12px;
@@ -4239,8 +4245,9 @@ p {
   }
 
   .department-title-icon-options label {
+    height: 40px;
     min-height: 40px;
-    grid-template-columns: 24px auto minmax(0, 1fr);
+    max-height: 40px;
     padding: 0 8px;
   }
 
