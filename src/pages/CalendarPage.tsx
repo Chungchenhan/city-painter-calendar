@@ -20,6 +20,8 @@ const HR_HOLIDAY_COLOR = '#dc2626'
 const ALL_DEPARTMENTS_EXCEPT_OWN = 'allDepartmentsExceptOwn'
 const ALL_EMPLOYEES_EXCEPT_SELF = 'allEmployeesExceptSelf'
 const ACTIVITY_NOTIFICATION_SEEN_KEY = 'cityPainterCalendarActivitySeenAt'
+const NOTIFIED_TAGS_KEY = 'cityPainterCalendarNotifiedTags'
+const NOTIFIED_TAG_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
 const DEFAULT_USER_NOTIFICATION_SETTINGS: UserNotificationSettings = {
   shiftStartEnabled: true,
   shiftEndEnabled: false,
@@ -313,6 +315,8 @@ async function setLocalBadge(count: number) {
 
 async function showLocalNotification(title: string, options: NotificationOptions) {
   if (!('Notification' in window) || Notification.permission !== 'granted') return
+  if (options.tag && wasNotificationTagSent(options.tag)) return
+  if (options.tag) markNotificationTagSent(options.tag)
   if ('serviceWorker' in navigator) {
     try {
       const registration = await navigator.serviceWorker.ready
@@ -323,6 +327,32 @@ async function showLocalNotification(title: string, options: NotificationOptions
     }
   }
   new Notification(title, options)
+}
+
+function readNotifiedTags() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(NOTIFIED_TAGS_KEY) || '{}') as Record<string, number>
+    const now = Date.now()
+    return Object.fromEntries(
+      Object.entries(parsed).filter(([, time]) => typeof time === 'number' && now - time < NOTIFIED_TAG_RETENTION_MS)
+    ) as Record<string, number>
+  } catch {
+    return {}
+  }
+}
+
+function wasNotificationTagSent(tag: string) {
+  return Boolean(readNotifiedTags()[tag])
+}
+
+function markNotificationTagSent(tag: string) {
+  try {
+    const tags = readNotifiedTags()
+    tags[tag] = Date.now()
+    localStorage.setItem(NOTIFIED_TAGS_KEY, JSON.stringify(tags))
+  } catch {
+    // 通知去重失敗不阻擋通知本身。
+  }
 }
 
 function isHrReadonlyEvent(event: CalendarEvent) {
@@ -1046,6 +1076,7 @@ export default function CalendarPage() {
 
   useEffect(() => {
     const currentIds = new Set(pushActivityLogs.map((log) => log.id))
+    if (!seenActivityLogIdsRef.current && pushActivityLogs.length === 0) return
     if (!seenActivityLogIdsRef.current) {
       seenActivityLogIdsRef.current = currentIds
       return
