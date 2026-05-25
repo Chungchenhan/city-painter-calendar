@@ -510,7 +510,7 @@ textarea {
   overflow: hidden;
   color: #222;
   font-size: 13px;
-  text-overflow: ellipsis;
+  text-overflow: clip;
   white-space: nowrap;
 }
 
@@ -622,7 +622,7 @@ textarea {
 .tt-calendar-surface .event-pill span {
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
+  text-overflow: clip;
   white-space: nowrap;
 }
 
@@ -640,7 +640,7 @@ textarea {
   color: #222;
   font-size: 12px;
   line-height: 20px;
-  text-overflow: ellipsis;
+  text-overflow: clip;
   text-align: left;
   white-space: nowrap;
 }
