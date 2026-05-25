@@ -1337,9 +1337,9 @@ textarea {
 
 .department-title-icon-options label {
   min-width: 0;
-  min-height: 42px;
+  min-height: 40px;
   display: grid;
-  grid-template-columns: 26px 26px minmax(0, 1fr);
+  grid-template-columns: 24px auto minmax(0, 1fr);
   align-items: center;
   gap: 5px;
   border: 1px solid #ececec;
@@ -1364,6 +1364,7 @@ textarea {
   min-height: 22px;
   margin: 0;
   accent-color: #1d9bf0;
+  align-self: center;
   justify-self: center;
 }
 
@@ -1371,6 +1372,7 @@ textarea {
   min-width: 0;
   display: grid;
   place-items: center;
+  align-self: center;
   overflow: hidden;
   font-size: 18px;
   line-height: 1;
@@ -1379,13 +1381,13 @@ textarea {
 
 .department-title-icon-options small {
   min-width: 0;
+  align-self: center;
   overflow: hidden;
   color: inherit;
   font-size: 12px;
-  line-height: 1.2;
+  line-height: 1.1;
   text-overflow: ellipsis;
-  white-space: normal;
-  word-break: keep-all;
+  white-space: nowrap;
 }
 
 .drawer-calendar-item {
@@ -4237,8 +4239,8 @@ p {
   }
 
   .department-title-icon-options label {
-    min-height: 42px;
-    grid-template-columns: 26px 26px minmax(0, 1fr);
+    min-height: 40px;
+    grid-template-columns: 24px auto minmax(0, 1fr);
     padding: 0 8px;
   }
 
