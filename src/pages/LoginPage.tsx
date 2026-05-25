@@ -90,7 +90,7 @@ export default function LoginPage() {
           <input
             value={empNo}
             onChange={(event) => setEmpNo(formatEmployeeLoginInput(event.target.value))}
-            placeholder="帳號"
+            placeholder="員工編號"
             autoComplete="username"
             inputMode="numeric"
             maxLength={7}
