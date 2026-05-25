@@ -8,15 +8,33 @@
 - `CityPainterCalendarWidget`：iPhone 主畫面大型 Widget，呼叫 `/api/widget-calendar` 顯示本月月檢視。
 - `Shared/WidgetConfig.swift`：正式站網址與 Widget API 設定。
 
-## 產生 Xcode 專案
+## 開啟 Xcode 專案
 
-本資料夾使用 XcodeGen 管理專案檔：
+目前已產生：
+
+```text
+CityPainterCalendar.xcodeproj
+```
+
+直接用 Xcode 開啟：
+
+```bash
+open ios/CityPainterCalendar/CityPainterCalendar.xcodeproj
+```
+
+若之後有新增 Swift 檔案或要重新產生專案，可執行：
+
+```bash
+cd ios/CityPainterCalendar
+ruby scripts/generate_xcodeproj.rb
+```
+
+也保留 `project.yml`，未來若要改用 XcodeGen：
 
 ```bash
 brew install xcodegen
 cd ios/CityPainterCalendar
 xcodegen generate
-open CityPainterCalendar.xcodeproj
 ```
 
 ## Xcode 內需要設定
@@ -25,9 +43,21 @@ open CityPainterCalendar.xcodeproj
 2. 確認 Bundle ID：
    - App：`com.citypainter.calendar`
    - Widget：`com.citypainter.calendar.widget`
-3. 確認 App Group：
-   - `group.com.citypainter.calendar`
-4. 先用真機執行 App，再到 iPhone 主畫面新增「都市彩繪行事曆」Widget。
+3. 選擇真機 iPhone。
+4. Scheme 選 `CityPainterCalendarApp`。
+5. 按 Run 安裝到 iPhone。
+
+## iPhone 加入主畫面 Widget
+
+1. 先從 Xcode 把 `CityPainterCalendarApp` 安裝到 iPhone，並打開一次。
+2. 回到 iPhone 主畫面。
+3. 長按桌面空白處，進入編輯模式。
+4. 點左上角 `＋`。
+5. 搜尋或找到「都市彩繪行事曆」。
+6. 選擇大型 Widget。
+7. 點「加入小工具」。
+
+第一版 Widget 會顯示本月月檢視，約每 30 分鐘由 iOS 決定是否更新；iOS Widget 不能保證秒級即時刷新。
 
 ## API
 

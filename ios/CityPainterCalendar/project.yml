@@ -22,11 +22,6 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     dependencies:
       - target: CityPainterCalendarWidget
-    entitlements:
-      path: CityPainterCalendarApp/CityPainterCalendarApp.entitlements
-      properties:
-        com.apple.security.application-groups:
-          - group.com.citypainter.calendar
   CityPainterCalendarWidget:
     type: app-extension
     platform: iOS
@@ -37,8 +32,3 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.citypainter.calendar.widget
         INFOPLIST_FILE: CityPainterCalendarWidget/Info.plist
-    entitlements:
-      path: CityPainterCalendarWidget/CityPainterCalendarWidget.entitlements
-      properties:
-        com.apple.security.application-groups:
-          - group.com.citypainter.calendar
