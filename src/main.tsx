@@ -2,9 +2,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createBrowserRouter, Navigate, RouterProvider } from 'react-router-dom'
-import { signInWithEmailAndPassword } from 'firebase/auth'
 import { AuthProvider } from './contexts/AuthContext'
-import { auth } from './lib/firebase'
 import { useAuth } from './contexts/AuthContext'
 import AppShell from './components/AppShell'
 import CalendarPage from './pages/CalendarPage'
@@ -22,14 +20,6 @@ setupAppUpdateChecks()
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const { user, role, loading } = useAuth()
-
-  const isLocalNetworkPreview = import.meta.env.DEV && /^\d{1,3}(\.\d{1,3}){3}$/.test(window.location.hostname)
-  const devAutoLoginDisabled = import.meta.env.DEV &&
-    !isLocalNetworkPreview &&
-    localStorage.getItem('cityPainterCalendarDisableDevAutoLogin') === '1'
-  if (import.meta.env.DEV && !devAutoLoginDisabled && !user && import.meta.env.VITE_DEV_EMAIL && import.meta.env.VITE_DEV_PASSWORD) {
-    signInWithEmailAndPassword(auth, import.meta.env.VITE_DEV_EMAIL, import.meta.env.VITE_DEV_PASSWORD).catch(() => undefined)
-  }
 
   if (loading || role === 'loading') return <div className="loading-page">載入中...</div>
   if (!user) return <Navigate to="/login" replace />

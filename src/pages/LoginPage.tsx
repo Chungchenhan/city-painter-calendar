@@ -1,46 +1,79 @@
-import { useEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import { Navigate } from 'react-router-dom'
-import { GoogleAuthProvider, signInWithEmailAndPassword, signInWithPopup } from 'firebase/auth'
+import { signInWithEmailAndPassword } from 'firebase/auth'
 import { auth } from '../lib/firebase'
 import { useAuth } from '../contexts/AuthContext'
+import {
+  employeeLoginEmail,
+  formatEmployeeLoginInput,
+  isEmployeeLoginId,
+  normalizeEmployeeLoginId,
+} from '../lib/employeeLogin'
+
+const REMEMBER_KEY = 'cityPainterCalendarRememberLogin'
+
+type RememberedLogin = {
+  empNo: string
+  password: string
+  remember: boolean
+}
+
+function readRememberedLogin(): RememberedLogin {
+  try {
+    const raw = window.localStorage.getItem(REMEMBER_KEY)
+    const parsed = raw ? JSON.parse(raw) as Partial<RememberedLogin> : null
+    return {
+      empNo: formatEmployeeLoginInput(parsed?.empNo),
+      password: parsed?.password ?? '',
+      remember: parsed?.remember ?? true,
+    }
+  } catch {
+    return { empNo: '', password: '', remember: true }
+  }
+}
+
+function writeRememberedLogin(value: RememberedLogin) {
+  try {
+    if (value.remember) {
+      window.localStorage.setItem(REMEMBER_KEY, JSON.stringify(value))
+    } else {
+      window.localStorage.removeItem(REMEMBER_KEY)
+    }
+  } catch {
+    // 記憶登入資訊失敗不影響登入流程。
+  }
+}
 
 export default function LoginPage() {
   const { user, loading } = useAuth()
+  const remembered = readRememberedLogin()
+  const [empNo, setEmpNo] = useState(remembered.empNo)
+  const [password, setPassword] = useState(remembered.password)
+  const [showPassword, setShowPassword] = useState(false)
+  const [remember, setRemember] = useState(remembered.remember)
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
-  const devAutoLoginStartedRef = useRef(false)
-  const isLocalNetworkPreview = import.meta.env.DEV && /^\d{1,3}(\.\d{1,3}){3}$/.test(window.location.hostname)
-
-  useEffect(() => {
-    if (!isLocalNetworkPreview || user || loading || devAutoLoginStartedRef.current) return
-    if (!import.meta.env.VITE_DEV_EMAIL || !import.meta.env.VITE_DEV_PASSWORD) return
-
-    devAutoLoginStartedRef.current = true
-    setSubmitting(true)
-    setError('')
-    signInWithEmailAndPassword(auth, import.meta.env.VITE_DEV_EMAIL, import.meta.env.VITE_DEV_PASSWORD)
-      .catch((err) => {
-        const code = (err as { code?: string }).code
-        setError(`開發預覽登入失敗：${code || '請稍後再試'}`)
-      })
-      .finally(() => setSubmitting(false))
-  }, [isLocalNetworkPreview, loading, user])
 
   if (!loading && user) return <Navigate to="/" replace />
 
   async function login() {
+    const normalizedEmpNo = normalizeEmployeeLoginId(empNo)
+    if (!normalizedEmpNo || !password) {
+      setError('請輸入員工編號與密碼')
+      return
+    }
+    if (!isEmployeeLoginId(normalizedEmpNo)) {
+      setError('員工編號格式需為 c 加 6 位數字')
+      return
+    }
+
     setSubmitting(true)
     setError('')
     try {
-      const provider = new GoogleAuthProvider()
-      provider.setCustomParameters({ prompt: 'select_account' })
-      if (import.meta.env.DEV) {
-        localStorage.setItem('cityPainterCalendarDisableDevAutoLogin', '1')
-      }
-      await signInWithPopup(auth, provider)
-    } catch (err) {
-      const code = (err as { code?: string }).code
-      if (code !== 'auth/popup-closed-by-user') setError(`登入失敗：${code || '請稍後再試'}`)
+      await signInWithEmailAndPassword(auth, employeeLoginEmail(normalizedEmpNo), password)
+      writeRememberedLogin({ empNo: normalizedEmpNo, password, remember })
+    } catch {
+      setError('員工編號或密碼錯誤，請確認後再試')
     } finally {
       setSubmitting(false)
     }
@@ -51,11 +84,44 @@ export default function LoginPage() {
       <section className="login-panel">
         <div className="login-logo">都市彩繪</div>
         <h1>行事曆</h1>
-        <p>登入後依 HR 權限查看部門工作與共享行程。</p>
+        <p>請輸入員工編號與密碼登入。</p>
         {error && <div className="form-error">{error}</div>}
-        <button className="primary-btn login-btn" onClick={login} disabled={submitting || isLocalNetworkPreview}>
-          {submitting ? '登入中...' : isLocalNetworkPreview ? '本地預覽自動登入' : '使用 Google 登入'}
-        </button>
+        <div className="login-form">
+          <input
+            value={empNo}
+            onChange={(event) => setEmpNo(formatEmployeeLoginInput(event.target.value))}
+            placeholder="帳號"
+            autoComplete="username"
+            inputMode="numeric"
+            maxLength={7}
+          />
+          <div className="login-password-row">
+            <input
+              type={showPassword ? 'text' : 'password'}
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') void login()
+              }}
+              placeholder="密碼"
+              autoComplete="current-password"
+            />
+            <button type="button" onClick={() => setShowPassword(prev => !prev)}>
+              {showPassword ? '隱藏' : '顯示'}
+            </button>
+          </div>
+          <label className="login-remember">
+            <input
+              type="checkbox"
+              checked={remember}
+              onChange={(event) => setRemember(event.target.checked)}
+            />
+            <span>記憶帳號密碼</span>
+          </label>
+          <button type="button" className="primary-btn login-btn" onClick={login} disabled={submitting}>
+            {submitting ? '登入中...' : '登入'}
+          </button>
+        </div>
       </section>
     </div>
   )

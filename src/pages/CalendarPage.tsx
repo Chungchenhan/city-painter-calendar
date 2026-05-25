@@ -640,6 +640,11 @@ export default function CalendarPage() {
   const [showAccountMenu, setShowAccountMenu] = useState(false)
   const [showStartupNotificationPrompt, setShowStartupNotificationPrompt] = useState(false)
   const [showNotificationSettings, setShowNotificationSettings] = useState(false)
+  const [showPasswordModal, setShowPasswordModal] = useState(false)
+  const [passwordForm, setPasswordForm] = useState({ next: '', confirm: '' })
+  const [passwordError, setPasswordError] = useState('')
+  const [passwordSuccess, setPasswordSuccess] = useState('')
+  const [savingPassword, setSavingPassword] = useState(false)
   const [showTitleIconSettings, setShowTitleIconSettings] = useState(false)
   const [showTitleIconPicker, setShowTitleIconPicker] = useState(false)
   const [titleOverrideIconPickerIndex, setTitleOverrideIconPickerIndex] = useState<number | null>(null)
@@ -678,6 +683,7 @@ export default function CalendarPage() {
   const [dragOverDate, setDragOverDate] = useState<string | null>(null)
   const [calendarSwipeOffset, setCalendarSwipeOffset] = useState(0)
   const [calendarSwipeAnimating, setCalendarSwipeAnimating] = useState(false)
+  const [dayListSwipeOffset, setDayListSwipeOffset] = useState(0)
   const [saving, setSaving] = useState(false)
   const [detailAttachmentUploading, setDetailAttachmentUploading] = useState(false)
   const noteTextareaRef = useRef<HTMLTextAreaElement | null>(null)
@@ -704,6 +710,13 @@ export default function CalendarPage() {
     timer: number
     active: boolean
     dragging: boolean
+  } | null>(null)
+  const dayListSwipeRef = useRef<{
+    identifier: number
+    startX: number
+    startY: number
+    dragging: boolean
+    enabled: boolean
   } | null>(null)
   const seenActivityLogIdsRef = useRef<Set<string> | null>(null)
   const titleIconDragIndexRef = useRef<number | null>(null)
@@ -1090,6 +1103,12 @@ export default function CalendarPage() {
   useEffect(() => () => {
     resetDayListTouchDrag()
   }, [])
+
+  useEffect(() => {
+    if (dayListDate) return
+    dayListSwipeRef.current = null
+    setDayListSwipeOffset(0)
+  }, [dayListDate])
 
   useEffect(() => {
     if (!dayListDate) return
@@ -2248,6 +2267,59 @@ export default function CalendarPage() {
     }
   }
 
+  function openPasswordModal() {
+    setPasswordForm({ next: '', confirm: '' })
+    setPasswordError('')
+    setPasswordSuccess('')
+    setShowPasswordModal(true)
+  }
+
+  async function savePasswordChange() {
+    if (!auth.currentUser) return
+    if (!passwordForm.next || !passwordForm.confirm) {
+      setPasswordError('請完整輸入新密碼')
+      return
+    }
+    if (passwordForm.next.length < 6) {
+      setPasswordError('新密碼至少需要 6 個字元')
+      return
+    }
+    if (passwordForm.next !== passwordForm.confirm) {
+      setPasswordError('新密碼與確認密碼不一致')
+      return
+    }
+    setSavingPassword(true)
+    setPasswordError('')
+    setPasswordSuccess('')
+    try {
+      const token = await auth.currentUser.getIdToken()
+      const response = await fetch(import.meta.env.VITE_CHANGE_PASSWORD_API_URL || 'https://sch.city-painter.com/api/change-password', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ password: passwordForm.next }),
+      })
+      if (!response.ok) {
+        const result = await response.json().catch(() => null) as { error?: string } | null
+        throw new Error(result?.error || '密碼更新失敗')
+      }
+      setPasswordForm({ next: '', confirm: '' })
+      setPasswordSuccess('密碼已更新')
+    } catch (error) {
+      const code = (error as { code?: string; message?: string }).code
+      const message = (error as { message?: string }).message
+      if (code === 'auth/weak-password' || message?.includes('at least 6')) {
+        setPasswordError('新密碼強度不足')
+      } else {
+        setPasswordError('密碼更新失敗，請稍後再試')
+      }
+    } finally {
+      setSavingPassword(false)
+    }
+  }
+
   function markActivityNotificationsSeen() {
     const latest = visibleActivityLogs[0]?.createdAt ?? new Date().toISOString()
     localStorage.setItem(ACTIVITY_NOTIFICATION_SEEN_KEY, latest)
@@ -3132,6 +3204,51 @@ export default function CalendarPage() {
     }, 300)
   }
 
+  function handleDayListSwipeStart(event: ReactTouchEvent<HTMLElement>) {
+    if (!dayListDate || event.touches.length !== 1) return
+    const touch = event.changedTouches[0] ?? event.touches[0]
+    if (!touch) return
+    const target = event.target
+    const list = target instanceof Element ? target.closest('.tt-day-list-panel .panel-list') as HTMLElement | null : null
+    dayListSwipeRef.current = {
+      identifier: touch.identifier,
+      startX: touch.clientX,
+      startY: touch.clientY,
+      dragging: false,
+      enabled: !list || list.scrollTop <= 0,
+    }
+  }
+
+  function handleDayListSwipeMove(event: ReactTouchEvent<HTMLElement>) {
+    const swipe = dayListSwipeRef.current
+    if (!swipe || !swipe.enabled) return
+    const touch = Array.from(event.changedTouches).find((item) => item.identifier === swipe.identifier)
+    if (!touch) return
+    const deltaX = touch.clientX - swipe.startX
+    const deltaY = touch.clientY - swipe.startY
+    if (!swipe.dragging) {
+      if (deltaY < 12 || Math.abs(deltaX) > deltaY) return
+      swipe.dragging = true
+      resetDayListTouchDrag()
+    }
+    event.preventDefault()
+    setDayListSwipeOffset(Math.min(180, Math.max(0, deltaY)))
+  }
+
+  function handleDayListSwipeEnd(event: ReactTouchEvent<HTMLElement>) {
+    const swipe = dayListSwipeRef.current
+    if (!swipe) return
+    const touch = Array.from(event.changedTouches).find((item) => item.identifier === swipe.identifier)
+    const deltaY = touch ? touch.clientY - swipe.startY : dayListSwipeOffset
+    const shouldClose = swipe.dragging && deltaY > 72
+    dayListSwipeRef.current = null
+    setDayListSwipeOffset(0)
+    if (shouldClose) {
+      event.preventDefault()
+      setDayListDate(null)
+    }
+  }
+
   async function applyDragEventAction(action: 'move' | 'copy') {
     if (!dragActionMenu) return
     const sourceEvent = events.find((event) => event.id === dragActionMenu.eventId)
@@ -3580,7 +3697,14 @@ export default function CalendarPage() {
     if (!dayListDate) return null
     const dayEvents = eventsByDate.get(dayListDate) ?? []
     return (
-      <aside className="tt-floating-panel tt-day-list-panel">
+      <aside
+        className={`tt-floating-panel tt-day-list-panel${dayListSwipeOffset > 0 ? ' swiping' : ''}`}
+        style={{ '--day-list-swipe-offset': `${dayListSwipeOffset}px` } as CSSProperties}
+        onTouchStart={handleDayListSwipeStart}
+        onTouchMove={handleDayListSwipeMove}
+        onTouchEnd={handleDayListSwipeEnd}
+        onTouchCancel={handleDayListSwipeEnd}
+      >
         <div className="panel-head">
           <h2>{dayjs(dayListDate).format('M月D日')}活動</h2>
           <button onClick={() => setDayListDate(null)} aria-label="關閉當日活動">×</button>
@@ -3962,6 +4086,16 @@ export default function CalendarPage() {
               >
                 通知設定
               </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setShowAccountMenu(false)
+                  openPasswordModal()
+                }}
+              >
+                修改密碼
+              </button>
               {canManageCalendarColors && (
                 <>
                   <button
@@ -3991,9 +4125,6 @@ export default function CalendarPage() {
                 role="menuitem"
                 onClick={() => {
                   setShowAccountMenu(false)
-                  if (import.meta.env.DEV) {
-                    localStorage.setItem('cityPainterCalendarDisableDevAutoLogin', '1')
-                  }
                   signOut(auth)
                 }}
               >
@@ -4003,6 +4134,48 @@ export default function CalendarPage() {
           )}
         </div>
       </header>
+
+      {showPasswordModal && (
+        <div className="modal-overlay" onClick={() => setShowPasswordModal(false)}>
+          <div className="modal password-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <h2>修改密碼</h2>
+              <button onClick={() => setShowPasswordModal(false)} aria-label="關閉修改密碼">×</button>
+            </div>
+            <div className="modal-body">
+              <label>
+                <span>新密碼</span>
+                <input
+                  type="password"
+                  value={passwordForm.next}
+                  onChange={(event) => setPasswordForm((form) => ({ ...form, next: event.target.value }))}
+                  autoComplete="new-password"
+                />
+              </label>
+              <label>
+                <span>確認新密碼</span>
+                <input
+                  type="password"
+                  value={passwordForm.confirm}
+                  onChange={(event) => setPasswordForm((form) => ({ ...form, confirm: event.target.value }))}
+                  autoComplete="new-password"
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') void savePasswordChange()
+                  }}
+                />
+              </label>
+              {passwordError && <div className="form-error">{passwordError}</div>}
+              {passwordSuccess && <div className="form-success">{passwordSuccess}</div>}
+            </div>
+            <div className="modal-footer">
+              <button type="button" onClick={() => setShowPasswordModal(false)}>取消</button>
+              <button type="button" className="primary-btn" disabled={savingPassword} onClick={savePasswordChange}>
+                {savingPassword ? '儲存中' : '儲存'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="timetree-body">
         <aside className="tt-left-rail">
