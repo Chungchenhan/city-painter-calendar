@@ -370,6 +370,24 @@ textarea {
   grid-auto-rows: minmax(0, 1fr);
 }
 
+.month-swipe-viewport {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.month-swipe-track {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  min-width: 0;
+}
+
+.month-swipe-month {
+  flex: 0 0 100%;
+  width: 100%;
+}
+
 .calendar-swipe-track {
   will-change: transform;
 }
@@ -1226,7 +1244,7 @@ textarea {
 
 .title-icon-setting-row {
   display: grid;
-  grid-template-columns: 56px minmax(0, 1fr) 40px;
+  grid-template-columns: 34px 56px minmax(0, 1fr) 40px;
   align-items: center;
   gap: 10px;
 }
@@ -1259,6 +1277,18 @@ textarea {
 
 .title-icon-setting-row button {
   font-size: 20px;
+}
+
+.title-icon-drag-handle {
+  cursor: grab;
+  color: #9aa0a6;
+  font-size: 18px !important;
+  letter-spacing: -2px;
+  touch-action: none;
+}
+
+.title-icon-drag-handle:active {
+  cursor: grabbing;
 }
 
 .title-icon-add-row {
@@ -1566,6 +1596,44 @@ textarea {
   background: transparent;
   color: #333;
   font-size: 24px;
+}
+
+.event-detail-upload-btn {
+  width: auto !important;
+  min-height: 44px !important;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 999px !important;
+  padding: 0 12px !important;
+  background: var(--event-color, #27c874) !important;
+  color: #fff !important;
+  font-size: 14px !important;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.event-detail-upload-btn span {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.event-detail-upload-btn b {
+  font-size: 13px;
+  line-height: 1;
+}
+
+.event-detail-upload-btn:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.event-detail-upload-input {
+  position: absolute;
+  width: 1px;
+  min-height: 1px;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .event-detail-action-wrap > button {
@@ -3133,6 +3201,25 @@ p {
   white-space: nowrap;
 }
 
+.attachment-list small {
+  flex: 0 0 auto;
+  color: #8a8a8a;
+  font-size: 11px;
+}
+
+.attachment-upload.uploading {
+  background: #fff7db;
+}
+
+.attachment-upload.failed {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.attachment-upload.uploaded {
+  background: #ecfdf3;
+}
+
 .attachment-list button {
   width: 22px;
   min-width: 22px;
@@ -3348,6 +3435,34 @@ p {
   :root {
     --mobile-panel-top: 96px;
     --mobile-panel-bottom: calc(28px + env(safe-area-inset-bottom, 0px));
+  }
+
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+
+  .event-title-input,
+  .event-time-editor input,
+  .event-editor-row select,
+  .event-editor-row textarea,
+  .event-editor-row > input,
+  .title-override-row select,
+  .title-override-row input,
+  .title-override-title-row input,
+  .todo-editor-item input[type="text"],
+  .todo-editor-item input:not([type]),
+  .repeat-interval-row input,
+  .repeat-interval-row select,
+  .repeat-end-group input[type="date"],
+  .repeat-end-group input[type="number"],
+  .notification-lead-row input,
+  .tt-search-panel > input,
+  .modal input,
+  .modal select,
+  .modal textarea {
+    font-size: 16px !important;
   }
 
   html,
@@ -3933,13 +4048,46 @@ p {
 
   .event-time-editor,
   .event-editor-row {
-    padding-left: 18px;
-    padding-right: 18px;
+    padding-left: 14px;
+    padding-right: 14px;
   }
 
   .time-row {
-    grid-template-columns: 48px minmax(128px, 1fr) minmax(98px, auto);
-    gap: 8px;
+    grid-template-columns: 42px minmax(0, 1fr) minmax(128px, 138px);
+    gap: 6px;
+  }
+
+  .time-input-wrap,
+  .time-input-wrap.compact {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .time-input-icon {
+    left: 8px;
+    width: 16px;
+    height: 16px;
+  }
+
+  .time-row input {
+    min-width: 0;
+    font-size: 16px;
+    padding-left: 26px;
+    padding-right: 4px;
+    text-align: left;
+  }
+
+  .time-row input[type="time"] {
+    min-width: 0;
+    padding-left: 24px;
+    padding-right: 2px;
+    text-align: left;
+  }
+
+  .time-row input[type="date"]::-webkit-date-and-time-value,
+  .time-row input[type="time"]::-webkit-date-and-time-value {
+    margin: 0;
+    text-align: left;
   }
 
   .event-assignee-grid {

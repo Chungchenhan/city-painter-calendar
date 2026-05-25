@@ -23,7 +23,10 @@ setupAppUpdateChecks()
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const { user, role, loading } = useAuth()
 
-  const devAutoLoginDisabled = import.meta.env.DEV && localStorage.getItem('cityPainterCalendarDisableDevAutoLogin') === '1'
+  const isLocalNetworkPreview = import.meta.env.DEV && /^\d{1,3}(\.\d{1,3}){3}$/.test(window.location.hostname)
+  const devAutoLoginDisabled = import.meta.env.DEV &&
+    !isLocalNetworkPreview &&
+    localStorage.getItem('cityPainterCalendarDisableDevAutoLogin') === '1'
   if (import.meta.env.DEV && !devAutoLoginDisabled && !user && import.meta.env.VITE_DEV_EMAIL && import.meta.env.VITE_DEV_PASSWORD) {
     signInWithEmailAndPassword(auth, import.meta.env.VITE_DEV_EMAIL, import.meta.env.VITE_DEV_PASSWORD).catch(() => undefined)
   }

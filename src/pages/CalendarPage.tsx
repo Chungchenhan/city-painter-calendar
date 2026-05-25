@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { CSSProperties, DragEvent, PointerEvent as ReactPointerEvent, ReactNode, TouchEvent as ReactTouchEvent } from 'react'
+import type { CSSProperties, ChangeEvent, DragEvent, PointerEvent as ReactPointerEvent, ReactNode, TouchEvent as ReactTouchEvent } from 'react'
 import dayjs from 'dayjs'
 import { addDoc, arrayUnion, collection, deleteDoc, doc, getDoc, getDocs, query, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore'
 import { signOut } from 'firebase/auth'
@@ -58,6 +58,14 @@ type ViewMode = 'month' | 'week'
 type EventEditorIcon = 'person' | 'department' | 'calendar' | 'bell' | 'repeat' | 'link' | 'location' | 'paperclip' | 'note' | 'check'
 type RecurrenceEditScope = 'single' | 'future' | 'all'
 type EventAttachment = NonNullable<CalendarEvent['attachments']>[number]
+type AttachmentUpload = {
+  id: string
+  name: string
+  size: number
+  status: 'uploading' | 'uploaded' | 'failed'
+  attachment?: EventAttachment
+  error?: string
+}
 type DisplayCalendar = CalendarGroup & { systemKind?: 'department' | 'hrLeave' }
 type EventForm = {
   calendarId: string
@@ -196,6 +204,27 @@ function dateRangeBetween(startDate: string, endDate: string) {
     cursor = cursor.add(1, 'day')
   }
   return days
+}
+
+function shiftEventEndByStartChange(form: EventForm, nextDate: string, nextStartTime: string) {
+  const currentStart = dayjs(`${form.date} ${form.startTime}`)
+  let currentEnd = dayjs(`${form.endDate || form.date} ${form.endTime}`)
+  const nextStart = dayjs(`${nextDate} ${nextStartTime}`)
+  if (!currentStart.isValid() || !currentEnd.isValid() || !nextStart.isValid()) {
+    return {
+      date: nextDate,
+      startTime: nextStartTime
+    }
+  }
+  if (currentEnd.isBefore(currentStart)) currentEnd = currentEnd.add(1, 'day')
+  const durationMinutes = Math.max(0, currentEnd.diff(currentStart, 'minute'))
+  const nextEnd = nextStart.add(durationMinutes, 'minute')
+  return {
+    date: nextDate,
+    startTime: nextStartTime,
+    endDate: nextEnd.format('YYYY-MM-DD'),
+    endTime: nextEnd.format('HH:mm')
+  }
 }
 
 function compactText(text: string, limit = 18) {
@@ -643,18 +672,20 @@ export default function CalendarPage() {
   const [recurrenceDeleteCandidate, setRecurrenceDeleteCandidate] = useState<CalendarEvent | null>(null)
   const [calendarForm, setCalendarForm] = useState(emptyCalendar)
   const [eventForm, setEventForm] = useState(emptyEvent)
-  const [attachmentFiles, setAttachmentFiles] = useState<File[]>([])
+  const [attachmentUploads, setAttachmentUploads] = useState<AttachmentUpload[]>([])
   const [deletedAttachments, setDeletedAttachments] = useState<EventAttachment[]>([])
   const [dragActionMenu, setDragActionMenu] = useState<DragActionMenu | null>(null)
   const [dragOverDate, setDragOverDate] = useState<string | null>(null)
   const [calendarSwipeOffset, setCalendarSwipeOffset] = useState(0)
   const [calendarSwipeAnimating, setCalendarSwipeAnimating] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [detailAttachmentUploading, setDetailAttachmentUploading] = useState(false)
   const noteTextareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const detailAttachmentInputRef = useRef<HTMLInputElement | null>(null)
   const monthInputRef = useRef<HTMLInputElement | null>(null)
   const monthGridRef = useRef<HTMLDivElement | null>(null)
   const calendarSurfaceRef = useRef<HTMLElement | null>(null)
-  const calendarTouchStartRef = useRef<{ x: number; y: number; deltaX: number; deltaY: number; dragging: boolean } | null>(null)
+  const calendarTouchStartRef = useRef<{ identifier: number; x: number; y: number; deltaX: number; deltaY: number; dragging: boolean } | null>(null)
   const suppressEventClickRef = useRef(false)
   const lastEventPointerTypeRef = useRef('')
   const pointerDragRef = useRef<{
@@ -675,6 +706,8 @@ export default function CalendarPage() {
     dragging: boolean
   } | null>(null)
   const seenActivityLogIdsRef = useRef<Set<string> | null>(null)
+  const titleIconDragIndexRef = useRef<number | null>(null)
+  const canceledAttachmentUploadIdsRef = useRef<Set<string>>(new Set())
 
   const currentEmployee = employees.find((emp) => emp.id === employeeId)
   const currentEmployeeDepartmentName = currentEmployee?.departmentName || departments.find((department) => department.id === currentEmployee?.departmentId)?.name || ''
@@ -1229,10 +1262,17 @@ export default function CalendarPage() {
     }
   }, [showTitleSuggestions])
 
-  const monthDays = useMemo(() => {
-    const start = month.startOf('month').startOf('week')
-    return Array.from({ length: 42 }, (_, index) => start.add(index, 'day'))
-  }, [month])
+  const swipeMonthSets = useMemo(() => (
+    [-1, 0, 1].map((offset) => {
+      const displayMonth = month.add(offset, 'month')
+      const start = displayMonth.startOf('month').startOf('week')
+      return {
+        key: displayMonth.format('YYYY-MM'),
+        displayMonth,
+        days: Array.from({ length: 42 }, (_, index) => start.add(index, 'day'))
+      }
+    })
+  ), [month])
 
   const weekDays = useMemo(() => {
     const start = dayjs(selectedDate).startOf('week')
@@ -1853,18 +1893,27 @@ export default function CalendarPage() {
     setSelectedDate(nextMonth.startOf('month').format('YYYY-MM-DD'))
   }
 
+  function canSwipeMonthWithTouch() {
+    const touchDrag = dayListTouchDragRef.current
+    const draggingEvent = Boolean(touchDrag?.dragging)
+    return viewMode === 'month' &&
+      !showEventModal &&
+      !selectedEventId &&
+      (!dayListDate || draggingEvent)
+  }
+
   function handleCalendarTouchStart(event: ReactTouchEvent<HTMLElement>) {
-    if (viewMode !== 'month' || showEventModal || selectedEventId || dayListDate) return
-    const touch = event.touches[0]
+    if (!canSwipeMonthWithTouch()) return
+    const touch = event.changedTouches[0] ?? event.touches[0]
     if (!touch) return
     setCalendarSwipeAnimating(false)
-    calendarTouchStartRef.current = { x: touch.clientX, y: touch.clientY, deltaX: 0, deltaY: 0, dragging: false }
+    calendarTouchStartRef.current = { identifier: touch.identifier, x: touch.clientX, y: touch.clientY, deltaX: 0, deltaY: 0, dragging: false }
   }
 
   function handleCalendarTouchMove(event: ReactTouchEvent<HTMLElement>) {
     const start = calendarTouchStartRef.current
     if (!start || viewMode !== 'month') return
-    const touch = event.touches[0]
+    const touch = Array.from(event.touches).find((item) => item.identifier === start.identifier)
     if (!touch) return
     const deltaX = touch.clientX - start.x
     const deltaY = touch.clientY - start.y
@@ -1887,9 +1936,9 @@ export default function CalendarPage() {
 
   function handleCalendarTouchEnd(event: ReactTouchEvent<HTMLElement>) {
     const start = calendarTouchStartRef.current
-    calendarTouchStartRef.current = null
-    const touch = event.changedTouches[0]
+    const touch = start ? Array.from(event.changedTouches).find((item) => item.identifier === start.identifier) : null
     if (!start || !touch) return
+    calendarTouchStartRef.current = null
     const deltaX = start.deltaX || (touch.clientX - start.x)
     const deltaY = start.deltaY || (touch.clientY - start.y)
     if (!start.dragging) {
@@ -1934,7 +1983,7 @@ export default function CalendarPage() {
       departmentId: defaultDepartmentId,
       assigneeIds: requiredAssigneeIds([])
     })
-    setAttachmentFiles([])
+    resetAttachmentUploadState()
     setDeletedAttachments([])
     setEditingEventId(null)
     setRecurrenceEditMode(null)
@@ -2014,7 +2063,7 @@ export default function CalendarPage() {
       url: event.url ?? '',
       attachments: event.attachments ?? []
     })
-    setAttachmentFiles([])
+    resetAttachmentUploadState()
     setDeletedAttachments([])
     setEditingEventId(null)
     setRecurrenceEditMode(null)
@@ -2067,7 +2116,7 @@ export default function CalendarPage() {
       url: rootEvent.url ?? '',
       attachments: rootEvent.attachments ?? []
     })
-    setAttachmentFiles([])
+    resetAttachmentUploadState()
     setDeletedAttachments([])
     setEditingEventId(rootEvent.id)
     setRecurrenceEditMode(isRepeatingEvent(rootEvent) ? { scope, source: event } : null)
@@ -2257,6 +2306,42 @@ export default function CalendarPage() {
     setTitleIconDraft((items) => items.map((item, itemIndex) => itemIndex === index ? { ...item, ...changes } : item))
   }
 
+  function reorderTitleIconDraft(fromIndex: number, toIndex: number) {
+    setTitleIconDraft((items) => {
+      if (
+        fromIndex === toIndex ||
+        fromIndex < 0 ||
+        toIndex < 0 ||
+        fromIndex >= items.length ||
+        toIndex >= items.length
+      ) {
+        return items
+      }
+      const next = [...items]
+      const [movedItem] = next.splice(fromIndex, 1)
+      next.splice(toIndex, 0, movedItem)
+      return next
+    })
+  }
+
+  function startTitleIconDrag(event: DragEvent<HTMLButtonElement>, index: number) {
+    titleIconDragIndexRef.current = index
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', String(index))
+  }
+
+  function moveTitleIconDragOver(event: DragEvent<HTMLDivElement>, index: number) {
+    const fromIndex = titleIconDragIndexRef.current
+    if (fromIndex === null || fromIndex === index) return
+    event.preventDefault()
+    reorderTitleIconDraft(fromIndex, index)
+    titleIconDragIndexRef.current = index
+  }
+
+  function endTitleIconDrag() {
+    titleIconDragIndexRef.current = null
+  }
+
   function removeTitleIconDraft(index: number) {
     setTitleIconDraft((items) => items.filter((_, itemIndex) => itemIndex !== index))
   }
@@ -2402,8 +2487,20 @@ export default function CalendarPage() {
 
     setSaving(true)
     try {
-      const pendingAttachmentFiles = [...attachmentFiles]
       const removedAttachments = [...deletedAttachments]
+      const hasUploadingAttachments = attachmentUploads.some((item) => item.status === 'uploading')
+      if (hasUploadingAttachments) {
+        alert('附件仍在上傳中，請稍候再儲存')
+        return
+      }
+      const failedAttachment = attachmentUploads.find((item) => item.status === 'failed')
+      if (failedAttachment) {
+        alert(`附件「${failedAttachment.name}」上傳失敗，請刪除後重新選擇`)
+        return
+      }
+      const uploadedAttachments = attachmentUploads
+        .map((item) => item.attachment)
+        .filter(Boolean) as NonNullable<CalendarEvent['attachments']>
       const selectedCalendarIds = eventForm.calendarIds
       const primaryCalendarId = selectedCalendarIds[0] ?? ''
       const selectedDepartmentId = primaryDepartmentIdFromCalendarIds(selectedCalendarIds, eventForm.departmentId)
@@ -2431,7 +2528,7 @@ export default function CalendarPage() {
         todos: eventForm.todos.map((todo) => ({ ...todo, text: todo.text.trim() })).filter((todo) => todo.text),
         location: eventForm.location.trim(),
         url: eventForm.url.trim(),
-        attachments: eventForm.attachments,
+        attachments: [...eventForm.attachments, ...uploadedAttachments],
         updatedAt: new Date().toISOString()
       }
 
@@ -2535,16 +2632,17 @@ export default function CalendarPage() {
       }
 
       setShowEventModal(false)
-      setAttachmentFiles([])
+      resetAttachmentUploadState()
       setDeletedAttachments([])
       setRecurrenceEditMode(null)
       if (savedViewEvent) await syncCalendarEventViews(savedViewEvent)
       await refreshCalendarData()
       if (savedEventId) {
-        syncEventAttachmentsInBackground(savedEventId, pendingAttachmentFiles, removedAttachments)
+        syncEventAttachmentsInBackground(savedEventId, [], removedAttachments)
       }
-    } catch {
-      alert('工作儲存失敗，請稍後再試')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '工作儲存失敗，請稍後再試'
+      alert(message)
     } finally {
       setSaving(false)
     }
@@ -2564,6 +2662,116 @@ export default function CalendarPage() {
       throw new Error(result.error || '附件上傳失敗')
     }
     return result.attachments as NonNullable<CalendarEvent['attachments']>
+  }
+
+  function resetAttachmentUploadState() {
+    setAttachmentUploads([])
+    canceledAttachmentUploadIdsRef.current.clear()
+  }
+
+  function discardAttachmentUploadState() {
+    setAttachmentUploads((items) => {
+      items.forEach((item) => {
+        canceledAttachmentUploadIdsRef.current.add(item.id)
+        if (item.attachment) {
+          void deleteRemovedEventAttachments([item.attachment])
+        }
+      })
+      return []
+    })
+  }
+
+  function closeEventModal() {
+    discardAttachmentUploadState()
+    setShowEventModal(false)
+  }
+
+  function handleAttachmentFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? [])
+    event.target.value = ''
+    if (!files.length) return
+
+    const uploadItems = files.map((file) => ({
+      id: crypto.randomUUID(),
+      name: file.name,
+      size: file.size,
+      status: 'uploading' as const
+    }))
+    setAttachmentUploads((items) => [...items, ...uploadItems])
+
+    uploadItems.forEach((item, index) => {
+      const file = files[index]
+      void (async () => {
+        try {
+          const [attachment] = await uploadEventAttachments(editingEventId ?? 'draft-event', [file])
+          if (!attachment) throw new Error('附件上傳失敗')
+          if (canceledAttachmentUploadIdsRef.current.has(item.id)) {
+            if (attachment) await deleteRemovedEventAttachments([attachment]).catch(() => 0)
+            canceledAttachmentUploadIdsRef.current.delete(item.id)
+            return
+          }
+          setAttachmentUploads((items) => items.map((upload) => (
+            upload.id === item.id
+              ? { ...upload, status: 'uploaded', attachment: attachment ?? undefined }
+              : upload
+          )))
+        } catch (error) {
+          if (canceledAttachmentUploadIdsRef.current.has(item.id)) {
+            canceledAttachmentUploadIdsRef.current.delete(item.id)
+            return
+          }
+          const message = error instanceof Error ? error.message : '附件上傳失敗'
+          setAttachmentUploads((items) => items.map((upload) => (
+            upload.id === item.id ? { ...upload, status: 'failed', error: message } : upload
+          )))
+        }
+      })()
+    })
+  }
+
+  async function handleDetailAttachmentFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? [])
+    event.target.value = ''
+    if (!files.length || !selectedEvent) return
+    if (!canManageCalendarEvent(selectedEvent) || isHrReadonlyEvent(selectedEvent)) {
+      alert('沒有此活動的附件上傳權限')
+      return
+    }
+
+    let uploadedAttachments: NonNullable<CalendarEvent['attachments']> = []
+    let firestoreUpdated = false
+    setDetailAttachmentUploading(true)
+    try {
+      uploadedAttachments = await uploadEventAttachments(selectedEvent.id, files)
+      if (!uploadedAttachments.length) throw new Error('附件上傳失敗')
+      const nextAttachments = [...(selectedEvent.attachments ?? []), ...uploadedAttachments]
+      const updatedAt = new Date().toISOString()
+      await updateDoc(doc(db, 'calendarEvents', selectedEvent.id), {
+        attachments: arrayUnion(...uploadedAttachments),
+        updatedAt
+      })
+      firestoreUpdated = true
+      setDetailAttachmentUploading(false)
+      void (async () => {
+        try {
+          await syncCalendarEventViews({
+            ...selectedEvent,
+            attachments: nextAttachments,
+            updatedAt
+          })
+          await refreshCalendarData()
+        } catch {
+          await refreshCalendarData().catch(() => undefined)
+        }
+      })()
+    } catch (error) {
+      if (!firestoreUpdated && uploadedAttachments.length) {
+        await deleteRemovedEventAttachments(uploadedAttachments).catch(() => 0)
+      }
+      const message = error instanceof Error ? error.message : '附件上傳失敗，請稍後再試'
+      alert(message)
+      setDetailAttachmentUploading(false)
+    }
   }
 
   function syncEventAttachmentsInBackground(eventId: string, files: File[], removedFiles: EventAttachment[]) {
@@ -2612,8 +2820,12 @@ export default function CalendarPage() {
     }
   }
 
-  function removePendingAttachment(index: number) {
-    setAttachmentFiles((files) => files.filter((_, fileIndex) => fileIndex !== index))
+  function removeUploadedAttachment(upload: AttachmentUpload) {
+    canceledAttachmentUploadIdsRef.current.add(upload.id)
+    setAttachmentUploads((items) => items.filter((item) => item.id !== upload.id))
+    if (upload.attachment) {
+      void deleteRemovedEventAttachments([upload.attachment])
+    }
   }
 
   async function deleteRemovedEventAttachments(files: EventAttachment[]) {
@@ -3067,6 +3279,100 @@ export default function CalendarPage() {
     )
   }
 
+  function renderMonthGridDays(days: dayjs.Dayjs[], displayMonth: dayjs.Dayjs, activeMonth: boolean) {
+    return days.map((day) => {
+      const date = day.format('YYYY-MM-DD')
+      const dayEvents = eventsByDate.get(date) ?? []
+      const visibleDayEventCount = dayEvents.length > monthDayEventRowLimit ? monthDayEventRowLimit - 1 : monthDayEventRowLimit
+      const visibleDayEvents = dayEvents.slice(0, visibleDayEventCount)
+      const hiddenDayEventCount = dayEvents.length - visibleDayEventCount
+      const selected = selectedDate === date
+      const today = dayjs().format('YYYY-MM-DD') === date
+      return (
+        <button
+          className={`day-cell ${selected ? 'selected' : ''} ${day.month() !== displayMonth.month() ? 'muted' : ''} ${dragOverDate === date ? 'drag-over' : ''}`}
+          key={date}
+          data-calendar-date={activeMonth ? date : undefined}
+          onClick={() => activeMonth && handleMonthDayClick(date)}
+          onDoubleClick={() => activeMonth && canCreateEvent && openAddEvent(date)}
+          onDragOver={(dragEvent) => {
+            if (!activeMonth) return
+            dragEvent.preventDefault()
+            setDragOverDate(date)
+          }}
+          onDragLeave={() => activeMonth && setDragOverDate((current) => current === date ? null : current)}
+          onDrop={(dragEvent) => activeMonth && dropEventOnDate(dragEvent, date)}
+          tabIndex={activeMonth ? 0 : -1}
+          aria-hidden={!activeMonth}
+        >
+          <span className={`day-number ${today ? 'today' : ''}`}>{day.date()}</span>
+          <span className="day-events">
+            {visibleDayEvents.map((event) => (
+              <button
+                className={`event-pill ${event.allDay ? 'all-day' : 'timed'} ${selectedEventId === event.id ? 'active' : ''}`}
+                style={{ '--event-color': eventCalendarColor(event) } as CSSProperties}
+                key={event.id}
+                draggable={activeMonth && eventDragAllowed(event)}
+                onDragStart={(dragEvent) => activeMonth && startNativeEventDrag(dragEvent, event)}
+                onDragEnd={clearEventDragState}
+                onTouchStart={() => {
+                  if (activeMonth) lastEventPointerTypeRef.current = 'touch'
+                }}
+                onPointerDown={(pointerEvent) => {
+                  if (!activeMonth) return
+                  lastEventPointerTypeRef.current = pointerEvent.pointerType
+                  beginPointerEventDrag(pointerEvent, event)
+                }}
+                onPointerMove={activeMonth ? movePointerEventDrag : undefined}
+                onPointerUp={activeMonth ? endPointerEventDrag : undefined}
+                onPointerCancel={clearEventDragState}
+                onClick={(clickEvent) => {
+                  clickEvent.stopPropagation()
+                  if (!activeMonth || suppressEventClickRef.current) return
+                  if (shouldUseMobileEventListFlow()) {
+                    handleMonthDayClick(event.date)
+                    window.setTimeout(() => {
+                      lastEventPointerTypeRef.current = ''
+                    }, 0)
+                    return
+                  }
+                  lastEventPointerTypeRef.current = ''
+                  openEventDetail(event)
+                }}
+                tabIndex={activeMonth ? 0 : -1}
+              >
+                <span>{eventDisplayTitle(event)}</span>
+                {!event.allDay && <small>{event.startTime}</small>}
+              </button>
+            ))}
+            {hiddenDayEventCount > 0 && (
+              <span
+                className="more-pill"
+                role="button"
+                tabIndex={activeMonth ? 0 : -1}
+                onClick={(clickEvent) => {
+                  clickEvent.stopPropagation()
+                  if (!activeMonth) return
+                  setSelectedDate(date)
+                  setDayListDate(date)
+                }}
+                onKeyDown={(keyEvent) => {
+                  if (!activeMonth || (keyEvent.key !== 'Enter' && keyEvent.key !== ' ')) return
+                  keyEvent.preventDefault()
+                  keyEvent.stopPropagation()
+                  setSelectedDate(date)
+                  setDayListDate(date)
+                }}
+              >
+                +{hiddenDayEventCount}
+              </span>
+            )}
+          </span>
+        </button>
+      )
+    })
+  }
+
   function renderEventDetailPanel() {
     if (!selectedEvent) return null
     const calendar = visibleCalendarMap.get(eventDisplayCalendarId(selectedEvent))
@@ -3081,6 +3387,27 @@ export default function CalendarPage() {
         <div className="event-detail-header">
           <strong>活動詳情</strong>
           <div>
+            {canManageEvent && (
+              <>
+                <button
+                  type="button"
+                  className="event-detail-upload-btn"
+                  onClick={() => detailAttachmentInputRef.current?.click()}
+                  disabled={detailAttachmentUploading}
+                  aria-label="上傳檔案或照片"
+                >
+                  <span>＋</span>
+                  <b>{detailAttachmentUploading ? '上傳中' : '上傳'}</b>
+                </button>
+                <input
+                  ref={detailAttachmentInputRef}
+                  className="event-detail-upload-input"
+                  type="file"
+                  multiple
+                  onChange={handleDetailAttachmentFileChange}
+                />
+              </>
+            )}
             {canManageEvent && (
               <div className="event-detail-action-wrap">
                 <button
@@ -3476,7 +3803,25 @@ export default function CalendarPage() {
             <section className="title-icon-settings-section">
               <strong>可使用 icon</strong>
               {titleIconDraft.map((item, index) => (
-                <div className="title-icon-setting-row" key={index}>
+                <div
+                  className="title-icon-setting-row"
+                  key={`${item.icon}-${item.label}-${index}`}
+                  onDragOver={(event) => moveTitleIconDragOver(event, index)}
+                  onDrop={(event) => {
+                    event.preventDefault()
+                    endTitleIconDrag()
+                  }}
+                >
+                  <button
+                    type="button"
+                    className="title-icon-drag-handle"
+                    draggable
+                    onDragStart={(event) => startTitleIconDrag(event, index)}
+                    onDragEnd={endTitleIconDrag}
+                    aria-label={`拖移 ${item.label || item.icon || 'icon'} 調整順序`}
+                  >
+                    ⋮⋮
+                  </button>
                   <input
                     className="title-icon-symbol-input"
                     value={item.icon}
@@ -3750,97 +4095,20 @@ export default function CalendarPage() {
             <div className="weekday-grid">
               {WEEKDAYS.map((day) => <div key={day}>{day}</div>)}
             </div>
-            {viewMode === 'month' ? <div
-              className={`month-grid calendar-swipe-track ${calendarSwipeAnimating ? 'swipe-animating' : ''}`}
-              ref={monthGridRef}
-              style={{ transform: `translate3d(${calendarSwipeOffset}px, 0, 0)` }}
-            >
-              {monthDays.map((day) => {
-                const date = day.format('YYYY-MM-DD')
-                const dayEvents = eventsByDate.get(date) ?? []
-                const visibleDayEventCount = dayEvents.length > monthDayEventRowLimit ? monthDayEventRowLimit - 1 : monthDayEventRowLimit
-                const visibleDayEvents = dayEvents.slice(0, visibleDayEventCount)
-                const hiddenDayEventCount = dayEvents.length - visibleDayEventCount
-                const selected = selectedDate === date
-                const today = dayjs().format('YYYY-MM-DD') === date
-                return (
-                  <button
-                    className={`day-cell ${selected ? 'selected' : ''} ${day.month() !== month.month() ? 'muted' : ''} ${dragOverDate === date ? 'drag-over' : ''}`}
-                    key={date}
-                    data-calendar-date={date}
-                    onClick={() => handleMonthDayClick(date)}
-                    onDoubleClick={() => canCreateEvent && openAddEvent(date)}
-                    onDragOver={(dragEvent) => {
-                      dragEvent.preventDefault()
-                      setDragOverDate(date)
-                    }}
-                    onDragLeave={() => setDragOverDate((current) => current === date ? null : current)}
-                    onDrop={(dragEvent) => dropEventOnDate(dragEvent, date)}
-                  >
-                    <span className={`day-number ${today ? 'today' : ''}`}>{day.date()}</span>
-                    <span className="day-events">
-                      {visibleDayEvents.map((event) => (
-                        <button
-                          className={`event-pill ${event.allDay ? 'all-day' : 'timed'} ${selectedEventId === event.id ? 'active' : ''}`}
-                          style={{ '--event-color': eventCalendarColor(event) } as CSSProperties}
-                          key={event.id}
-                          draggable={eventDragAllowed(event)}
-                          onDragStart={(dragEvent) => startNativeEventDrag(dragEvent, event)}
-                          onDragEnd={clearEventDragState}
-                          onTouchStart={() => {
-                            lastEventPointerTypeRef.current = 'touch'
-                          }}
-                          onPointerDown={(pointerEvent) => {
-                            lastEventPointerTypeRef.current = pointerEvent.pointerType
-                            beginPointerEventDrag(pointerEvent, event)
-                          }}
-                          onPointerMove={movePointerEventDrag}
-                          onPointerUp={endPointerEventDrag}
-                          onPointerCancel={clearEventDragState}
-                          onClick={(clickEvent) => {
-                            clickEvent.stopPropagation()
-                            if (suppressEventClickRef.current) return
-                            if (shouldUseMobileEventListFlow()) {
-                              handleMonthDayClick(event.date)
-                              window.setTimeout(() => {
-                                lastEventPointerTypeRef.current = ''
-                              }, 0)
-                              return
-                            }
-                            lastEventPointerTypeRef.current = ''
-                            openEventDetail(event)
-                          }}
-                        >
-                          <span>{eventDisplayTitle(event)}</span>
-                          {!event.allDay && <small>{event.startTime}</small>}
-                        </button>
-                      ))}
-                      {hiddenDayEventCount > 0 && (
-                        <span
-                          className="more-pill"
-                          role="button"
-                          tabIndex={0}
-                          onClick={(clickEvent) => {
-                            clickEvent.stopPropagation()
-                            setSelectedDate(date)
-                            setDayListDate(date)
-                          }}
-                          onKeyDown={(keyEvent) => {
-                            if (keyEvent.key !== 'Enter' && keyEvent.key !== ' ') return
-                            keyEvent.preventDefault()
-                            keyEvent.stopPropagation()
-                            setSelectedDate(date)
-                            setDayListDate(date)
-                          }}
-                        >
-                          +{hiddenDayEventCount}
-                        </span>
-                      )}
-                    </span>
-                  </button>
-                )
-              })}
-            </div> : <div className="week-grid">
+            {viewMode === 'month' ? (
+              <div className="month-swipe-viewport" ref={monthGridRef}>
+                <div
+                  className={`month-swipe-track calendar-swipe-track ${calendarSwipeAnimating ? 'swipe-animating' : ''}`}
+                  style={{ transform: `translate3d(calc(-100% + ${calendarSwipeOffset}px), 0, 0)` }}
+                >
+                  {swipeMonthSets.map((monthSet, index) => (
+                    <div className="month-grid month-swipe-month" key={monthSet.key}>
+                      {renderMonthGridDays(monthSet.days, monthSet.displayMonth, index === 1)}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : <div className="week-grid">
               {weekDays.map((day) => {
                 const date = day.format('YYYY-MM-DD')
                 const dayEvents = eventsByDate.get(date) ?? []
@@ -4028,10 +4296,10 @@ export default function CalendarPage() {
         <div className="modal-overlay">
           <div className="modal event-editor-modal" style={{ '--event-color': eventEditorColor } as CSSProperties}>
             <div className="event-editor-header">
-              <button className="text-btn" onClick={() => setShowEventModal(false)}>取消</button>
+              <button className="text-btn" onClick={closeEventModal}>取消</button>
               <strong>{editingEventId ? '編輯活動' : '新增活動'}</strong>
               <button className="text-btn save" onClick={saveEvent} disabled={saving}>{saving ? '儲存中' : '儲存'}</button>
-              <button className="close-btn" onClick={() => setShowEventModal(false)}>×</button>
+              <button className="close-btn" onClick={closeEventModal}>×</button>
             </div>
             <div className="event-editor-body">
               <div className="event-title-row">
@@ -4086,8 +4354,7 @@ export default function CalendarPage() {
                         const nextDate = event.target.value
                         setEventForm((form) => ({
                           ...form,
-                          date: nextDate,
-                          endDate: dayjs(form.endDate).isBefore(dayjs(nextDate), 'day') ? nextDate : form.endDate
+                          ...shiftEventEndByStartChange(form, nextDate, form.startTime)
                         }))
                       }}
                     />
@@ -4095,7 +4362,7 @@ export default function CalendarPage() {
                   {!eventForm.allDay && (
                     <label className="time-input-wrap compact">
                       <TimeInputIcon name="clock" />
-                      <input type="time" value={eventForm.startTime} onClick={(event) => openInputPicker(event.currentTarget)} onChange={(event) => setEventForm((form) => ({ ...form, startTime: event.target.value }))} />
+                      <input type="time" value={eventForm.startTime} onClick={(event) => openInputPicker(event.currentTarget)} onChange={(event) => setEventForm((form) => ({ ...form, ...shiftEventEndByStartChange(form, form.date, event.target.value) }))} />
                     </label>
                   )}
                 </div>
@@ -4353,10 +4620,10 @@ export default function CalendarPage() {
                   <EventRowIcon name="paperclip" />
                   <div>
                     <label className="attachment-picker">
-                      <input type="file" multiple onChange={(event) => setAttachmentFiles(Array.from(event.target.files ?? []))} />
+                      <input type="file" multiple onChange={handleAttachmentFileChange} />
                       上傳檔案
                     </label>
-                    {[...eventForm.attachments.map((file) => file.name), ...attachmentFiles.map((file) => file.name)].length > 0 && (
+                    {[...eventForm.attachments.map((file) => file.name), ...attachmentUploads.map((file) => file.name)].length > 0 && (
                       <div className="attachment-list">
                         {eventForm.attachments.map((file) => (
                           <span key={file.path || file.url}>
@@ -4364,10 +4631,11 @@ export default function CalendarPage() {
                             <button type="button" aria-label={`刪除 ${file.name}`} onClick={() => removeExistingAttachment(file)}>×</button>
                           </span>
                         ))}
-                        {attachmentFiles.map((file, index) => (
-                          <span key={`${file.name}-${file.size}-${index}`}>
+                        {attachmentUploads.map((file) => (
+                          <span key={file.id} className={`attachment-upload ${file.status}`}>
                             <span>{file.name}</span>
-                            <button type="button" aria-label={`刪除 ${file.name}`} onClick={() => removePendingAttachment(index)}>×</button>
+                            <small>{file.status === 'uploading' ? '上傳中' : file.status === 'failed' ? '失敗' : '完成'}</small>
+                            <button type="button" aria-label={`刪除 ${file.name}`} onClick={() => removeUploadedAttachment(file)}>×</button>
                           </span>
                         ))}
                       </div>
