@@ -1332,6 +1332,16 @@ export default function CalendarPage() {
     })
   ), [month])
 
+  const swipeWeekSets = useMemo(() => (
+    [-1, 0, 1].map((offset) => {
+      const start = dayjs(selectedDate).startOf('week').add(offset, 'week')
+      return {
+        key: start.format('YYYY-MM-DD'),
+        days: Array.from({ length: 7 }, (_, index) => start.add(index, 'day'))
+      }
+    })
+  ), [selectedDate])
+
   const weekDays = useMemo(() => {
     const start = dayjs(selectedDate).startOf('week')
     return Array.from({ length: 7 }, (_, index) => start.add(index, 'day'))
@@ -1981,17 +1991,17 @@ export default function CalendarPage() {
     setSelectedDate(nextMonth.startOf('month').format('YYYY-MM-DD'))
   }
 
-  function canSwipeMonthWithTouch() {
+  function canSwipeCalendarWithTouch() {
     const touchDrag = dayListTouchDragRef.current
     const draggingEvent = Boolean(touchDrag?.dragging)
-    return viewMode === 'month' &&
+    return (viewMode === 'month' || viewMode === 'week') &&
       !showEventModal &&
       !selectedEventId &&
       (!dayListDate || draggingEvent)
   }
 
   function handleCalendarTouchStart(event: ReactTouchEvent<HTMLElement>) {
-    if (!canSwipeMonthWithTouch()) return
+    if (!canSwipeCalendarWithTouch()) return
     const touch = event.changedTouches[0] ?? event.touches[0]
     if (!touch) return
     setCalendarSwipeAnimating(false)
@@ -2000,7 +2010,7 @@ export default function CalendarPage() {
 
   function handleCalendarTouchMove(event: ReactTouchEvent<HTMLElement>) {
     const start = calendarTouchStartRef.current
-    if (!start || viewMode !== 'month') return
+    if (!start || (viewMode !== 'month' && viewMode !== 'week')) return
     const touch = Array.from(event.touches).find((item) => item.identifier === start.identifier)
     if (!touch) return
     const deltaX = touch.clientX - start.x
@@ -2034,9 +2044,9 @@ export default function CalendarPage() {
       return
     }
     const width = calendarSurfaceRef.current?.clientWidth ?? window.innerWidth
-    const shouldChangeMonth = Math.abs(deltaX) >= Math.min(120, width * 0.22) && Math.abs(deltaX) > Math.abs(deltaY) * 1.15
+    const shouldChangePeriod = Math.abs(deltaX) >= Math.min(120, width * 0.22) && Math.abs(deltaX) > Math.abs(deltaY) * 1.15
     setCalendarSwipeAnimating(true)
-    if (!shouldChangeMonth) {
+    if (!shouldChangePeriod) {
       setCalendarSwipeOffset(0)
       window.setTimeout(() => setCalendarSwipeAnimating(false), 210)
       return
@@ -3559,6 +3569,81 @@ export default function CalendarPage() {
     })
   }
 
+  function renderWeekGridDays(days: dayjs.Dayjs[], activeWeek: boolean) {
+    return days.map((day) => {
+      const date = day.format('YYYY-MM-DD')
+      const dayEvents = eventsByDate.get(date) ?? []
+      const selected = activeWeek && selectedDate === date
+      const today = dayjs().format('YYYY-MM-DD') === date
+      return (
+        <button
+          className={`week-day ${selected ? 'selected' : ''} ${activeWeek && dragOverDate === date ? 'drag-over' : ''}`}
+          key={date}
+          data-calendar-date={activeWeek ? date : undefined}
+          onClick={() => {
+            if (!activeWeek) return
+            setSelectedDate(date)
+            setMonth(day.startOf('month'))
+          }}
+          onDoubleClick={() => activeWeek && canCreateEvent && openAddEvent(date)}
+          onDragOver={(dragEvent) => {
+            if (!activeWeek) return
+            dragEvent.preventDefault()
+            setDragOverDate(date)
+          }}
+          onDragLeave={() => activeWeek && setDragOverDate((current) => current === date ? null : current)}
+          onDrop={(dragEvent) => activeWeek && dropEventOnDate(dragEvent, date)}
+          tabIndex={activeWeek ? 0 : -1}
+          aria-hidden={!activeWeek}
+        >
+          <span className={`week-date ${today ? 'today' : ''}`}>{day.format('M/D')}</span>
+          <strong>星期{WEEKDAYS[day.day()]}</strong>
+          <span className="week-events">
+            {dayEvents.length === 0 ? <small>沒有工作</small> : dayEvents.map((event) => (
+              <button
+                className={`week-event ${event.allDay ? 'all-day' : 'timed'} ${event.done ? 'done' : ''} ${selectedEventId === event.id ? 'active' : ''}`}
+                style={{ '--event-color': eventCalendarColor(event) } as CSSProperties}
+                key={event.id}
+                draggable={activeWeek && eventDragAllowed(event)}
+                onDragStart={(dragEvent) => activeWeek && startNativeEventDrag(dragEvent, event)}
+                onDragEnd={clearEventDragState}
+                onTouchStart={() => {
+                  if (activeWeek) lastEventPointerTypeRef.current = 'touch'
+                }}
+                onPointerDown={(pointerEvent) => {
+                  if (!activeWeek) return
+                  lastEventPointerTypeRef.current = pointerEvent.pointerType
+                  beginPointerEventDrag(pointerEvent, event)
+                }}
+                onPointerMove={activeWeek ? movePointerEventDrag : undefined}
+                onPointerUp={activeWeek ? endPointerEventDrag : undefined}
+                onPointerCancel={clearEventDragState}
+                onClick={(clickEvent) => {
+                  clickEvent.stopPropagation()
+                  if (!activeWeek || suppressEventClickRef.current) return
+                  if (shouldUseMobileEventListFlow()) {
+                    handleMonthDayClick(date)
+                    window.setTimeout(() => {
+                      lastEventPointerTypeRef.current = ''
+                    }, 0)
+                    return
+                  }
+                  lastEventPointerTypeRef.current = ''
+                  openEventDetail(event)
+                }}
+                tabIndex={activeWeek ? 0 : -1}
+              >
+                <i />
+                <span>{event.allDay ? '整天' : event.startTime}</span>
+                <b>{eventDisplayTitle(event)}</b>
+              </button>
+            ))}
+          </span>
+        </button>
+      )
+    })
+  }
+
   function renderEventDetailPanel() {
     if (!selectedEvent) return null
     const calendar = visibleCalendarMap.get(eventDisplayCalendarId(selectedEvent))
@@ -4350,71 +4435,20 @@ export default function CalendarPage() {
                   ))}
                 </div>
               </div>
-            ) : <div className="week-grid">
-              {weekDays.map((day) => {
-                const date = day.format('YYYY-MM-DD')
-                const dayEvents = eventsByDate.get(date) ?? []
-                const selected = selectedDate === date
-                const today = dayjs().format('YYYY-MM-DD') === date
-                return (
-                  <button
-                    className={`week-day ${selected ? 'selected' : ''} ${dragOverDate === date ? 'drag-over' : ''}`}
-                    key={date}
-                    data-calendar-date={date}
-                    onClick={() => { setSelectedDate(date); setMonth(day.startOf('month')) }}
-                    onDoubleClick={() => canCreateEvent && openAddEvent(date)}
-                    onDragOver={(dragEvent) => {
-                      dragEvent.preventDefault()
-                      setDragOverDate(date)
-                    }}
-                    onDragLeave={() => setDragOverDate((current) => current === date ? null : current)}
-                    onDrop={(dragEvent) => dropEventOnDate(dragEvent, date)}
-                  >
-                    <span className={`week-date ${today ? 'today' : ''}`}>{day.format('M/D')}</span>
-                    <strong>星期{WEEKDAYS[day.day()]}</strong>
-                    <span className="week-events">
-                      {dayEvents.length === 0 ? <small>沒有工作</small> : dayEvents.map((event) => (
-                        <button
-                          className={`week-event ${event.allDay ? 'all-day' : 'timed'} ${event.done ? 'done' : ''} ${selectedEventId === event.id ? 'active' : ''}`}
-                          style={{ '--event-color': eventCalendarColor(event) } as CSSProperties}
-                          key={event.id}
-                          draggable={eventDragAllowed(event)}
-                          onDragStart={(dragEvent) => startNativeEventDrag(dragEvent, event)}
-                          onDragEnd={clearEventDragState}
-                          onTouchStart={() => {
-                            lastEventPointerTypeRef.current = 'touch'
-                          }}
-                          onPointerDown={(pointerEvent) => {
-                            lastEventPointerTypeRef.current = pointerEvent.pointerType
-                            beginPointerEventDrag(pointerEvent, event)
-                          }}
-                          onPointerMove={movePointerEventDrag}
-                          onPointerUp={endPointerEventDrag}
-                          onPointerCancel={clearEventDragState}
-                          onClick={(clickEvent) => {
-                            clickEvent.stopPropagation()
-                            if (suppressEventClickRef.current) return
-                            if (shouldUseMobileEventListFlow()) {
-                              handleMonthDayClick(date)
-                              window.setTimeout(() => {
-                                lastEventPointerTypeRef.current = ''
-                              }, 0)
-                              return
-                            }
-                            lastEventPointerTypeRef.current = ''
-                            openEventDetail(event)
-                          }}
-                        >
-                          <i />
-                          <span>{event.allDay ? '整天' : event.startTime}</span>
-                          <b>{eventDisplayTitle(event)}</b>
-                        </button>
-                      ))}
-                    </span>
-                  </button>
-                )
-              })}
-            </div>}
+            ) : (
+              <div className="week-swipe-viewport">
+                <div
+                  className={`week-swipe-track calendar-swipe-track ${calendarSwipeAnimating ? 'swipe-animating' : ''}`}
+                  style={{ transform: `translate3d(calc(-100% + ${calendarSwipeOffset}px), 0, 0)` }}
+                >
+                  {swipeWeekSets.map((weekSet, index) => (
+                    <div className="week-grid week-swipe-week" key={weekSet.key}>
+                      {renderWeekGridDays(weekSet.days, index === 1)}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             </>
           )}
         </section>

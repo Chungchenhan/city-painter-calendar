@@ -376,20 +376,23 @@ textarea {
   grid-auto-rows: minmax(0, 1fr);
 }
 
-.month-swipe-viewport {
+.month-swipe-viewport,
+.week-swipe-viewport {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
 }
 
-.month-swipe-track {
+.month-swipe-track,
+.week-swipe-track {
   width: 100%;
   height: 100%;
   display: flex;
   min-width: 0;
 }
 
-.month-swipe-month {
+.month-swipe-month,
+.week-swipe-week {
   flex: 0 0 100%;
   width: 100%;
 }
@@ -4405,6 +4408,10 @@ p {
     border-left-width: 4px;
     border-radius: 7px;
     padding: 6px;
+  }
+
+  .week-event i {
+    display: none;
   }
 
   .week-event b {
