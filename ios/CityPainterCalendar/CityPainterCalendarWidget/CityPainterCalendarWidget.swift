@@ -82,14 +82,18 @@ struct CityPainterCalendarWidgetEntryView: View {
 struct DayCell: View {
     let day: WidgetDay
 
+    private var numberColor: Color {
+        if day.isToday { return .white }
+        return day.inMonth ? .primary : .secondary
+    }
+
     var body: some View {
         VStack(spacing: 2) {
             Text("\(day.day)")
                 .font(.caption2.weight(day.isToday ? .bold : .regular))
-                .foregroundStyle(day.inMonth ? .primary : .tertiary)
                 .frame(width: 20, height: 16)
                 .background(day.isToday ? Color.black : Color.clear)
-                .foregroundStyle(day.isToday ? .white : (day.inMonth ? .primary : .tertiary))
+                .foregroundStyle(numberColor)
                 .clipShape(Capsule())
 
             VStack(spacing: 1) {
