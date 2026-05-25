@@ -4,6 +4,7 @@
 
 :root {
   --app-visual-viewport-height: 100dvh;
+  --app-visual-viewport-offset-top: 0px;
   --app-keyboard-inset: 0px;
 }
 
@@ -2407,7 +2408,10 @@ p {
 
 .modal-overlay {
   position: fixed;
-  inset: 0;
+  top: var(--app-visual-viewport-offset-top);
+  right: 0;
+  bottom: auto;
+  left: 0;
   z-index: 60;
   height: var(--app-visual-viewport-height);
   display: flex;

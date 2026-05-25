@@ -1,18 +1,24 @@
 let updateFrame = 0
 let lastHeight = ''
+let lastOffsetTop = ''
 let lastKeyboardInset = ''
 
 function applyVisualViewportVars() {
   const viewport = window.visualViewport
   const height = Math.round(viewport?.height ?? window.innerHeight)
-  const offsetTop = viewport?.offsetTop ?? 0
+  const offsetTop = Math.round(viewport?.offsetTop ?? 0)
   const keyboardInset = Math.max(0, Math.round(window.innerHeight - height - offsetTop))
   const heightValue = `${height}px`
+  const offsetTopValue = `${offsetTop}px`
   const keyboardInsetValue = `${keyboardInset}px`
 
   if (heightValue !== lastHeight) {
     document.documentElement.style.setProperty('--app-visual-viewport-height', heightValue)
     lastHeight = heightValue
+  }
+  if (offsetTopValue !== lastOffsetTop) {
+    document.documentElement.style.setProperty('--app-visual-viewport-offset-top', offsetTopValue)
+    lastOffsetTop = offsetTopValue
   }
   if (keyboardInsetValue !== lastKeyboardInset) {
     document.documentElement.style.setProperty('--app-keyboard-inset', keyboardInsetValue)
