@@ -1338,23 +1338,22 @@ export default function CalendarPage() {
   const loading = calendarsLoading || eventsLoading
 
   useEffect(() => {
-    function switchMobileLandscapeToWeek() {
+    function syncMobileOrientationView() {
       const coarsePointer = window.matchMedia?.('(hover: none), (pointer: coarse)').matches ?? false
       const compactDevice = Math.min(window.innerWidth, window.innerHeight) <= 760
       const landscape = window.innerWidth > window.innerHeight
-      if (coarsePointer && compactDevice && landscape) {
-        setViewMode('week')
-      }
+      if (!coarsePointer || !compactDevice) return
+      setViewMode(landscape ? 'week' : 'month')
     }
 
-    switchMobileLandscapeToWeek()
-    window.addEventListener('resize', switchMobileLandscapeToWeek)
-    window.addEventListener('orientationchange', switchMobileLandscapeToWeek)
-    window.visualViewport?.addEventListener('resize', switchMobileLandscapeToWeek)
+    syncMobileOrientationView()
+    window.addEventListener('resize', syncMobileOrientationView)
+    window.addEventListener('orientationchange', syncMobileOrientationView)
+    window.visualViewport?.addEventListener('resize', syncMobileOrientationView)
     return () => {
-      window.removeEventListener('resize', switchMobileLandscapeToWeek)
-      window.removeEventListener('orientationchange', switchMobileLandscapeToWeek)
-      window.visualViewport?.removeEventListener('resize', switchMobileLandscapeToWeek)
+      window.removeEventListener('resize', syncMobileOrientationView)
+      window.removeEventListener('orientationchange', syncMobileOrientationView)
+      window.visualViewport?.removeEventListener('resize', syncMobileOrientationView)
     }
   }, [])
 
