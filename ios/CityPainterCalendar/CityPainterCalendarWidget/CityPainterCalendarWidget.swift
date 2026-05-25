@@ -18,7 +18,7 @@ struct CalendarProvider: TimelineProvider {
     func getTimeline(in context: Context, completion: @escaping (Timeline<CalendarEntry>) -> Void) {
         Task {
             let month = await fetchWidgetMonth() ?? .placeholder
-            let nextRefresh = Calendar.current.date(byAdding: .minute, value: 30, to: Date()) ?? Date().addingTimeInterval(1800)
+            let nextRefresh = Calendar.current.date(byAdding: .minute, value: 5, to: Date()) ?? Date().addingTimeInterval(300)
             completion(Timeline(entries: [CalendarEntry(date: Date(), month: month)], policy: .after(nextRefresh)))
         }
     }

@@ -57,7 +57,7 @@ xcodegen generate
 6. 選擇大型 Widget。
 7. 點「加入小工具」。
 
-第一版 Widget 會顯示本月月檢視，約每 30 分鐘由 iOS 決定是否更新；iOS Widget 不能保證秒級即時刷新。
+第一版 Widget 會顯示本月月檢視，並每 5 分鐘向 iOS 請求更新一次；實際更新時間仍由 iOS WidgetKit 的系統預算決定，不能保證秒級即時刷新。打開 App 回到前景時，也會主動要求 Widget 重新整理。
 
 ## API
 
