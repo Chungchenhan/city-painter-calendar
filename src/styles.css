@@ -4385,6 +4385,11 @@ p {
     grid-template-rows: 36px minmax(0, 1fr);
   }
 
+  .week-grid {
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    min-height: 0;
+  }
+
   .tt-calendar-surface .weekday-grid div {
     height: 36px;
     font-size: 13px;
