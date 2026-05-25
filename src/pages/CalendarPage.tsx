@@ -1338,6 +1338,27 @@ export default function CalendarPage() {
   const loading = calendarsLoading || eventsLoading
 
   useEffect(() => {
+    function switchMobileLandscapeToMonth() {
+      const coarsePointer = window.matchMedia?.('(hover: none), (pointer: coarse)').matches ?? false
+      const compactDevice = Math.min(window.innerWidth, window.innerHeight) <= 760
+      const landscape = window.innerWidth > window.innerHeight
+      if (coarsePointer && compactDevice && landscape) {
+        setViewMode('month')
+      }
+    }
+
+    switchMobileLandscapeToMonth()
+    window.addEventListener('resize', switchMobileLandscapeToMonth)
+    window.addEventListener('orientationchange', switchMobileLandscapeToMonth)
+    window.visualViewport?.addEventListener('resize', switchMobileLandscapeToMonth)
+    return () => {
+      window.removeEventListener('resize', switchMobileLandscapeToMonth)
+      window.removeEventListener('orientationchange', switchMobileLandscapeToMonth)
+      window.visualViewport?.removeEventListener('resize', switchMobileLandscapeToMonth)
+    }
+  }, [])
+
+  useEffect(() => {
     if (viewMode !== 'month' || loading) return
     const grid = monthGridRef.current
     if (!grid) return
