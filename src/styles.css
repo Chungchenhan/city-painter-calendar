@@ -4421,7 +4421,10 @@ p {
 
   .week-event {
     min-height: 44px;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto;
     gap: 1px 6px;
+    align-items: start;
     border-left-width: 4px;
     border-radius: 7px;
     padding: 6px;
@@ -4432,6 +4435,8 @@ p {
   }
 
   .week-event b {
+    display: block;
     font-size: 12px;
+    line-height: 1.25;
   }
 }
