@@ -3478,7 +3478,7 @@ export default function CalendarPage() {
                   clickEvent.stopPropagation()
                   if (!activeMonth || suppressEventClickRef.current) return
                   if (shouldUseMobileEventListFlow()) {
-                    handleMonthDayClick(event.date)
+                    handleMonthDayClick(date)
                     window.setTimeout(() => {
                       lastEventPointerTypeRef.current = ''
                     }, 0)
@@ -4357,7 +4357,7 @@ export default function CalendarPage() {
                             clickEvent.stopPropagation()
                             if (suppressEventClickRef.current) return
                             if (shouldUseMobileEventListFlow()) {
-                              handleMonthDayClick(event.date)
+                              handleMonthDayClick(date)
                               window.setTimeout(() => {
                                 lastEventPointerTypeRef.current = ''
                               }, 0)
