@@ -3960,7 +3960,7 @@ export default function CalendarPage() {
               {titleIconDraft.map((item, index) => (
                 <div
                   className="title-icon-setting-row"
-                  key={`${item.icon}-${item.label}-${index}`}
+                  key={`title-icon-draft-${index}`}
                   onDragOver={(event) => moveTitleIconDragOver(event, index)}
                   onDrop={(event) => {
                     event.preventDefault()

@@ -8,6 +8,7 @@ import AppShell from './components/AppShell'
 import CalendarPage from './pages/CalendarPage'
 import LoginPage from './pages/LoginPage'
 import { setupAppUpdateChecks } from './lib/appUpdate'
+import { setupVisualViewportVars } from './lib/visualViewport'
 import './styles.css'
 
 const queryClient = new QueryClient()
@@ -17,6 +18,7 @@ if (import.meta.env.DEV && window.location.hostname === '127.0.0.1') {
 }
 
 setupAppUpdateChecks()
+setupVisualViewportVars()
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const { user, role, loading } = useAuth()

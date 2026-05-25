@@ -2,6 +2,12 @@
   box-sizing: border-box;
 }
 
+:root {
+  --app-visual-viewport-height: 100dvh;
+  --app-visual-viewport-offset-top: 0px;
+  --app-keyboard-inset: 0px;
+}
+
 html,
 body,
 #root {
@@ -43,13 +49,13 @@ textarea {
 }
 
 .app-shell {
-  height: 100dvh;
+  height: var(--app-visual-viewport-height);
   min-height: 0;
   overflow: hidden;
 }
 
 .timetree-page {
-  height: 100dvh;
+  height: var(--app-visual-viewport-height);
   min-height: 0;
   display: grid;
   grid-template-rows: 58px minmax(0, 1fr);
@@ -2380,8 +2386,12 @@ p {
 
 .modal-overlay {
   position: fixed;
-  inset: 0;
+  top: var(--app-visual-viewport-offset-top);
+  right: 0;
+  bottom: auto;
+  left: 0;
   z-index: 60;
+  height: var(--app-visual-viewport-height);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2391,7 +2401,7 @@ p {
 
 .modal {
   width: min(560px, 100%);
-  max-height: min(760px, calc(100vh - 36px));
+  max-height: min(760px, calc(var(--app-visual-viewport-height) - 36px));
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -4087,7 +4097,7 @@ p {
   }
 
   .modal {
-    max-height: calc(100vh - 16px);
+    max-height: calc(var(--app-visual-viewport-height) - 16px);
   }
 
   .modal-footer {
@@ -4104,7 +4114,7 @@ p {
 
   .event-editor-modal {
     width: 100%;
-    max-height: calc(100dvh - 16px);
+    max-height: calc(var(--app-visual-viewport-height) - 16px);
   }
 
   .event-editor-header {
