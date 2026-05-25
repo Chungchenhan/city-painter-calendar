@@ -4270,3 +4270,144 @@ p {
   }
 
 }
+
+@media (orientation: landscape) and (max-height: 520px) and (max-width: 980px) {
+  .timetree-page {
+    height: 100dvh;
+    grid-template-rows: 52px minmax(0, 1fr);
+  }
+
+  .timetree-topbar {
+    position: relative;
+    z-index: 20;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    gap: 8px;
+    padding: 6px calc(10px + env(safe-area-inset-right, 0px)) 6px calc(10px + env(safe-area-inset-left, 0px));
+  }
+
+  .topbar-left,
+  .topbar-right {
+    min-width: 0;
+    gap: 6px;
+  }
+
+  .tt-logo,
+  .tt-stepper {
+    display: none;
+  }
+
+  .tt-today {
+    min-width: 44px;
+    height: 38px;
+    min-height: 38px;
+    padding: 0 8px;
+    font-size: 13px;
+  }
+
+  .month-title-button {
+    min-width: 0;
+    max-width: 150px;
+    overflow: hidden;
+    font-size: 17px;
+    line-height: 38px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .tt-view-switch {
+    width: 142px;
+    height: 38px;
+  }
+
+  .tt-view-switch button {
+    height: 32px;
+    min-height: 32px;
+  }
+
+  .topbar-right {
+    justify-content: flex-end;
+  }
+
+  .tt-icon-button,
+  .tt-avatar {
+    width: 38px;
+    min-width: 38px;
+    height: 38px;
+    min-height: 38px;
+  }
+
+  .timetree-body {
+    grid-template-columns: calc(52px + env(safe-area-inset-left, 0px)) minmax(0, 1fr);
+    overflow: hidden;
+    padding-right: env(safe-area-inset-right, 0px);
+  }
+
+  .tt-left-rail {
+    gap: 8px;
+    overflow: hidden auto;
+    padding: 8px 6px 8px calc(6px + env(safe-area-inset-left, 0px));
+  }
+
+  .rail-button,
+  .rail-calendar {
+    width: 36px;
+    min-width: 36px;
+    height: 36px;
+    min-height: 36px;
+  }
+
+  .rail-calendars {
+    gap: 8px;
+    margin-top: 4px;
+  }
+
+  .tt-calendar-surface {
+    grid-template-rows: 36px minmax(0, 1fr);
+  }
+
+  .tt-calendar-surface .weekday-grid div {
+    height: 36px;
+    font-size: 13px;
+  }
+
+  .week-day {
+    gap: 5px;
+    padding: 8px 7px;
+  }
+
+  .week-date {
+    width: auto;
+    height: auto;
+    justify-content: flex-start;
+    border-radius: 0;
+    font-size: 18px;
+    line-height: 1.15;
+  }
+
+  .week-date.today {
+    width: 34px;
+    height: 34px;
+    justify-content: center;
+    border-radius: 50%;
+  }
+
+  .week-day > strong {
+    font-size: 12px;
+  }
+
+  .week-events {
+    gap: 6px;
+  }
+
+  .week-event {
+    min-height: 44px;
+    gap: 1px 6px;
+    border-left-width: 4px;
+    border-radius: 7px;
+    padding: 6px;
+  }
+
+  .week-event b {
+    font-size: 12px;
+  }
+}
