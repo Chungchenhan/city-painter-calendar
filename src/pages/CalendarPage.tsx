@@ -374,6 +374,10 @@ function isHrReadonlyEvent(event: CalendarEvent) {
   return event.source === 'hrLeaveRequest' || event.source === 'hrHoliday' || event.source === 'hrTyphoonHoliday' || event.id.startsWith('hrLeaveRequest_') || event.id.startsWith('hrHoliday_') || event.id.startsWith('hrTyphoonHoliday_')
 }
 
+function isHrLeaveRequestEvent(event: CalendarEvent) {
+  return event.source === 'hrLeaveRequest' || event.id.startsWith('hrLeaveRequest_')
+}
+
 function isHrHolidayEvent(event: CalendarEvent) {
   return event.source === 'hrHoliday' || event.source === 'hrTyphoonHoliday' || event.id.startsWith('hrHoliday_') || event.id.startsWith('hrTyphoonHoliday_')
 }
@@ -772,6 +776,7 @@ export default function CalendarPage() {
   const currentEmployee = employees.find((emp) => emp.id === employeeId)
   const currentEmployeeDepartmentName = currentEmployee?.departmentName || departments.find((department) => department.id === currentEmployee?.departmentId)?.name || ''
   const canManageCalendarColors = currentEmployeeDepartmentName === '管理部'
+  const canViewHrLeaveNote = isAdmin || currentEmployeeDepartmentName === '管理部'
   const currentShift = shifts.find((shift) => (
     Boolean(currentEmployee?.shiftId && shift.id === currentEmployee.shiftId) ||
     Boolean(currentEmployee?.shiftName && shift.name === currentEmployee.shiftName)
@@ -1506,6 +1511,11 @@ export default function CalendarPage() {
     const firstAssigneeId = event.assigneeIds?.[0]
     if (firstAssigneeId) return employeeName(firstAssigneeId).slice(0, 1)
     return (eventCalendarName(event) || '行').slice(0, 1)
+  }
+
+  function eventListSecondaryText(event: CalendarEvent) {
+    const note = isHrLeaveRequestEvent(event) && !canViewHrLeaveNote ? '' : event.note
+    return note || event.location || ''
   }
 
   function eventAllowedForViewer(event: CalendarEvent) {
@@ -3558,6 +3568,7 @@ export default function CalendarPage() {
   function renderEventSummary(event: CalendarEvent, options: { enableTouchDrag?: boolean } = {}) {
     const rangeText = eventEndDate(event) === event.date ? event.date : `${event.date} - ${eventEndDate(event)}`
     const isTimeline = options.enableTouchDrag
+    const secondaryText = eventListSecondaryText(event)
     return (
       <button
         className={`${isTimeline ? 'day-list-event' : 'panel-event'} ${event.done ? 'done' : ''}`}
@@ -3585,7 +3596,7 @@ export default function CalendarPage() {
             </span>
             <span className="day-list-content">
               <strong>{eventDisplayTitle(event)}</strong>
-              {(event.note || event.location) && <small>{event.note || event.location}</small>}
+              {secondaryText && <small>{secondaryText}</small>}
             </span>
             <span className="day-list-owner">{eventOwnerLabel(event)}</span>
           </>
@@ -3944,7 +3955,7 @@ export default function CalendarPage() {
             </div>
           )}
 
-          {selectedEvent.note && !isHrReadonlyEvent(selectedEvent) && (
+          {selectedEvent.note && (!isHrLeaveRequestEvent(selectedEvent) || canViewHrLeaveNote) && (
             <div className="event-detail-note">
               <strong>備註</strong>
               <p>{selectedEvent.note}</p>

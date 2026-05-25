@@ -3878,11 +3878,20 @@ p {
 
   .tt-calendar-surface .event-pill,
   .tt-calendar-surface .event-line {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
     height: 14px;
     border-radius: 2px;
-    padding: 0 2px;
+    padding: 0 1px;
     font-size: 9px;
     line-height: 14px;
+  }
+
+  .tt-calendar-surface .event-pill span,
+  .tt-calendar-surface .event-line span {
+    display: block;
+    width: 100%;
+    min-width: 0;
   }
 
   .tt-calendar-surface .event-pill small,
