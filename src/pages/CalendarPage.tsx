@@ -22,6 +22,8 @@ const ALL_EMPLOYEES_EXCEPT_SELF = 'allEmployeesExceptSelf'
 const ACTIVITY_NOTIFICATION_SEEN_KEY = 'cityPainterCalendarActivitySeenAt'
 const NOTIFIED_TAGS_KEY = 'cityPainterCalendarNotifiedTags'
 const NOTIFIED_TAG_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
+const TOUCH_DRAG_LONG_PRESS_MS = 360
+const TOUCH_DRAG_START_TOLERANCE = 48
 const DEFAULT_USER_NOTIFICATION_SETTINGS: UserNotificationSettings = {
   shiftStartEnabled: true,
   shiftEndEnabled: false,
@@ -781,6 +783,7 @@ export default function CalendarPage() {
     width: number
     height: number
     color: string
+    sourceElement: HTMLElement | null
   } | null>(null)
   const dayListSwipeRef = useRef<{
     identifier: number
@@ -3403,6 +3406,13 @@ export default function CalendarPage() {
   function resetDayListTouchDrag() {
     const drag = dayListTouchDragRef.current
     if (drag?.timer) window.clearTimeout(drag.timer)
+    if (drag?.sourceElement) {
+      try {
+        drag.sourceElement.releasePointerCapture(drag.pointerId)
+      } catch {
+        // pointer capture 可能已因元素卸載或系統取消而自動釋放。
+      }
+    }
     dayListTouchDragRef.current = null
     hideDragPreview()
     clearDayListTouchDragListeners()
@@ -3412,6 +3422,8 @@ export default function CalendarPage() {
     if (!isTouchDragPointer(event) || !eventDragAllowed(calendarEvent)) return
     event.stopPropagation()
     resetDayListTouchDrag()
+    const sourceElement = event.currentTarget as HTMLElement
+    sourceElement.setPointerCapture?.(event.pointerId)
     const pointerId = event.pointerId
     const startX = event.clientX
     const startY = event.clientY
@@ -3430,7 +3442,7 @@ export default function CalendarPage() {
         height: drag.height,
         color: drag.color
       })
-    }, 420)
+    }, TOUCH_DRAG_LONG_PRESS_MS)
 
     dayListTouchDragRef.current = {
       eventId: calendarEvent.id,
@@ -3445,7 +3457,8 @@ export default function CalendarPage() {
       title: eventDisplayTitle(calendarEvent),
       width: previewWidth,
       height: previewHeight,
-      color: eventCalendarColor(calendarEvent)
+      color: eventCalendarColor(calendarEvent),
+      sourceElement
     }
     document.addEventListener('pointermove', moveDayListTouchDrag)
     document.addEventListener('pointerup', endDayListTouchDrag)
@@ -3462,7 +3475,7 @@ export default function CalendarPage() {
     }
     if (!drag.active) {
       const distance = Math.abs(event.clientX - drag.startX) + Math.abs(event.clientY - drag.startY)
-      if (distance > 22) resetDayListTouchDrag()
+      if (distance > TOUCH_DRAG_START_TOLERANCE) resetDayListTouchDrag()
       return
     }
     if (!drag.dragging) {
