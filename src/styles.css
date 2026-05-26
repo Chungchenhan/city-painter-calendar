@@ -807,11 +807,6 @@ textarea {
   --day-list-swipe-offset: 0px;
 }
 
-.tt-day-list-panel.dragging-event {
-  pointer-events: none;
-  opacity: 0.18;
-}
-
 .search-department-filter {
   min-width: 0;
 }

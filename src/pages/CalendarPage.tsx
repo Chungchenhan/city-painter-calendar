@@ -17,6 +17,7 @@ const COLORS = ['#f6b100', '#1fb6a6', '#3c82f6', '#ef6262', '#8d6df2', '#31a24c'
 const DEPARTMENT_CALENDAR_PREFIX = 'department:'
 const HR_LEAVE_CALENDAR_NAME = 'HR 請假'
 const HR_HOLIDAY_COLOR = '#dc2626'
+const HR_PUNCH_CORRECTION_LEAVE_TYPE = '補打卡'
 const ALL_DEPARTMENTS_EXCEPT_OWN = 'allDepartmentsExceptOwn'
 const ALL_EMPLOYEES_EXCEPT_SELF = 'allEmployeesExceptSelf'
 const ACTIVITY_NOTIFICATION_SEEN_KEY = 'cityPainterCalendarActivitySeenAt'
@@ -388,6 +389,11 @@ function isHrLeaveRequestEvent(event: CalendarEvent) {
   return event.source === 'hrLeaveRequest' || event.id.startsWith('hrLeaveRequest_')
 }
 
+function isHrPunchCorrectionEvent(event: CalendarEvent) {
+  if (!isHrLeaveRequestEvent(event)) return false
+  return event.title?.includes(HR_PUNCH_CORRECTION_LEAVE_TYPE) || event.note?.includes(HR_PUNCH_CORRECTION_LEAVE_TYPE)
+}
+
 function isHrHolidayEvent(event: CalendarEvent) {
   return event.source === 'hrHoliday' || event.source === 'hrTyphoonHoliday' || event.id.startsWith('hrHoliday_') || event.id.startsWith('hrTyphoonHoliday_')
 }
@@ -749,7 +755,6 @@ export default function CalendarPage() {
   const [calendarSwipeOffset, setCalendarSwipeOffset] = useState(0)
   const [calendarSwipeAnimating, setCalendarSwipeAnimating] = useState(false)
   const [dayListSwipeOffset, setDayListSwipeOffset] = useState(0)
-  const [touchEventDragging, setTouchEventDragging] = useState(false)
   const [saving, setSaving] = useState(false)
   const [detailAttachmentUploading, setDetailAttachmentUploading] = useState(false)
   const noteTextareaRef = useRef<HTMLTextAreaElement | null>(null)
@@ -871,6 +876,7 @@ export default function CalendarPage() {
 
   const visibleSourceEvents = useMemo(() => {
     return events.filter((event) => {
+      if (isHrPunchCorrectionEvent(event)) return false
       if (!eventAllowedForViewer(event)) return false
       const eventCalendarIds = eventDisplayCalendarIds(event)
       const eventCalendars = eventCalendarIds.map((id) => visibleCalendarMap.get(id)).filter(Boolean) as DisplayCalendar[]
@@ -892,6 +898,7 @@ export default function CalendarPage() {
     events.forEach((event) => map.set(event.id, event))
     return Array.from(map.values())
       .filter((event) => {
+        if (isHrPunchCorrectionEvent(event)) return false
         if (!eventAllowedForViewer(event)) return false
         const eventCalendarIds = eventDisplayCalendarIds(event)
         const eventCalendars = eventCalendarIds.map((id) => visibleCalendarMap.get(id)).filter(Boolean) as DisplayCalendar[]
@@ -950,6 +957,7 @@ export default function CalendarPage() {
     const today = dayjs().format('YYYY-MM-DD')
     return events.some((event) => (
       isHrReadonlyEvent(event) &&
+      !isHrPunchCorrectionEvent(event) &&
       event.assigneeIds?.includes(employeeId) &&
       dateRangeBetween(event.date, eventEndDate(event)).includes(today)
     ))
@@ -3496,15 +3504,7 @@ export default function CalendarPage() {
   function resetDayListTouchDrag() {
     const drag = dayListTouchDragRef.current
     if (drag?.timer) window.clearTimeout(drag.timer)
-    if (drag?.sourceElement) {
-      try {
-        drag.sourceElement.releasePointerCapture(drag.pointerId)
-      } catch {
-        // pointer capture 可能已因元素卸載或系統取消而自動釋放。
-      }
-    }
     dayListTouchDragRef.current = null
-    setTouchEventDragging(false)
     hideDragPreview()
     clearDayListTouchDragListeners()
   }
@@ -3514,7 +3514,6 @@ export default function CalendarPage() {
     event.stopPropagation()
     resetDayListTouchDrag()
     const sourceElement = event.currentTarget as HTMLElement
-    sourceElement.setPointerCapture?.(event.pointerId)
     const pointerId = event.pointerId
     const startX = event.clientX
     const startY = event.clientY
@@ -3533,6 +3532,9 @@ export default function CalendarPage() {
         height: drag.height,
         color: drag.color
       })
+      setDayListDate(null)
+      setDayListSwipeOffset(0)
+      dayListSwipeRef.current = null
     }, TOUCH_DRAG_LONG_PRESS_MS)
 
     dayListTouchDragRef.current = {
@@ -3576,7 +3578,6 @@ export default function CalendarPage() {
       suppressEventClickRef.current = true
       setSelectedEventId(null)
       setDragActionMenu(null)
-      setTouchEventDragging(true)
     }
     event.preventDefault()
     setDragOverDateIfChanged(dragDateFromPoint(event.clientX, event.clientY) || null)
@@ -4171,7 +4172,7 @@ export default function CalendarPage() {
     const dayEvents = eventsByDate.get(dayListDate) ?? []
     return (
       <aside
-        className={`tt-floating-panel tt-day-list-panel${dayListSwipeOffset > 0 ? ' swiping' : ''}${touchEventDragging ? ' dragging-event' : ''}`}
+        className={`tt-floating-panel tt-day-list-panel${dayListSwipeOffset > 0 ? ' swiping' : ''}`}
         style={{ '--day-list-swipe-offset': `${dayListSwipeOffset}px` } as CSSProperties}
         onTouchStart={handleDayListSwipeStart}
         onTouchMove={handleDayListSwipeMove}

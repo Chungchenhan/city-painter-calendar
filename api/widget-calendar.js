@@ -8,6 +8,7 @@ const PROJECT_ID = 'city-painter-erp'
 const COLORS = ['#f6b100', '#1fb6a6', '#3c82f6', '#ef6262', '#8d6df2', '#31a24c', '#f57c35', '#667085']
 const DEPARTMENT_CALENDAR_PREFIX = 'department:'
 const REPEAT_VALUES = ['daily', 'weekly', 'weekdays', 'monthly', 'monthlyNthWeekday', 'monthlyDay', 'yearly', 'custom']
+const HR_PUNCH_CORRECTION_LEAVE_TYPE = '補打卡'
 
 function serviceAccountJson() {
   const source = process.env.FIREBASE_SERVICE_ACCOUNT_JSON ||
@@ -40,6 +41,13 @@ function departmentCalendarDocId(departmentId) {
 
 function eventEndDate(event) {
   return event.endDate || event.date
+}
+
+function isHrPunchCorrectionEvent(event) {
+  const isHrLeaveRequest = event.source === 'hrLeaveRequest' || `${event.id || ''}`.startsWith('hrLeaveRequest_')
+  if (!isHrLeaveRequest) return false
+  return `${event.title || ''}`.includes(HR_PUNCH_CORRECTION_LEAVE_TYPE) ||
+    `${event.note || ''}`.includes(HR_PUNCH_CORRECTION_LEAVE_TYPE)
 }
 
 function compareEvents(a, b) {
@@ -256,7 +264,11 @@ export default async function handler(req, res) {
       if (event.date <= endDate) map.set(doc.id, event)
     })
 
-    const expanded = expandRecurringEvents(Array.from(map.values()), startDate, endDate)
+    const expanded = expandRecurringEvents(
+      Array.from(map.values()).filter((event) => !isHrPunchCorrectionEvent(event)),
+      startDate,
+      endDate
+    )
     const days = Array.from({ length: 42 }, (_, index) => {
       const day = gridStart.add(index, 'day')
       const date = day.format('YYYY-MM-DD')
