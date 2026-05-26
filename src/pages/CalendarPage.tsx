@@ -759,6 +759,7 @@ export default function CalendarPage() {
   const [calendarSwipeOffset, setCalendarSwipeOffset] = useState(0)
   const [calendarSwipeAnimating, setCalendarSwipeAnimating] = useState(false)
   const [dayListSwipeOffset, setDayListSwipeOffset] = useState(0)
+  const [eventDetailSwipeOffset, setEventDetailSwipeOffset] = useState(0)
   const [eventEditorTouchLocked, setEventEditorTouchLocked] = useState(false)
   const [saving, setSaving] = useState(false)
   const [detailAttachmentUploading, setDetailAttachmentUploading] = useState(false)
@@ -800,6 +801,13 @@ export default function CalendarPage() {
     sourceElement: HTMLElement | null
   } | null>(null)
   const dayListSwipeRef = useRef<{
+    identifier: number
+    startX: number
+    startY: number
+    dragging: boolean
+    enabled: boolean
+  } | null>(null)
+  const eventDetailSwipeRef = useRef<{
     identifier: number
     startX: number
     startY: number
@@ -1240,6 +1248,12 @@ export default function CalendarPage() {
     dayListSwipeRef.current = null
     setDayListSwipeOffset(0)
   }, [dayListDate])
+
+  useEffect(() => {
+    if (selectedEventId) return
+    eventDetailSwipeRef.current = null
+    setEventDetailSwipeOffset(0)
+  }, [selectedEventId])
 
   useEffect(() => {
     if (!dayListDate) return
@@ -3819,6 +3833,55 @@ export default function CalendarPage() {
     }
   }
 
+  function handleEventDetailSwipeStart(event: ReactTouchEvent<HTMLElement>) {
+    if (!selectedEventId || event.touches.length !== 1) return
+    const touch = event.changedTouches[0] ?? event.touches[0]
+    if (!touch) return
+    const target = event.target
+    if (target instanceof Element && target.closest('button, input, select, textarea, a')) {
+      eventDetailSwipeRef.current = null
+      return
+    }
+    const body = target instanceof Element ? target.closest('.event-detail-body') as HTMLElement | null : null
+    eventDetailSwipeRef.current = {
+      identifier: touch.identifier,
+      startX: touch.clientX,
+      startY: touch.clientY,
+      dragging: false,
+      enabled: !body || body.scrollTop <= 0,
+    }
+  }
+
+  function handleEventDetailSwipeMove(event: ReactTouchEvent<HTMLElement>) {
+    const swipe = eventDetailSwipeRef.current
+    if (!swipe || !swipe.enabled) return
+    const touch = Array.from(event.changedTouches).find((item) => item.identifier === swipe.identifier)
+    if (!touch) return
+    const deltaX = touch.clientX - swipe.startX
+    const deltaY = touch.clientY - swipe.startY
+    if (!swipe.dragging) {
+      if (deltaY < 12 || Math.abs(deltaX) > deltaY) return
+      swipe.dragging = true
+    }
+    event.preventDefault()
+    setEventDetailSwipeOffset(Math.min(180, Math.max(0, deltaY)))
+  }
+
+  function handleEventDetailSwipeEnd(event: ReactTouchEvent<HTMLElement>) {
+    const swipe = eventDetailSwipeRef.current
+    if (!swipe) return
+    const touch = Array.from(event.changedTouches).find((item) => item.identifier === swipe.identifier)
+    const deltaY = touch ? touch.clientY - swipe.startY : eventDetailSwipeOffset
+    const shouldClose = swipe.dragging && deltaY > 72
+    eventDetailSwipeRef.current = null
+    setEventDetailSwipeOffset(0)
+    if (shouldClose) {
+      event.preventDefault()
+      setShowEventActionMenu(false)
+      setSelectedEventId(null)
+    }
+  }
+
   async function applyDragEventAction(action: 'move' | 'copy') {
     if (!dragActionMenu) return
     const sourceEvent = events.find((event) => event.id === dragActionMenu.eventId)
@@ -4121,7 +4184,17 @@ export default function CalendarPage() {
     const locationText = selectedEvent.location?.trim()
     const canManageEvent = canManageCalendarEvent(selectedEvent)
     return (
-      <aside className="event-detail-panel" style={{ '--event-color': eventCalendarColor(selectedEvent) } as CSSProperties}>
+      <aside
+        className={`event-detail-panel${eventDetailSwipeOffset > 0 ? ' swiping' : ''}`}
+        style={{
+          '--event-color': eventCalendarColor(selectedEvent),
+          '--event-detail-swipe-offset': `${eventDetailSwipeOffset}px`
+        } as CSSProperties}
+        onTouchStart={handleEventDetailSwipeStart}
+        onTouchMove={handleEventDetailSwipeMove}
+        onTouchEnd={handleEventDetailSwipeEnd}
+        onTouchCancel={handleEventDetailSwipeEnd}
+      >
         <div className="event-detail-header">
           <strong>活動詳情</strong>
           <div>
