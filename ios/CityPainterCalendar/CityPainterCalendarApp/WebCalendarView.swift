@@ -13,9 +13,12 @@ struct WebCalendarView: UIViewRepresentable {
 
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.uiDelegate = context.coordinator
-        webView.allowsBackForwardNavigationGestures = true
+        webView.allowsBackForwardNavigationGestures = false
+        webView.allowsLinkPreview = false
         webView.scrollView.contentInsetAdjustmentBehavior = .never
-        webView.load(URLRequest(url: WidgetConfig.appURL))
+        webView.scrollView.keyboardDismissMode = .interactive
+        webView.scrollView.bounces = false
+        webView.load(URLRequest(url: WidgetConfig.appURL, cachePolicy: .reloadIgnoringLocalCacheData))
         return webView
     }
 
