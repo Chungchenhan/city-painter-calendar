@@ -705,7 +705,6 @@ export default function CalendarPage() {
   const [lastSelectedCalendarId, setLastSelectedCalendarId] = useState('')
   const [showCalendarDrawer, setShowCalendarDrawer] = useState(false)
   const [showSearchPanel, setShowSearchPanel] = useState(false)
-  const { data: searchIndexEvents = [], isFetching: searchIndexFetching } = useCalendarSearchEvents(showSearchPanel)
   const [showNotificationsPanel, setShowNotificationsPanel] = useState(false)
   const [showAccountMenu, setShowAccountMenu] = useState(false)
   const [showStartupNotificationPrompt, setShowStartupNotificationPrompt] = useState(false)
@@ -719,6 +718,7 @@ export default function CalendarPage() {
   const [showTitleIconPicker, setShowTitleIconPicker] = useState(false)
   const [titleOverrideIconPickerIndex, setTitleOverrideIconPickerIndex] = useState<number | null>(null)
   const [showTitleSuggestions, setShowTitleSuggestions] = useState(false)
+  const { data: searchIndexEvents = [], isFetching: searchIndexFetching } = useCalendarSearchEvents(showSearchPanel || showTitleSuggestions)
   const [showRepeatPicker, setShowRepeatPicker] = useState(false)
   const [showRepeatCustomModal, setShowRepeatCustomModal] = useState(false)
   const [dayListDate, setDayListDate] = useState<string | null>(null)
@@ -2036,10 +2036,8 @@ export default function CalendarPage() {
   }, [cachedEventArchive, events])
   const titleSuggestionIndex = useMemo(() => (
     titleSuggestionEvents
-      .filter((event) => event.location?.trim() || event.url?.trim() || event.note?.trim() || event.todos?.length)
       .filter((event) => dayjs(event.date).isBefore(dayjs().add(1, 'day'), 'day'))
       .sort((a, b) => `${b.date} ${b.startTime}`.localeCompare(`${a.date} ${a.startTime}`))
-      .slice(0, 600)
       .map((event) => ({
         event,
         normalizedTitle: normalizeSearchText(eventDisplayTitle(event), titleIconOptions)
