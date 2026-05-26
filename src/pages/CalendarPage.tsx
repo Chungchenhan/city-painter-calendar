@@ -282,6 +282,10 @@ function googleMapsDirectionUrl(location: string) {
   return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(mapsDestinationQuery(location))}`
 }
 
+function googleMapsEmbedUrl(location: string) {
+  return `https://www.google.com/maps?q=${encodeURIComponent(mapsDestinationQuery(location))}&output=embed`
+}
+
 function compareDayEvents(a: CalendarEvent, b: CalendarEvent) {
   if (!!a.allDay !== !!b.allDay) return a.allDay ? -1 : 1
   const timeCompare = (a.startTime || '').localeCompare(b.startTime || '')
@@ -3306,6 +3310,29 @@ export default function CalendarPage() {
     }
   }
 
+  async function toggleDetailTodo(todoId: string, done: boolean) {
+    if (!selectedEvent || !canManageCalendarEvent(selectedEvent)) return
+    const sourceEvent = events.find((event) => event.id === recurrenceRootId(selectedEvent)) ?? selectedEvent
+    const nextTodos = (sourceEvent.todos ?? selectedEvent.todos ?? []).map((todo) => (
+      todo.id === todoId ? { ...todo, done } : todo
+    ))
+    const updatedAt = new Date().toISOString()
+    const nextEvent = { ...sourceEvent, todos: nextTodos, updatedAt }
+    optimisticallyPatchCalendarEvents([nextEvent])
+
+    try {
+      await updateDoc(doc(db, 'calendarEvents', sourceEvent.id), {
+        todos: nextTodos,
+        updatedAt
+      })
+      await syncCalendarEventViews(nextEvent)
+      await refreshCalendarData()
+    } catch {
+      alert('待辦清單更新失敗，請稍後再試')
+      await refreshCalendarData().catch(() => undefined)
+    }
+  }
+
   function syncEventAttachmentsInBackground(eventId: string, files: File[], removedFiles: EventAttachment[]) {
     if (!files.length && !removedFiles.length) return
 
@@ -4191,24 +4218,24 @@ export default function CalendarPage() {
             </div>
           </div>
 
-          <div className="event-detail-row">
-            <EventRowIcon name="calendar" />
-            <div>{calendarName}</div>
-          </div>
           {assignees.length > 0 && (
             <div className="event-detail-row">
               <EventRowIcon name="person" />
               <div>{assignees.join('、')}</div>
             </div>
           )}
-          <div className="event-detail-row">
-            <EventRowIcon name="bell" />
-            <div>{reminderLabel}</div>
-          </div>
-          <div className="event-detail-row">
-            <EventRowIcon name="repeat" />
-            <div>{eventRepeatLabel}</div>
-          </div>
+          {(selectedEvent.reminder ?? 'none') !== 'none' && (
+            <div className="event-detail-row">
+              <EventRowIcon name="bell" />
+              <div>{reminderLabel}</div>
+            </div>
+          )}
+          {selectedEvent.repeat && selectedEvent.repeat !== 'none' && (
+            <div className="event-detail-row">
+              <EventRowIcon name="repeat" />
+              <div>{eventRepeatLabel}</div>
+            </div>
+          )}
           {selectedEvent.url && (
             <a className="event-detail-link" href={selectedEvent.url} target="_blank" rel="noreferrer">
               <EventRowIcon name="link" />
@@ -4227,7 +4254,14 @@ export default function CalendarPage() {
               href={googleMapsDirectionUrl(locationText)}
               target="_blank"
               rel="noreferrer"
+              aria-label={`開啟 ${locationText} 的 Google 地圖導航`}
             >
+              <iframe
+                title={`${locationText} 地圖預覽`}
+                src={googleMapsEmbedUrl(locationText)}
+                loading="lazy"
+                referrerPolicy="no-referrer-when-downgrade"
+              />
               <div>
                 <strong>{locationText}</strong>
                 <small>開啟 Google 地圖導航</small>
@@ -4268,7 +4302,12 @@ export default function CalendarPage() {
               <strong>待辦清單</strong>
               {selectedEvent.todos.map((todo) => (
                 <label key={todo.id}>
-                  <input type="checkbox" checked={todo.done} readOnly />
+                  <input
+                    type="checkbox"
+                    checked={todo.done}
+                    disabled={!canManageEvent}
+                    onChange={(event) => toggleDetailTodo(todo.id, event.target.checked)}
+                  />
                   <span>{todo.text}</span>
                 </label>
               ))}
