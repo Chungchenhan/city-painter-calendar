@@ -749,6 +749,7 @@ export default function CalendarPage() {
   const [calendarSwipeOffset, setCalendarSwipeOffset] = useState(0)
   const [calendarSwipeAnimating, setCalendarSwipeAnimating] = useState(false)
   const [dayListSwipeOffset, setDayListSwipeOffset] = useState(0)
+  const [touchEventDragging, setTouchEventDragging] = useState(false)
   const [saving, setSaving] = useState(false)
   const [detailAttachmentUploading, setDetailAttachmentUploading] = useState(false)
   const noteTextareaRef = useRef<HTMLTextAreaElement | null>(null)
@@ -1506,6 +1507,31 @@ export default function CalendarPage() {
     const idSet = new Set(ids)
     updateLocalQueryCache<CalendarEvent[]>('calendarEventsArchive', (cached) => (
       (cached ?? []).filter((event) => !idSet.has(event.id) && !idSet.has(recurrenceRootId(event)))
+    ))
+  }
+
+  function sortCalendarEventsAscending(rows: CalendarEvent[]) {
+    return [...rows].sort((a, b) => `${a.date} ${a.startTime}`.localeCompare(`${b.date} ${b.startTime}`))
+  }
+
+  function patchCalendarEventRows(rows: CalendarEvent[] | undefined, patches: CalendarEvent[]) {
+    const map = new Map((rows ?? []).map((event) => [event.id, event]))
+    patches.forEach((event) => map.set(event.id, { ...(map.get(event.id) ?? {} as CalendarEvent), ...event }))
+    return sortCalendarEventsAscending(Array.from(map.values()))
+  }
+
+  function optimisticallyPatchCalendarEvents(patches: CalendarEvent[]) {
+    if (!patches.length) return
+    queryClient.setQueriesData<CalendarEvent[]>({ queryKey: ['calendarEvents'] }, (cached) => (
+      patchCalendarEventRows(cached, patches)
+    ))
+    queryClient.setQueriesData<CalendarEvent[]>({ queryKey: ['calendarEventsSearchIndex'] }, (cached) => (
+      cached ? patchCalendarEventRows(cached, patches) : cached
+    ))
+    updateLocalQueryCache<CalendarEvent[]>('calendarEventsArchive', (cached) => (
+      patchCalendarEventRows(cached, patches)
+        .sort((a, b) => `${b.date} ${b.startTime}`.localeCompare(`${a.date} ${a.startTime}`))
+        .slice(0, 2000)
     ))
   }
 
@@ -2806,19 +2832,21 @@ export default function CalendarPage() {
       return
     }
 
+    const removedAttachments = [...deletedAttachments]
+    const hasUploadingAttachments = attachmentUploads.some((item) => item.status === 'uploading')
+    if (hasUploadingAttachments) {
+      alert('附件仍在上傳中，請稍候再儲存')
+      return
+    }
+    const failedAttachment = attachmentUploads.find((item) => item.status === 'failed')
+    if (failedAttachment) {
+      alert(`附件「${failedAttachment.name}」上傳失敗，請刪除後重新選擇`)
+      return
+    }
+
     setSaving(true)
     try {
-      const removedAttachments = [...deletedAttachments]
-      const hasUploadingAttachments = attachmentUploads.some((item) => item.status === 'uploading')
-      if (hasUploadingAttachments) {
-        alert('附件仍在上傳中，請稍候再儲存')
-        return
-      }
-      const failedAttachment = attachmentUploads.find((item) => item.status === 'failed')
-      if (failedAttachment) {
-        alert(`附件「${failedAttachment.name}」上傳失敗，請刪除後重新選擇`)
-        return
-      }
+      const now = new Date().toISOString()
       const uploadedAttachments = attachmentUploads
         .map((item) => item.attachment)
         .filter(Boolean) as NonNullable<CalendarEvent['attachments']>
@@ -2856,19 +2884,24 @@ export default function CalendarPage() {
         location: eventForm.location.trim(),
         url: eventForm.url.trim(),
         attachments: [...eventForm.attachments, ...uploadedAttachments],
-        updatedAt: new Date().toISOString()
+        updatedAt: now
       }
 
       let savedEventId = editingEventId
-      let savedViewEvent: CalendarEvent | null = null
+      const savedViewEvents: CalendarEvent[] = []
+      const optimisticPatches: CalendarEvent[] = []
+      let backgroundSave: () => Promise<void> = async () => undefined
       if (editingEventId) {
         if (recurrenceEditMode?.scope === 'single' && editingEvent) {
           const sourceDate = recurrenceSourceDate(recurrenceEditMode.source)
-          await updateDoc(doc(db, 'calendarEvents', editingEventId), {
-            repeatExceptions: arrayUnion(sourceDate),
-            updatedAt: new Date().toISOString()
-          })
-          const created = await addDoc(collection(db, 'calendarEvents'), {
+          const createdRef = doc(collection(db, 'calendarEvents'))
+          const rootPatch: CalendarEvent = {
+            ...editingEvent,
+            repeatExceptions: Array.from(new Set([...(editingEvent.repeatExceptions ?? []), sourceDate])),
+            updatedAt: now
+          }
+          const createdEvent: CalendarEvent = {
+            id: createdRef.id,
             ...payload,
             repeat: 'none',
             repeatCustom: emptyEvent.repeatCustom,
@@ -2877,54 +2910,85 @@ export default function CalendarPage() {
             recurrenceSourceDate: sourceDate,
             done: false,
             createdBy: user?.uid ?? '',
-            createdAt: new Date().toISOString()
-          })
-          savedEventId = created.id
-          savedViewEvent = { id: created.id, ...payload, repeat: 'none', repeatCustom: emptyEvent.repeatCustom, recurrenceParentId: editingEventId, recurrenceOriginalDate: editingEvent.date, recurrenceSourceDate: sourceDate, done: false, createdBy: user?.uid ?? '', createdAt: new Date().toISOString() }
-          await writeActivityLog({
-            action: 'update',
-            eventId: created.id,
-            eventTitle: payload.title,
-            calendarId: payload.calendarId,
-            departmentId: payload.departmentId,
-            assigneeIds: payload.assigneeIds,
-            date: payload.date,
-            changes: eventChangeList(editingEvent, payload)
-          })
+            createdAt: now
+          }
+          savedEventId = createdRef.id
+          savedViewEvents.push(createdEvent)
+          optimisticPatches.push(rootPatch, createdEvent)
+          backgroundSave = async () => {
+            await updateDoc(doc(db, 'calendarEvents', editingEventId), {
+              repeatExceptions: arrayUnion(sourceDate),
+              updatedAt: now
+            })
+            const { id: _id, ...createdData } = createdEvent
+            await setDoc(createdRef, createdData)
+            await writeActivityLog({
+              action: 'update',
+              eventId: createdRef.id,
+              eventTitle: payload.title,
+              calendarId: payload.calendarId,
+              departmentId: payload.departmentId,
+              assigneeIds: payload.assigneeIds,
+              date: payload.date,
+              changes: eventChangeList(editingEvent, payload)
+            })
+          }
         } else if (recurrenceEditMode?.scope === 'future' && editingEvent && recurrenceSourceDate(recurrenceEditMode.source) !== editingEvent.date) {
           const sourceDate = recurrenceSourceDate(recurrenceEditMode.source)
-          await updateDoc(doc(db, 'calendarEvents', editingEventId), {
+          const nextRange = shiftedEventDateRange(payload, sourceDate)
+          const createdRef = doc(collection(db, 'calendarEvents'))
+          const rootPatch: CalendarEvent = {
+            ...editingEvent,
             repeatUntil: dayjs(sourceDate).subtract(1, 'day').format('YYYY-MM-DD'),
-            updatedAt: new Date().toISOString()
-          })
-          const created = await addDoc(collection(db, 'calendarEvents'), {
+            updatedAt: now
+          }
+          const createdEvent: CalendarEvent = {
+            id: createdRef.id,
             ...payload,
             date: sourceDate,
-            endDate: shiftedEventDateRange(payload, sourceDate).endDate,
+            endDate: nextRange.endDate,
             repeatExceptions: [],
             repeatUntil: '',
             done: false,
             createdBy: user?.uid ?? '',
-            createdAt: new Date().toISOString()
-          })
-          savedEventId = created.id
-          savedViewEvent = { id: created.id, ...payload, date: sourceDate, endDate: shiftedEventDateRange(payload, sourceDate).endDate, repeatExceptions: [], repeatUntil: '', done: false, createdBy: user?.uid ?? '', createdAt: new Date().toISOString() }
-          await writeActivityLog({
-            action: 'update',
-            eventId: created.id,
-            eventTitle: payload.title,
-            calendarId: payload.calendarId,
-            departmentId: payload.departmentId,
-            assigneeIds: payload.assigneeIds,
-            date: sourceDate,
-            changes: eventChangeList(editingEvent, payload)
-          })
+            createdAt: now
+          }
+          savedEventId = createdRef.id
+          savedViewEvents.push(createdEvent)
+          optimisticPatches.push(rootPatch, createdEvent)
+          backgroundSave = async () => {
+            await updateDoc(doc(db, 'calendarEvents', editingEventId), {
+              repeatUntil: rootPatch.repeatUntil,
+              updatedAt: now
+            })
+            const { id: _id, ...createdData } = createdEvent
+            await setDoc(createdRef, createdData)
+            await writeActivityLog({
+              action: 'update',
+              eventId: createdRef.id,
+              eventTitle: payload.title,
+              calendarId: payload.calendarId,
+              departmentId: payload.departmentId,
+              assigneeIds: payload.assigneeIds,
+              date: sourceDate,
+              changes: eventChangeList(editingEvent, payload)
+            })
+          }
         } else {
-          await updateDoc(doc(db, 'calendarEvents', editingEventId), payload)
-          if (editingEvent) savedViewEvent = { ...editingEvent, ...payload, id: editingEventId }
-          if (editingEvent) {
-            const changes = eventChangeList(editingEvent, payload)
-            if (changes.length) {
+          const updatedEvent: CalendarEvent = {
+            ...(editingEvent ?? {} as CalendarEvent),
+            ...payload,
+            id: editingEventId,
+            done: editingEvent?.done ?? false,
+            createdBy: editingEvent?.createdBy ?? user?.uid ?? '',
+            createdAt: editingEvent?.createdAt ?? now
+          }
+          savedViewEvents.push(updatedEvent)
+          optimisticPatches.push(updatedEvent)
+          const changes = editingEvent ? eventChangeList(editingEvent, payload) : []
+          backgroundSave = async () => {
+            await updateDoc(doc(db, 'calendarEvents', editingEventId), payload)
+            if (editingEvent && changes.length) {
               await writeActivityLog({
                 action: 'update',
                 eventId: editingEventId,
@@ -2939,39 +3003,57 @@ export default function CalendarPage() {
           }
         }
       } else {
-        const created = await addDoc(collection(db, 'calendarEvents'), {
+        const createdRef = doc(collection(db, 'calendarEvents'))
+        const createdEvent: CalendarEvent = {
+          id: createdRef.id,
           ...payload,
           done: false,
           createdBy: user?.uid ?? '',
-          createdAt: new Date().toISOString()
-        })
-        savedEventId = created.id
-        savedViewEvent = { id: created.id, ...payload, done: false, createdBy: user?.uid ?? '', createdAt: new Date().toISOString() }
-        await writeActivityLog({
-          action: 'create',
-          eventId: created.id,
-          eventTitle: payload.title,
-          calendarId: payload.calendarId,
-          departmentId: payload.departmentId,
-          assigneeIds: payload.assigneeIds,
-          date: payload.date
-        })
+          createdAt: now
+        }
+        savedEventId = createdRef.id
+        savedViewEvents.push(createdEvent)
+        optimisticPatches.push(createdEvent)
+        backgroundSave = async () => {
+          const { id: _id, ...createdData } = createdEvent
+          await setDoc(createdRef, createdData)
+          await writeActivityLog({
+            action: 'create',
+            eventId: createdRef.id,
+            eventTitle: payload.title,
+            calendarId: payload.calendarId,
+            departmentId: payload.departmentId,
+            assigneeIds: payload.assigneeIds,
+            date: payload.date
+          })
+        }
       }
 
+      optimisticallyPatchCalendarEvents(optimisticPatches)
       setShowEventModal(false)
       resetAttachmentUploadState()
       setDeletedAttachments([])
       setRecurrenceEditMode(null)
-      if (savedViewEvent) await syncCalendarEventViews(savedViewEvent)
-      await refreshCalendarData()
-      if (savedEventId) {
-        syncEventAttachmentsInBackground(savedEventId, [], removedAttachments)
-      }
+      setSaving(false)
+      void (async () => {
+        try {
+          await backgroundSave()
+          await Promise.all(savedViewEvents.map((event) => syncCalendarEventViews(event)))
+          await refreshCalendarData()
+          if (savedEventId) {
+            syncEventAttachmentsInBackground(savedEventId, [], removedAttachments)
+          }
+        } catch (error) {
+          await refreshCalendarData().catch(() => undefined)
+          const message = error instanceof Error ? error.message : '工作儲存失敗，請稍後再試'
+          alert(message)
+        }
+      })()
     } catch (error) {
       const message = error instanceof Error ? error.message : '工作儲存失敗，請稍後再試'
       alert(message)
-    } finally {
       setSaving(false)
+    } finally {
     }
   }
 
@@ -3319,8 +3401,13 @@ export default function CalendarPage() {
   }
 
   function dragDateFromPoint(x: number, y: number) {
-    const element = document.elementFromPoint(x, y)?.closest<HTMLElement>('[data-calendar-date]')
-    return element?.dataset.calendarDate ?? ''
+    const elements = document.elementsFromPoint(x, y)
+    for (const element of elements) {
+      if (element.closest('.event-drag-preview, .event-drag-menu')) continue
+      const dateElement = element.closest<HTMLElement>('[data-calendar-date]')
+      if (dateElement?.dataset.calendarDate) return dateElement.dataset.calendarDate
+    }
+    return ''
   }
 
   function isTouchDragPointer(event: Pick<ReactPointerEvent | globalThis.PointerEvent, 'pointerType'>) {
@@ -3417,6 +3504,7 @@ export default function CalendarPage() {
       }
     }
     dayListTouchDragRef.current = null
+    setTouchEventDragging(false)
     hideDragPreview()
     clearDayListTouchDragListeners()
   }
@@ -3488,7 +3576,7 @@ export default function CalendarPage() {
       suppressEventClickRef.current = true
       setSelectedEventId(null)
       setDragActionMenu(null)
-      setDayListDate(null)
+      setTouchEventDragging(true)
     }
     event.preventDefault()
     setDragOverDateIfChanged(dragDateFromPoint(event.clientX, event.clientY) || null)
@@ -3503,6 +3591,7 @@ export default function CalendarPage() {
     const wasActive = drag.active
     resetDayListTouchDrag()
     if (wasDragging && targetDate) {
+      setDayListDate(null)
       openDragActionMenu(eventId, targetDate, event.clientX, event.clientY)
     } else {
       setDragOverDateIfChanged(null)
@@ -3518,8 +3607,17 @@ export default function CalendarPage() {
   function cancelDayListTouchDrag(event?: globalThis.PointerEvent) {
     const drag = dayListTouchDragRef.current
     if (event && drag && drag.pointerId !== event.pointerId) return
+    const targetDate = drag?.dragging ? dragDateFromPoint(drag.latestX, drag.latestY) : ''
+    const eventId = drag?.eventId ?? ''
+    const latestX = drag?.latestX ?? window.innerWidth / 2
+    const latestY = drag?.latestY ?? window.innerHeight / 2
     resetDayListTouchDrag()
-    setDragOverDateIfChanged(null)
+    if (eventId && targetDate) {
+      setDayListDate(null)
+      openDragActionMenu(eventId, targetDate, latestX, latestY)
+    } else {
+      setDragOverDateIfChanged(null)
+    }
     window.setTimeout(() => {
       suppressEventClickRef.current = false
     }, 300)
@@ -4073,7 +4171,7 @@ export default function CalendarPage() {
     const dayEvents = eventsByDate.get(dayListDate) ?? []
     return (
       <aside
-        className={`tt-floating-panel tt-day-list-panel${dayListSwipeOffset > 0 ? ' swiping' : ''}`}
+        className={`tt-floating-panel tt-day-list-panel${dayListSwipeOffset > 0 ? ' swiping' : ''}${touchEventDragging ? ' dragging-event' : ''}`}
         style={{ '--day-list-swipe-offset': `${dayListSwipeOffset}px` } as CSSProperties}
         onTouchStart={handleDayListSwipeStart}
         onTouchMove={handleDayListSwipeMove}
