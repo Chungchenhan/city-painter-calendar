@@ -3512,6 +3512,7 @@ export default function CalendarPage() {
   function beginDayListTouchDrag(event: ReactPointerEvent, calendarEvent: CalendarEvent) {
     if (!isTouchDragPointer(event) || !eventDragAllowed(calendarEvent)) return
     event.stopPropagation()
+    window.getSelection?.()?.removeAllRanges()
     resetDayListTouchDrag()
     const sourceElement = event.currentTarget as HTMLElement
     const pointerId = event.pointerId
@@ -3830,7 +3831,6 @@ export default function CalendarPage() {
                   if (!activeMonth) return
                   lastEventPointerTypeRef.current = pointerEvent.pointerType
                   if (isTouchDragPointer(pointerEvent)) {
-                    beginDayListTouchDrag(pointerEvent, event)
                     return
                   }
                   beginPointerEventDrag(pointerEvent, event)
@@ -4734,6 +4734,7 @@ export default function CalendarPage() {
             setCalendarSwipeOffset(0)
             window.setTimeout(() => setCalendarSwipeAnimating(false), 210)
           }}
+          onContextMenu={(event) => event.preventDefault()}
         >
           {loading ? (
             <div className="calendar-skeleton" />

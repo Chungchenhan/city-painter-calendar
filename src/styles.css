@@ -351,6 +351,21 @@ textarea {
   display: grid;
   grid-template-rows: 60px minmax(0, 1fr);
   overflow: hidden;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.tt-calendar-surface *,
+.tt-calendar-surface *::before,
+.tt-calendar-surface *::after {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.tt-calendar-surface ::selection {
+  background: transparent;
 }
 
 .tt-calendar-surface .weekday-grid {
@@ -643,6 +658,8 @@ textarea {
   text-overflow: clip;
   text-align: left;
   white-space: nowrap;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .tt-calendar-surface .event-pill.active,
