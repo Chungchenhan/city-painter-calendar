@@ -4002,6 +4002,8 @@ p {
     display: grid;
     grid-template-rows: 25px minmax(0, 1fr);
     overflow: hidden;
+    overscroll-behavior: none;
+    touch-action: pan-x;
     background: #fff;
     padding-bottom: 0;
   }

@@ -2167,6 +2167,9 @@ export default function CalendarPage() {
     const deltaY = touch.clientY - start.y
     start.deltaX = deltaX
     start.deltaY = deltaY
+    if (viewMode === 'month' && Math.abs(deltaY) > 6 && Math.abs(deltaY) > Math.abs(deltaX)) {
+      event.preventDefault()
+    }
     if (!start.dragging) {
       if (Math.abs(deltaX) < 8) return
       if (Math.abs(deltaX) < Math.abs(deltaY) * 1.15) {
