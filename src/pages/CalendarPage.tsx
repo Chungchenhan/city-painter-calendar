@@ -2396,12 +2396,12 @@ export default function CalendarPage() {
     setShowEventModal(true)
   }
 
-  function openEventDetail(event: CalendarEvent) {
+  function openEventDetail(event: CalendarEvent, options: { preserveMonth?: boolean } = {}) {
     setDragActionMenu(null)
     setDayListDate(null)
     setShowEventActionMenu(false)
     setSelectedDate(event.date)
-    if (!dayjs(event.date).isSame(month, 'month')) {
+    if (!options.preserveMonth && !dayjs(event.date).isSame(month, 'month')) {
       setMonth(dayjs(event.date).startOf('month'))
     }
     setSelectedEventId(event.id)
@@ -3970,7 +3970,7 @@ export default function CalendarPage() {
                     return
                   }
                   lastEventPointerTypeRef.current = ''
-                  openEventDetail(event)
+                  openEventDetail(event, { preserveMonth: day.month() !== displayMonth.month() })
                 }}
                 tabIndex={activeMonth ? 0 : -1}
               >

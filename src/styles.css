@@ -639,6 +639,18 @@ textarea {
   background: var(--event-color);
 }
 
+@media (hover: hover) and (pointer: fine) {
+  .tt-calendar-surface .event-pill:hover {
+    background: color-mix(in srgb, var(--event-color) 10%, #fff);
+    box-shadow: 0 2px 9px rgba(15, 23, 42, 0.16);
+    transform: translateY(-1px);
+  }
+
+  .tt-calendar-surface .event-pill.all-day:hover {
+    background: color-mix(in srgb, var(--event-color) 88%, #fff);
+  }
+}
+
 .tt-calendar-surface .event-pill span {
   min-width: 0;
   overflow: hidden;
