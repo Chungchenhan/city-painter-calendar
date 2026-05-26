@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { CSSProperties, ChangeEvent, DragEvent, PointerEvent as ReactPointerEvent, ReactNode, TouchEvent as ReactTouchEvent } from 'react'
+import type { CSSProperties, ChangeEvent, DragEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode, TouchEvent as ReactTouchEvent } from 'react'
 import dayjs from 'dayjs'
 import { addDoc, arrayUnion, collection, deleteDoc, doc, getDoc, getDocs, query, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore'
 import { signOut } from 'firebase/auth'
@@ -755,6 +755,7 @@ export default function CalendarPage() {
   const [calendarSwipeOffset, setCalendarSwipeOffset] = useState(0)
   const [calendarSwipeAnimating, setCalendarSwipeAnimating] = useState(false)
   const [dayListSwipeOffset, setDayListSwipeOffset] = useState(0)
+  const [eventEditorTouchLocked, setEventEditorTouchLocked] = useState(false)
   const [saving, setSaving] = useState(false)
   const [detailAttachmentUploading, setDetailAttachmentUploading] = useState(false)
   const noteTextareaRef = useRef<HTMLTextAreaElement | null>(null)
@@ -767,6 +768,9 @@ export default function CalendarPage() {
   const dragPreviewFrameRef = useRef<number | null>(null)
   const dragPreviewPointRef = useRef<{ x: number; y: number } | null>(null)
   const calendarTouchStartRef = useRef<{ identifier: number; x: number; y: number; deltaX: number; deltaY: number; dragging: boolean } | null>(null)
+  const monthLongPressRef = useRef<{ identifier: number; x: number; y: number; timer: number; triggered: boolean; date: string; shouldOpenAdd: boolean } | null>(null)
+  const eventEditorTouchLockTimerRef = useRef<number | null>(null)
+  const bottomSystemGestureUntilRef = useRef(0)
   const suppressEventClickRef = useRef(false)
   const lastEventPointerTypeRef = useRef('')
   const pointerDragRef = useRef<{
@@ -1169,10 +1173,34 @@ export default function CalendarPage() {
     textarea.style.height = `${textarea.scrollHeight}px`
   }, [eventForm.note, showEventModal])
 
+  function shouldKeepOverlayOpenForSystemGesture(event: MouseEvent | TouchEvent | ReactMouseEvent | ReactTouchEvent) {
+    const nativeEvent = 'nativeEvent' in event ? event.nativeEvent : event
+    const bottomThreshold = Math.max(0, window.innerHeight - 42)
+    const touchSource = ('changedTouches' in nativeEvent && nativeEvent.changedTouches)
+      ? nativeEvent.changedTouches
+      : ('touches' in nativeEvent && nativeEvent.touches)
+        ? nativeEvent.touches
+        : null
+    const touches = touchSource ? Array.from(touchSource as TouchList) : []
+    if (touches.some((touch) => touch.clientY >= bottomThreshold)) {
+      bottomSystemGestureUntilRef.current = Date.now() + 1200
+      return true
+    }
+    if ('clientY' in nativeEvent && Date.now() < bottomSystemGestureUntilRef.current) {
+      return nativeEvent.clientY >= window.innerHeight - 96
+    }
+    return false
+  }
+
+  function rememberOverlaySystemGesture(event: ReactTouchEvent) {
+    shouldKeepOverlayOpenForSystemGesture(event)
+  }
+
   useEffect(() => {
     if (!dragActionMenu) return
 
     function closeMenu(event: MouseEvent | TouchEvent) {
+      if (shouldKeepOverlayOpenForSystemGesture(event)) return
       const target = event.target
       if (target instanceof Element && target.closest('.event-drag-menu')) return
       setDragActionMenu(null)
@@ -1198,6 +1226,9 @@ export default function CalendarPage() {
 
   useEffect(() => () => {
     resetDayListTouchDrag()
+    if (eventEditorTouchLockTimerRef.current !== null) {
+      window.clearTimeout(eventEditorTouchLockTimerRef.current)
+    }
   }, [])
 
   useEffect(() => {
@@ -1210,6 +1241,7 @@ export default function CalendarPage() {
     if (!dayListDate) return
 
     function closeDayList(event: MouseEvent | TouchEvent) {
+      if (shouldKeepOverlayOpenForSystemGesture(event)) return
       const target = event.target
       if (target instanceof Element && target.closest('.tt-day-list-panel, .more-pill')) return
       setDayListDate(null)
@@ -1233,6 +1265,7 @@ export default function CalendarPage() {
     if (!selectedEventId) return
 
     function closeEventDetail(event: MouseEvent | TouchEvent) {
+      if (shouldKeepOverlayOpenForSystemGesture(event)) return
       const target = event.target
       if (target instanceof Element && target.closest('.event-detail-panel, .event-pill, .event-line, .week-event')) return
       setSelectedEventId(null)
@@ -1257,6 +1290,7 @@ export default function CalendarPage() {
     if (!showEventActionMenu) return
 
     function closeEventActionMenu(event: MouseEvent | TouchEvent) {
+      if (shouldKeepOverlayOpenForSystemGesture(event)) return
       const target = event.target
       if (target instanceof Element && target.closest('.event-detail-action-wrap')) return
       setShowEventActionMenu(false)
@@ -1280,6 +1314,7 @@ export default function CalendarPage() {
     if (!showSearchPanel && !showNotificationsPanel) return
 
     function closeTopbarPanels(event: MouseEvent | TouchEvent) {
+      if (shouldKeepOverlayOpenForSystemGesture(event)) return
       const target = event.target
       if (target instanceof Element && target.closest('.tt-search-panel, .tt-notifications-panel, .topbar-panel-trigger, .tt-account-menu, .tt-avatar')) return
       if (showNotificationsPanel) markActivityNotificationsSeen()
@@ -1308,6 +1343,7 @@ export default function CalendarPage() {
     if (!showAccountMenu) return
 
     function closeAccountMenu(event: MouseEvent | TouchEvent) {
+      if (shouldKeepOverlayOpenForSystemGesture(event)) return
       const target = event.target
       if (target instanceof Element && target.closest('.tt-account-menu, .tt-avatar')) return
       setShowAccountMenu(false)
@@ -1332,6 +1368,7 @@ export default function CalendarPage() {
     if (!showTitleIconPicker && titleOverrideIconPickerIndex === null) return
 
     function closeTitleIconPicker(event: MouseEvent | TouchEvent) {
+      if (shouldKeepOverlayOpenForSystemGesture(event)) return
       const target = event.target
       if (target instanceof Element && target.closest('.title-icon-picker, .title-override-icon-picker')) return
       setShowTitleIconPicker(false)
@@ -1358,6 +1395,7 @@ export default function CalendarPage() {
     if (!showTitleSuggestions) return
 
     function closeTitleSuggestions(event: MouseEvent | TouchEvent) {
+      if (shouldKeepOverlayOpenForSystemGesture(event)) return
       const target = event.target
       if (target instanceof Element && target.closest('.event-title-row')) return
       setShowTitleSuggestions(false)
@@ -2245,6 +2283,83 @@ export default function CalendarPage() {
       setCalendarSwipeAnimating(false)
       setCalendarSwipeOffset(0)
     }, 190)
+  }
+
+  function lockEventEditorTouch(ms = 500) {
+    if (eventEditorTouchLockTimerRef.current !== null) {
+      window.clearTimeout(eventEditorTouchLockTimerRef.current)
+    }
+    setEventEditorTouchLocked(true)
+    eventEditorTouchLockTimerRef.current = window.setTimeout(() => {
+      eventEditorTouchLockTimerRef.current = null
+      setEventEditorTouchLocked(false)
+    }, ms)
+  }
+
+  function clearMonthLongPressGuard() {
+    const guard = monthLongPressRef.current
+    if (guard?.timer) window.clearTimeout(guard.timer)
+    monthLongPressRef.current = null
+  }
+
+  function monthLongPressTarget(target: EventTarget | null) {
+    if (viewMode !== 'month' || !shouldUseMobileEventListFlow()) return false
+    if (!(target instanceof Element)) return false
+    const dateElement = target.closest<HTMLElement>('.month-grid [data-calendar-date]')
+    if (!dateElement?.dataset.calendarDate) return false
+    return {
+      date: dateElement.dataset.calendarDate,
+      shouldOpenAdd: canCreateEvent
+    }
+  }
+
+  function handleMonthLongPressStart(event: ReactTouchEvent<HTMLElement>) {
+    const target = monthLongPressTarget(event.target)
+    if (!target || event.touches.length !== 1) return
+    const touch = event.changedTouches[0] ?? event.touches[0]
+    if (!touch) return
+    clearMonthLongPressGuard()
+    const identifier = touch.identifier
+    const startX = touch.clientX
+    const startY = touch.clientY
+    const timer = window.setTimeout(() => {
+      const guard = monthLongPressRef.current
+      if (!guard || guard.identifier !== identifier) return
+      guard.triggered = true
+      suppressEventClickRef.current = true
+      window.getSelection?.()?.removeAllRanges()
+      setDragActionMenu(null)
+      setDragOverDateIfChanged(null)
+      if (guard.shouldOpenAdd) {
+        setDayListDate(null)
+        lockEventEditorTouch()
+        openAddEvent(guard.date)
+      }
+    }, 1000)
+    monthLongPressRef.current = { identifier, x: startX, y: startY, timer, triggered: false, date: target.date, shouldOpenAdd: target.shouldOpenAdd }
+  }
+
+  function handleMonthLongPressMove(event: ReactTouchEvent<HTMLElement>) {
+    const guard = monthLongPressRef.current
+    if (!guard) return
+    const touch = Array.from(event.touches).find((item) => item.identifier === guard.identifier)
+    if (!touch) return
+    const distance = Math.abs(touch.clientX - guard.x) + Math.abs(touch.clientY - guard.y)
+    if (distance > 28) clearMonthLongPressGuard()
+  }
+
+  function handleMonthLongPressEnd(event: ReactTouchEvent<HTMLElement>) {
+    const guard = monthLongPressRef.current
+    if (!guard) return
+    const triggered = guard.triggered
+    clearMonthLongPressGuard()
+    if (!triggered) return
+    event.preventDefault()
+    event.stopPropagation()
+    suppressEventClickRef.current = true
+    window.setTimeout(() => {
+      suppressEventClickRef.current = false
+    }, 350)
   }
 
   function openAddEvent(date = selectedDate) {
@@ -3803,7 +3918,6 @@ export default function CalendarPage() {
           key={date}
           data-calendar-date={activeMonth ? date : undefined}
           onClick={() => activeMonth && handleMonthDayClick(date)}
-          onDoubleClick={() => activeMonth && canCreateEvent && openAddEvent(date)}
           onDragOver={(dragEvent) => {
             if (!activeMonth) return
             dragEvent.preventDefault()
@@ -3901,7 +4015,6 @@ export default function CalendarPage() {
             setSelectedDate(date)
             setMonth(day.startOf('month'))
           }}
-          onDoubleClick={() => activeWeek && canCreateEvent && openAddEvent(date)}
           onDragOver={(dragEvent) => {
             if (!activeWeek) return
             dragEvent.preventDefault()
@@ -4249,7 +4362,14 @@ export default function CalendarPage() {
   function renderStartupNotificationPrompt() {
     if (!showStartupNotificationPrompt) return null
     return (
-      <div className="modal-overlay" onClick={dismissStartupNotificationPrompt}>
+      <div
+        className="modal-overlay"
+        onTouchStartCapture={rememberOverlaySystemGesture}
+        onClick={(event) => {
+          if (shouldKeepOverlayOpenForSystemGesture(event)) return
+          dismissStartupNotificationPrompt()
+        }}
+      >
         <div className="modal notification-startup-modal" onClick={(event) => event.stopPropagation()}>
           <div className="modal-header">
             <h2>開啟通知</h2>
@@ -4289,7 +4409,14 @@ export default function CalendarPage() {
           ? '尚未開啟瀏覽器通知權限，重新載入頁面時會再次提醒。'
           : '此瀏覽器不支援網站通知。'
     return (
-      <div className="modal-overlay" onClick={() => setShowNotificationSettings(false)}>
+      <div
+        className="modal-overlay"
+        onTouchStartCapture={rememberOverlaySystemGesture}
+        onClick={(event) => {
+          if (shouldKeepOverlayOpenForSystemGesture(event)) return
+          setShowNotificationSettings(false)
+        }}
+      >
         <div className="modal notification-settings-modal" onClick={(event) => event.stopPropagation()}>
           <div className="modal-header">
             <h2>通知設定</h2>
@@ -4391,7 +4518,14 @@ export default function CalendarPage() {
   function renderTitleIconSettingsModal() {
     if (!showTitleIconSettings || !canManageCalendarColors) return null
     return (
-      <div className="modal-overlay" onClick={() => setShowTitleIconSettings(false)}>
+      <div
+        className="modal-overlay"
+        onTouchStartCapture={rememberOverlaySystemGesture}
+        onClick={(event) => {
+          if (shouldKeepOverlayOpenForSystemGesture(event)) return
+          setShowTitleIconSettings(false)
+        }}
+      >
         <div className="modal title-icon-settings-modal" onClick={(event) => event.stopPropagation()}>
           <div className="modal-header">
             <h2>標題 icon 設定</h2>
@@ -4610,7 +4744,14 @@ export default function CalendarPage() {
       </header>
 
       {showPasswordModal && (
-        <div className="modal-overlay" onClick={() => setShowPasswordModal(false)}>
+        <div
+          className="modal-overlay"
+          onTouchStartCapture={rememberOverlaySystemGesture}
+          onClick={(event) => {
+            if (shouldKeepOverlayOpenForSystemGesture(event)) return
+            setShowPasswordModal(false)
+          }}
+        >
           <div className="modal password-modal" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
               <h2>修改密碼</h2>
@@ -4725,6 +4866,10 @@ export default function CalendarPage() {
         <section
           className="tt-calendar-surface"
           ref={calendarSurfaceRef}
+          onTouchStartCapture={handleMonthLongPressStart}
+          onTouchMoveCapture={handleMonthLongPressMove}
+          onTouchEndCapture={handleMonthLongPressEnd}
+          onTouchCancelCapture={clearMonthLongPressGuard}
           onTouchStart={handleCalendarTouchStart}
           onTouchMove={handleCalendarTouchMove}
           onTouchEnd={handleCalendarTouchEnd}
@@ -4907,7 +5052,20 @@ export default function CalendarPage() {
 
       {showEventModal && (
         <div className="modal-overlay">
-          <div className="modal event-editor-modal" style={{ '--event-color': eventEditorColor } as CSSProperties}>
+          <div
+            className={`modal event-editor-modal${eventEditorTouchLocked ? ' touch-locked' : ''}`}
+            style={{ '--event-color': eventEditorColor } as CSSProperties}
+            onTouchStartCapture={(event) => {
+              if (!eventEditorTouchLocked) return
+              event.preventDefault()
+              event.stopPropagation()
+            }}
+            onClickCapture={(event) => {
+              if (!eventEditorTouchLocked) return
+              event.preventDefault()
+              event.stopPropagation()
+            }}
+          >
             <div className="event-editor-header">
               <button className="text-btn" onClick={closeEventModal}>取消</button>
               <strong>{editingEventId ? '編輯活動' : '新增活動'}</strong>
@@ -4940,7 +5098,7 @@ export default function CalendarPage() {
                   }))}
                   onFocus={() => setShowTitleSuggestions(true)}
                   placeholder="新增標題"
-                  autoFocus
+                  autoFocus={!eventEditorTouchLocked}
                 />
                 {showTitleSuggestions && titleSuggestions.length > 0 && (
                   <div className="title-suggestion-menu">
@@ -5291,7 +5449,14 @@ export default function CalendarPage() {
       )}
 
       {recurrenceEditCandidate && (
-        <div className="modal-overlay repeat-overlay" onClick={() => setRecurrenceEditCandidate(null)}>
+        <div
+          className="modal-overlay repeat-overlay"
+          onTouchStartCapture={rememberOverlaySystemGesture}
+          onClick={(event) => {
+            if (shouldKeepOverlayOpenForSystemGesture(event)) return
+            setRecurrenceEditCandidate(null)
+          }}
+        >
           <div className="modal repeat-modal recurrence-scope-modal" onClick={(event) => event.stopPropagation()}>
             <div className="repeat-option-list">
               <button type="button" onClick={() => startEditEvent(recurrenceEditCandidate, 'single')}>
@@ -5309,7 +5474,14 @@ export default function CalendarPage() {
       )}
 
       {recurrenceDeleteCandidate && (
-        <div className="modal-overlay repeat-overlay" onClick={() => setRecurrenceDeleteCandidate(null)}>
+        <div
+          className="modal-overlay repeat-overlay"
+          onTouchStartCapture={rememberOverlaySystemGesture}
+          onClick={(event) => {
+            if (shouldKeepOverlayOpenForSystemGesture(event)) return
+            setRecurrenceDeleteCandidate(null)
+          }}
+        >
           <div className="modal repeat-modal recurrence-scope-modal" onClick={(event) => event.stopPropagation()}>
             <div className="repeat-option-list">
               <button type="button" onClick={() => applyDeleteEvent(recurrenceDeleteCandidate, 'single')}>
@@ -5327,7 +5499,14 @@ export default function CalendarPage() {
       )}
 
       {showRepeatPicker && (
-        <div className="modal-overlay repeat-overlay" onClick={() => setShowRepeatPicker(false)}>
+        <div
+          className="modal-overlay repeat-overlay"
+          onTouchStartCapture={rememberOverlaySystemGesture}
+          onClick={(event) => {
+            if (shouldKeepOverlayOpenForSystemGesture(event)) return
+            setShowRepeatPicker(false)
+          }}
+        >
           <div className="modal repeat-modal" onClick={(event) => event.stopPropagation()}>
             <div className="repeat-option-list">
               {repeatOptions.map((option) => (
@@ -5347,7 +5526,14 @@ export default function CalendarPage() {
       )}
 
       {showRepeatCustomModal && (
-        <div className="modal-overlay repeat-overlay" onClick={() => setShowRepeatCustomModal(false)}>
+        <div
+          className="modal-overlay repeat-overlay"
+          onTouchStartCapture={rememberOverlaySystemGesture}
+          onClick={(event) => {
+            if (shouldKeepOverlayOpenForSystemGesture(event)) return
+            setShowRepeatCustomModal(false)
+          }}
+        >
           <div className="modal repeat-custom-modal" onClick={(event) => event.stopPropagation()}>
             <div className="repeat-custom-header">
               <EventRowIcon name="repeat" />

@@ -541,6 +541,8 @@ textarea {
   padding: 3px 3px 4px;
   background: #fff;
   cursor: default;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
 }
 
 .tt-calendar-surface .day-cell:hover {
@@ -580,6 +582,7 @@ textarea {
   font-size: 14px;
   font-weight: 700;
   line-height: 20px;
+  pointer-events: none;
 }
 
 .tt-calendar-surface .day-number.today {
@@ -593,6 +596,7 @@ textarea {
   min-height: 0;
   overflow: hidden;
   margin-top: 0;
+  pointer-events: none;
 }
 
 .tt-calendar-surface .event-pill {
@@ -617,6 +621,7 @@ textarea {
   -webkit-touch-callout: none;
   -webkit-user-select: none;
   user-select: none;
+  pointer-events: auto;
 }
 
 .tt-calendar-surface .event-pill.all-day {
@@ -2492,6 +2497,10 @@ p {
 .event-editor-modal {
   width: min(520px, 100%);
   border-radius: 4px;
+}
+
+.event-editor-modal.touch-locked .event-editor-body {
+  pointer-events: none;
 }
 
 .event-editor-header {
