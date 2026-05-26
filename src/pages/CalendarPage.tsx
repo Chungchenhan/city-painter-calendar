@@ -3545,8 +3545,15 @@ export default function CalendarPage() {
   }
 
   function handleMonthDayClick(date: string) {
-    if (selectedDate === date && shouldUseMobileEventListFlow()) {
-      setDayListDate(date)
+    if (selectedDate === date) {
+      if (shouldUseMobileEventListFlow()) {
+        setDayListDate(date)
+        return
+      }
+      if (canCreateEvent) {
+        openAddEvent(date)
+        return
+      }
       return
     }
     setSelectedDate(date)
