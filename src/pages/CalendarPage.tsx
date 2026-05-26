@@ -1644,6 +1644,16 @@ export default function CalendarPage() {
     return note || event.location || ''
   }
 
+  function isManagementDepartmentEvent(event: CalendarEvent) {
+    const eventDepartmentName = event.departmentId ? departmentName(event.departmentId) : ''
+    if (eventDepartmentName === '管理部') return true
+    return eventDisplayCalendarIds(event).some((id) => {
+      const calendar = visibleCalendarMap.get(id)
+      if (calendar?.name === '管理部') return true
+      return calendar?.departmentIds?.some((departmentId) => departmentName(departmentId) === '管理部') ?? false
+    })
+  }
+
   function eventAllowedForViewer(event: CalendarEvent) {
     if (isAdmin) return true
     if (!employeeId) return false
@@ -1663,6 +1673,7 @@ export default function CalendarPage() {
 
   function canManageCalendarEvent(event: CalendarEvent) {
     if (isHrReadonlyEvent(event)) return false
+    if (isManagementDepartmentEvent(event) && currentEmployeeDepartmentName !== '管理部') return false
     if (isAdmin || Boolean(user?.uid && event.createdBy === user.uid)) return true
     if (!employeeId || !eventAllowedForViewer(event)) return false
     const hasCalendarScope = Boolean(event.departmentId || event.calendarId || event.calendarIds?.length)
