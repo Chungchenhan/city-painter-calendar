@@ -79,8 +79,8 @@ export function useCalendarGroups() {
 export function useCalendarEvents(activeMonth: string) {
   const queryClient = useQueryClient()
   const monthValue = dayjs(activeMonth || dayjs().format('YYYY-MM')).startOf('month')
-  const startDate = monthValue.subtract(1, 'month').startOf('month').format('YYYY-MM-DD')
-  const endDate = monthValue.add(1, 'month').endOf('month').format('YYYY-MM-DD')
+  const startDate = monthValue.subtract(2, 'month').startOf('month').format('YYYY-MM-DD')
+  const endDate = monthValue.add(2, 'month').endOf('month').format('YYYY-MM-DD')
   const queryKey = ['calendarEvents', startDate, endDate]
 
   const result = useQuery({

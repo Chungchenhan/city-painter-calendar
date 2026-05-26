@@ -101,6 +101,14 @@ type DragActionMenu = {
   x: number
   y: number
 }
+type DragPreviewState = {
+  title: string
+  x: number
+  y: number
+  width: number
+  height: number
+  color: string
+}
 
 const emptyCalendar = {
   name: '',
@@ -732,14 +740,10 @@ export default function CalendarPage() {
   const [deletedAttachments, setDeletedAttachments] = useState<EventAttachment[]>([])
   const [dragActionMenu, setDragActionMenu] = useState<DragActionMenu | null>(null)
   const [dragOverDate, setDragOverDate] = useState<string | null>(null)
-  const [dragPreview, setDragPreview] = useState<{
-    title: string
-    x: number
-    y: number
-    width: number
-    height: number
-    color: string
-  } | null>(null)
+  const [dragPreview, setDragPreview] = useState<DragPreviewState | null>(null)
+  const [isTouchDevice, setIsTouchDevice] = useState(() => (
+    window.matchMedia?.('(hover: none), (pointer: coarse)').matches ?? false
+  ))
   const [calendarSwipeOffset, setCalendarSwipeOffset] = useState(0)
   const [calendarSwipeAnimating, setCalendarSwipeAnimating] = useState(false)
   const [dayListSwipeOffset, setDayListSwipeOffset] = useState(0)
@@ -750,6 +754,10 @@ export default function CalendarPage() {
   const monthInputRef = useRef<HTMLInputElement | null>(null)
   const monthGridRef = useRef<HTMLDivElement | null>(null)
   const calendarSurfaceRef = useRef<HTMLElement | null>(null)
+  const eventDragPreviewRef = useRef<HTMLDivElement | null>(null)
+  const dragOverDateRef = useRef<string | null>(null)
+  const dragPreviewFrameRef = useRef<number | null>(null)
+  const dragPreviewPointRef = useRef<{ x: number; y: number } | null>(null)
   const calendarTouchStartRef = useRef<{ identifier: number; x: number; y: number; deltaX: number; deltaY: number; dragging: boolean } | null>(null)
   const suppressEventClickRef = useRef(false)
   const lastEventPointerTypeRef = useRef('')
@@ -1156,10 +1164,14 @@ export default function CalendarPage() {
       const target = event.target
       if (target instanceof Element && target.closest('.event-drag-menu')) return
       setDragActionMenu(null)
+      setDragOverDateIfChanged(null)
     }
 
     function closeMenuWithEscape(event: KeyboardEvent) {
-      if (event.key === 'Escape') setDragActionMenu(null)
+      if (event.key === 'Escape') {
+        setDragActionMenu(null)
+        setDragOverDateIfChanged(null)
+      }
     }
 
     document.addEventListener('mousedown', closeMenu)
@@ -1403,6 +1415,7 @@ export default function CalendarPage() {
       const coarsePointer = window.matchMedia?.('(hover: none), (pointer: coarse)').matches ?? false
       const compactDevice = Math.min(window.innerWidth, window.innerHeight) <= 760
       const landscape = window.innerWidth > window.innerHeight
+      setIsTouchDevice(coarsePointer)
       if (!coarsePointer || !compactDevice) return
       setViewMode(landscape ? 'week' : 'month')
     }
@@ -1415,6 +1428,14 @@ export default function CalendarPage() {
       window.removeEventListener('resize', syncMobileOrientationView)
       window.removeEventListener('orientationchange', syncMobileOrientationView)
       window.visualViewport?.removeEventListener('resize', syncMobileOrientationView)
+    }
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      if (dragPreviewFrameRef.current !== null) {
+        window.cancelAnimationFrame(dragPreviewFrameRef.current)
+      }
     }
   }, [])
 
@@ -3237,9 +3258,46 @@ export default function CalendarPage() {
   }
 
   function clearEventDragState() {
-    setDragOverDate(null)
-    setDragPreview(null)
+    setDragOverDateIfChanged(null)
+    hideDragPreview()
     pointerDragRef.current = null
+  }
+
+  function setDragOverDateIfChanged(date: string | null) {
+    if (dragOverDateRef.current === date) return
+    dragOverDateRef.current = date
+    setDragOverDate(date)
+  }
+
+  function showDragPreview(nextPreview: DragPreviewState) {
+    if (dragPreviewFrameRef.current !== null) {
+      window.cancelAnimationFrame(dragPreviewFrameRef.current)
+      dragPreviewFrameRef.current = null
+    }
+    dragPreviewPointRef.current = null
+    setDragPreview(nextPreview)
+  }
+
+  function moveDragPreview(x: number, y: number) {
+    dragPreviewPointRef.current = { x, y }
+    if (dragPreviewFrameRef.current !== null) return
+    dragPreviewFrameRef.current = window.requestAnimationFrame(() => {
+      dragPreviewFrameRef.current = null
+      const point = dragPreviewPointRef.current
+      const preview = eventDragPreviewRef.current
+      if (!point || !preview) return
+      preview.style.left = `${point.x}px`
+      preview.style.top = `${point.y}px`
+    })
+  }
+
+  function hideDragPreview() {
+    if (dragPreviewFrameRef.current !== null) {
+      window.cancelAnimationFrame(dragPreviewFrameRef.current)
+      dragPreviewFrameRef.current = null
+    }
+    dragPreviewPointRef.current = null
+    setDragPreview(null)
   }
 
   function openDragActionMenu(eventId: string, targetDate: string, x: number, y: number) {
@@ -3298,7 +3356,7 @@ export default function CalendarPage() {
     if (distance < 8) return
     drag.moved = true
     const targetDate = dragDateFromPoint(event.clientX, event.clientY)
-    setDragOverDate(targetDate || null)
+    setDragOverDateIfChanged(targetDate || null)
   }
 
   function endPointerEventDrag(event: ReactPointerEvent) {
@@ -3317,7 +3375,7 @@ export default function CalendarPage() {
   }
 
   function startNativeEventDrag(event: DragEvent, calendarEvent: CalendarEvent) {
-    if (!eventDragAllowed(calendarEvent)) {
+    if (shouldUseMobileEventListFlow() || !eventDragAllowed(calendarEvent)) {
       event.preventDefault()
       return
     }
@@ -3346,7 +3404,7 @@ export default function CalendarPage() {
     const drag = dayListTouchDragRef.current
     if (drag?.timer) window.clearTimeout(drag.timer)
     dayListTouchDragRef.current = null
-    setDragPreview(null)
+    hideDragPreview()
     clearDayListTouchDragListeners()
   }
 
@@ -3364,7 +3422,7 @@ export default function CalendarPage() {
       const drag = dayListTouchDragRef.current
       if (!drag || drag.pointerId !== pointerId) return
       drag.active = true
-      setDragPreview({
+      showDragPreview({
         title: drag.title,
         x: drag.latestX,
         y: drag.latestY,
@@ -3400,14 +3458,7 @@ export default function CalendarPage() {
     drag.latestX = event.clientX
     drag.latestY = event.clientY
     if (drag.active) {
-      setDragPreview({
-        title: drag.title,
-        x: event.clientX,
-        y: event.clientY,
-        width: drag.width,
-        height: drag.height,
-        color: drag.color
-      })
+      moveDragPreview(event.clientX, event.clientY)
     }
     if (!drag.active) {
       const distance = Math.abs(event.clientX - drag.startX) + Math.abs(event.clientY - drag.startY)
@@ -3424,7 +3475,7 @@ export default function CalendarPage() {
       setDayListDate(null)
     }
     event.preventDefault()
-    setDragOverDate(dragDateFromPoint(event.clientX, event.clientY) || null)
+    setDragOverDateIfChanged(dragDateFromPoint(event.clientX, event.clientY) || null)
   }
 
   function endDayListTouchDrag(event: globalThis.PointerEvent) {
@@ -3438,7 +3489,7 @@ export default function CalendarPage() {
     if (wasDragging && targetDate) {
       openDragActionMenu(eventId, targetDate, event.clientX, event.clientY)
     } else {
-      setDragOverDate(null)
+      setDragOverDateIfChanged(null)
     }
     if (wasActive) {
       suppressEventClickRef.current = true
@@ -3452,7 +3503,7 @@ export default function CalendarPage() {
     const drag = dayListTouchDragRef.current
     if (event && drag && drag.pointerId !== event.pointerId) return
     resetDayListTouchDrag()
-    setDragOverDate(null)
+    setDragOverDateIfChanged(null)
     window.setTimeout(() => {
       suppressEventClickRef.current = false
     }, 300)
@@ -3514,7 +3565,7 @@ export default function CalendarPage() {
       const targetDate = dragActionMenu.targetDate
       setSelectedDate(targetDate)
       setDragActionMenu(null)
-      setDragOverDate(null)
+      setDragOverDateIfChanged(null)
       openCopyEvent(sourceEvent, targetDate)
       return
     }
@@ -3547,9 +3598,10 @@ export default function CalendarPage() {
             after: nextDateRange.endDate === nextDateRange.date ? nextDateRange.date : `${nextDateRange.date} - ${nextDateRange.endDate}`
           }]
         })
-        setSelectedEventId(sourceEvent.id)
+        setSelectedEventId(null)
       }
       setDragActionMenu(null)
+      setDragOverDateIfChanged(null)
       await refreshCalendarData()
     } catch {
       alert(action === 'move' ? '活動移動失敗，請稍後再試' : '活動複製失敗，請稍後再試')
@@ -3639,9 +3691,9 @@ export default function CalendarPage() {
           onDragOver={(dragEvent) => {
             if (!activeMonth) return
             dragEvent.preventDefault()
-            setDragOverDate(date)
+            setDragOverDateIfChanged(date)
           }}
-          onDragLeave={() => activeMonth && setDragOverDate((current) => current === date ? null : current)}
+          onDragLeave={() => activeMonth && dragOverDateRef.current === date && setDragOverDateIfChanged(null)}
           onDrop={(dragEvent) => activeMonth && dropEventOnDate(dragEvent, date)}
           tabIndex={activeMonth ? 0 : -1}
           aria-hidden={!activeMonth}
@@ -3653,7 +3705,7 @@ export default function CalendarPage() {
                 className={`event-pill ${event.allDay ? 'all-day' : 'timed'} ${selectedEventId === event.id ? 'active' : ''}`}
                 style={{ '--event-color': eventCalendarColor(event) } as CSSProperties}
                 key={event.id}
-                draggable={activeMonth && eventDragAllowed(event)}
+                draggable={activeMonth && !isTouchDevice && eventDragAllowed(event)}
                 onDragStart={(dragEvent) => activeMonth && startNativeEventDrag(dragEvent, event)}
                 onDragEnd={clearEventDragState}
                 onTouchStart={() => {
@@ -3738,9 +3790,9 @@ export default function CalendarPage() {
           onDragOver={(dragEvent) => {
             if (!activeWeek) return
             dragEvent.preventDefault()
-            setDragOverDate(date)
+            setDragOverDateIfChanged(date)
           }}
-          onDragLeave={() => activeWeek && setDragOverDate((current) => current === date ? null : current)}
+          onDragLeave={() => activeWeek && dragOverDateRef.current === date && setDragOverDateIfChanged(null)}
           onDrop={(dragEvent) => activeWeek && dropEventOnDate(dragEvent, date)}
           tabIndex={activeWeek ? 0 : -1}
           aria-hidden={!activeWeek}
@@ -3753,7 +3805,7 @@ export default function CalendarPage() {
                 className={`week-event ${event.allDay ? 'all-day' : 'timed'} ${event.done ? 'done' : ''} ${selectedEventId === event.id ? 'active' : ''}`}
                 style={{ '--event-color': eventCalendarColor(event) } as CSSProperties}
                 key={event.id}
-                draggable={activeWeek && eventDragAllowed(event)}
+                draggable={activeWeek && !isTouchDevice && eventDragAllowed(event)}
                 onDragStart={(dragEvent) => activeWeek && startNativeEventDrag(dragEvent, event)}
                 onDragEnd={clearEventDragState}
                 onTouchStart={() => {
@@ -4651,6 +4703,7 @@ export default function CalendarPage() {
 
       {dragPreview && (
         <div
+          ref={eventDragPreviewRef}
           className="event-drag-preview"
           style={{
             '--event-color': dragPreview.color,
