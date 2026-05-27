@@ -192,7 +192,8 @@ async function sendPushes(db, event, recipients, actorUid) {
     try {
       await webpush.sendNotification(sub.subscription, payload)
     } catch (error) {
-      if (error?.statusCode === 404 || error?.statusCode === 410) {
+      const body = `${error?.body || ''}`
+      if (error?.statusCode === 404 || error?.statusCode === 410 || body.includes('VapidPkHashMismatch') || body.includes('VAPID credentials')) {
         await sub.ref.delete()
         return
       }

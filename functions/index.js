@@ -296,9 +296,10 @@ function createNotificationGate(db) {
 
 async function sendPush(db, sub, payload) {
   ensureVapidDetails()
-  const key = sha256(`${sub.id}:${payload.tag}`)
-  const deliveryRef = db.collection('calendarNotificationDeliveries').doc(key)
   try {
+    await webpush.sendNotification(sub.subscription, JSON.stringify(payload))
+    const key = sha256(`${sub.id}:${payload.tag}`)
+    const deliveryRef = db.collection('calendarNotificationDeliveries').doc(key)
     await deliveryRef.create({
       subscriptionId: sub.id,
       uid: sub.uid || '',
@@ -306,18 +307,15 @@ async function sendPush(db, sub, payload) {
       tag: payload.tag,
       title: payload.title,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    }).catch((error) => {
+      if (error && (error.code === 6 || String(error.message || '').includes('ALREADY_EXISTS'))) return
+      throw error
     })
-  } catch (error) {
-    if (error && (error.code === 6 || String(error.message || '').includes('ALREADY_EXISTS'))) return false
-    throw error
-  }
-
-  try {
-    await webpush.sendNotification(sub.subscription, JSON.stringify(payload))
     return true
   } catch (error) {
     const statusCode = error && error.statusCode
-    if (statusCode === 404 || statusCode === 410) {
+    const body = `${error && error.body || ''}`
+    if (statusCode === 404 || statusCode === 410 || body.includes('VapidPkHashMismatch') || body.includes('VAPID credentials')) {
       await db.collection('calendarNotificationSubscriptions').doc(sub.id).delete()
       return false
     }
