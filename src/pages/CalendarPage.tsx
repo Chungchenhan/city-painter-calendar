@@ -1782,6 +1782,87 @@ export default function CalendarPage() {
     return `${nickname}${event.title.slice(name.length)}`
   }
 
+  function eventDetailVisibilityTitleRows(event: CalendarEvent) {
+    const rows: { target: string; title: string; muted?: boolean }[] = []
+    const addRow = (target: string, title: string, muted = false) => {
+      const cleanTarget = target.trim()
+      const cleanTitle = title.trim()
+      if (!cleanTarget || !cleanTitle) return
+      if (rows.some((row) => row.target === cleanTarget && row.title === cleanTitle && row.muted === muted)) return
+      rows.push({ target: cleanTarget, title: cleanTitle, muted })
+    }
+    const overrideTitle = (override: NonNullable<CalendarEvent['titleOverrides']>[number]) => (
+      override.icon ? composeTitleWithIcon(override.icon, override.title, titleIconOptions) : override.title.trim()
+    )
+    const departmentTitle = (departmentId: string) => {
+      const overrides = event.titleOverrides ?? []
+      const departmentNameValue = departmentName(departmentId)
+      const departmentOverride = overrides.find((override) => (
+        override.targetType === 'department' &&
+        (override.targetId === departmentId || departmentName(override.targetId) === departmentNameValue)
+      ))
+      if (departmentOverride?.title.trim()) return overrideTitle(departmentOverride)
+      const allDepartmentsOverride = overrides.find((override) => (
+        override.targetType === ALL_DEPARTMENTS_EXCEPT_OWN &&
+        override.targetId !== departmentId &&
+        departmentName(override.targetId) !== departmentNameValue
+      ))
+      if (allDepartmentsOverride?.title.trim()) return overrideTitle(allDepartmentsOverride)
+      return event.title
+    }
+    const employeeTitle = (assigneeId: string) => {
+      const employee = employees.find((item) => item.id === assigneeId)
+      const overrides = event.titleOverrides ?? []
+      const userOverride = overrides.find((override) => override.targetType === 'employee' && override.targetId === assigneeId)
+      if (userOverride?.title.trim()) return overrideTitle(userOverride)
+      const departmentOverride = overrides.find((override) => (
+        override.targetType === 'department' &&
+        (override.targetId === employee?.departmentId || departmentName(override.targetId) === employee?.departmentName)
+      ))
+      if (departmentOverride?.title.trim()) return overrideTitle(departmentOverride)
+      const allEmployeesOverride = overrides.find((override) => override.targetType === ALL_EMPLOYEES_EXCEPT_SELF && override.targetId !== assigneeId)
+      if (allEmployeesOverride?.title.trim()) return overrideTitle(allEmployeesOverride)
+      const allDepartmentsOverride = overrides.find((override) => (
+        override.targetType === ALL_DEPARTMENTS_EXCEPT_OWN &&
+        override.targetId !== employee?.departmentId &&
+        departmentName(override.targetId) !== employee?.departmentName
+      ))
+      if (allDepartmentsOverride?.title.trim()) return overrideTitle(allDepartmentsOverride)
+      return event.title
+    }
+    const overrideTargetLabel = (override: NonNullable<CalendarEvent['titleOverrides']>[number]) => {
+      if (override.targetType === 'department') return departmentName(override.targetId)
+      if (override.targetType === 'employee') return employeeName(override.targetId)
+      if (override.targetType === ALL_DEPARTMENTS_EXCEPT_OWN) return `所有部門（除了 ${departmentName(override.targetId) || '自己所屬部門'}）`
+      return `所有同仁（除了 ${override.targetId ? employeeName(override.targetId) : '自己'}）`
+    }
+    const allDepartmentOverrideTargets = new Set(
+      (event.titleOverrides ?? [])
+        .filter((override) => override.targetType === ALL_DEPARTMENTS_EXCEPT_OWN && override.title.trim())
+        .map((override) => override.targetId)
+    )
+
+    ;(event.titleOverrides ?? []).forEach((override) => {
+      addRow(overrideTargetLabel(override), overrideTitle(override))
+    })
+    ;(event.visibleDepartmentIds ?? []).forEach((departmentId) => {
+      if (Array.from(allDepartmentOverrideTargets).some((targetId) => (
+        targetId !== departmentId && departmentName(targetId) !== departmentName(departmentId)
+      ))) return
+      addRow(departmentName(departmentId), departmentTitle(departmentId))
+    })
+    ;(event.visibleAssigneeIds ?? []).forEach((assigneeId) => {
+      addRow(employeeName(assigneeId), employeeTitle(assigneeId))
+    })
+    ;(event.hiddenDepartmentIds ?? []).forEach((departmentId) => {
+      addRow(departmentName(departmentId), event.title)
+    })
+    ;(event.hiddenAssigneeIds ?? []).forEach((assigneeId) => {
+      addRow(employeeName(assigneeId), event.title)
+    })
+    return rows
+  }
+
   function textDisplayTitle(title: string) {
     const employee = employees.find((item) => item.nickname?.trim() && item.name?.trim() && title.startsWith(item.name.trim()))
     if (!employee?.nickname || !employee.name) return title
@@ -4192,6 +4273,7 @@ export default function CalendarPage() {
     const eventRepeatLabel = repeatLabel(selectedEvent.repeat, selectedEvent.date, selectedEvent.repeatCustom)
     const locationText = selectedEvent.location?.trim()
     const canManageEvent = canManageCalendarEvent(selectedEvent)
+    const visibilityTitleRows = eventDetailVisibilityTitleRows(selectedEvent)
     return (
       <aside
         className={`event-detail-panel${eventDetailSwipeOffset > 0 ? ' swiping' : ''}`}
@@ -4288,6 +4370,16 @@ export default function CalendarPage() {
             {calendarName}
           </div>
           <h2>{eventDisplayTitle(selectedEvent)}</h2>
+          {visibilityTitleRows.length > 0 && (
+            <div className="event-detail-visibility-titles" aria-label="可見對象與替代標題">
+              {visibilityTitleRows.map((row) => (
+                <div className={row.muted ? 'muted' : ''} key={`${row.target}-${row.title}`}>
+                  <span>{row.target}</span>
+                  <b>{row.title}</b>
+                </div>
+              ))}
+            </div>
+          )}
           <div className="event-detail-time">
             <div>
               <span>{formatChineseDate(selectedEvent.date)}</span>
