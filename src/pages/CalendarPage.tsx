@@ -2747,8 +2747,25 @@ export default function CalendarPage() {
         ...notificationSettings,
         updatedAt: new Date().toISOString()
       }
-      await setDoc(doc(db, 'calendarNotificationSettings', user.uid), payload, { merge: true })
-      setNotificationSettings(payload)
+      const token = await user.getIdToken()
+      const controller = new AbortController()
+      const timeout = window.setTimeout(() => controller.abort(), 12000)
+      try {
+        const res = await fetch('/api/save-calendar-notification-settings', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`
+          },
+          body: JSON.stringify({ settings: payload }),
+          signal: controller.signal
+        })
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const result = await res.json().catch(() => null) as { settings?: UserNotificationSettings } | null
+        setNotificationSettings(result?.settings ?? payload)
+      } finally {
+        window.clearTimeout(timeout)
+      }
       setShowNotificationSettings(false)
     } catch {
       alert('通知設定儲存失敗，請稍後再試')

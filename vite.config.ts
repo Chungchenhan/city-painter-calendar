@@ -27,6 +27,7 @@ function localApiPlugin(): Plugin {
         '/api/upload-drive': './api/upload-drive.js',
         '/api/notify-calendar': './api/notify-calendar.js',
         '/api/register-calendar-push': './api/register-calendar-push.js',
+        '/api/save-calendar-notification-settings': './api/save-calendar-notification-settings.js',
         '/api/widget-calendar': './api/widget-calendar.js'
       }
 
