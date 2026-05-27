@@ -1,10 +1,4 @@
-import {
-  deleteDoc,
-  doc,
-  serverTimestamp,
-  setDoc,
-} from 'firebase/firestore'
-import { auth, db } from './firebase'
+import { auth } from './firebase'
 
 const VAPID_PUBLIC_KEY = import.meta.env.VITE_WEB_PUSH_PUBLIC_KEY || ''
 
@@ -23,13 +17,6 @@ function urlBase64ToUint8Array(base64String: string): Uint8Array<ArrayBuffer> {
     outputArray[i] = rawData.charCodeAt(i)
   }
   return outputArray
-}
-
-async function getSubscriptionId(subscription: PushSubscription): Promise<string> {
-  const data = new TextEncoder().encode(subscription.endpoint)
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data)
-  const hashArray = Array.from(new Uint8Array(hashBuffer))
-  return hashArray.map((byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
 function subscriptionUsesCurrentKey(subscription: PushSubscription): boolean {
@@ -83,19 +70,21 @@ export async function ensurePushSubscription(meta: PushUserMeta): Promise<boolea
     })
   }
 
-  const id = await getSubscriptionId(subscription)
-  await setDoc(doc(db, 'calendarNotificationSubscriptions', id), {
-    uid: user.uid,
-    email: user.email ?? '',
-    displayName: meta.displayName || user.displayName || user.email || '',
-    role: meta.role,
-    employeeId: meta.employeeId ?? null,
-    endpoint: subscription.endpoint,
-    subscription: subscription.toJSON(),
-    enabled: true,
-    updatedAt: serverTimestamp(),
-    createdAt: serverTimestamp(),
-  }, { merge: true })
+  const token = await user.getIdToken()
+  const res = await fetch('/api/register-calendar-push', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      displayName: meta.displayName || user.displayName || user.email || '',
+      role: meta.role,
+      employeeId: meta.employeeId ?? null,
+      subscription: subscription.toJSON(),
+    }),
+  })
+  if (!res.ok) return false
 
   return true
 }
@@ -106,8 +95,6 @@ export async function disableCurrentPushSubscription(): Promise<void> {
   const subscription = await registration.pushManager.getSubscription()
   if (!subscription) return
 
-  const id = await getSubscriptionId(subscription)
-  await deleteDoc(doc(db, 'calendarNotificationSubscriptions', id))
   await subscription.unsubscribe()
   await setBadge(0)
 }
