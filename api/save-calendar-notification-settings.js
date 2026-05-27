@@ -76,13 +76,19 @@ export default async function handler(req, res) {
 
     const body = await readBody(req)
     const settings = body?.settings || {}
+    const roleSnap = await admin.firestore().collection('userRoles').doc(decoded.uid).get()
+    const employeeId = roleSnap.exists ? roleSnap.data()?.employeeId : ''
     const payload = {
       shiftStartEnabled: cleanBoolean(settings.shiftStartEnabled, true),
       shiftEndEnabled: cleanBoolean(settings.shiftEndEnabled, false),
       updatedAt: new Date().toISOString(),
     }
 
-    await admin.firestore().collection('calendarNotificationSettings').doc(decoded.uid).set(payload, { merge: true })
+    const db = admin.firestore()
+    await db.collection('calendarNotificationSettings').doc(decoded.uid).set(payload, { merge: true })
+    if (employeeId) {
+      await db.collection('calendarNotificationSettings').doc(employeeId).set(payload, { merge: true })
+    }
     return res.status(200).json({ ok: true, settings: payload })
   } catch (error) {
     console.error(error)

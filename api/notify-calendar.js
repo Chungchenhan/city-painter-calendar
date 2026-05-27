@@ -132,7 +132,13 @@ async function canReceiveCalendarNotification(db, sub) {
   if (!sub.uid || !sub.employeeId) return false
   const now = getTaipeiParts()
   const settingsSnap = await db.collection('calendarNotificationSettings').doc(sub.uid).get()
-  const settings = { ...DEFAULT_NOTIFICATION_SETTINGS, ...(settingsSnap.exists ? settingsSnap.data() : {}) }
+  const employeeSettingsSnap = !settingsSnap.exists
+    ? await db.collection('calendarNotificationSettings').doc(sub.employeeId).get()
+    : null
+  const settings = {
+    ...DEFAULT_NOTIFICATION_SETTINGS,
+    ...(settingsSnap.exists ? settingsSnap.data() : employeeSettingsSnap?.exists ? employeeSettingsSnap.data() : {})
+  }
   if (!settings.shiftStartEnabled && !settings.shiftEndEnabled) return false
 
   const employeeSnap = await db.collection('employees').doc(sub.employeeId).get()

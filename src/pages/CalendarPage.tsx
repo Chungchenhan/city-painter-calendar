@@ -993,10 +993,13 @@ export default function CalendarPage() {
     async function loadNotificationSettings() {
       try {
         const snap = await getDoc(doc(db, 'calendarNotificationSettings', uid))
+        const employeeSnap = !snap.exists() && employeeId
+          ? await getDoc(doc(db, 'calendarNotificationSettings', employeeId))
+          : null
         if (cancelled) return
         setNotificationSettings({
           ...DEFAULT_USER_NOTIFICATION_SETTINGS,
-          ...(snap.exists() ? snap.data() : {})
+          ...(snap.exists() ? snap.data() : employeeSnap?.exists() ? employeeSnap.data() : {})
         } as UserNotificationSettings)
       } catch {
         if (!cancelled) setNotificationSettings(DEFAULT_USER_NOTIFICATION_SETTINGS)
@@ -1006,7 +1009,7 @@ export default function CalendarPage() {
     return () => {
       cancelled = true
     }
-  }, [backgroundDataReady, user?.uid])
+  }, [backgroundDataReady, employeeId, user?.uid])
 
   useEffect(() => {
     if (!backgroundDataReady) return

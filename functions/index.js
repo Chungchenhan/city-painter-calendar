@@ -255,11 +255,16 @@ function createNotificationGate(db) {
     return shift
   }
 
-  async function loadSettings(uid) {
-    if (settingsCache.has(uid)) return settingsCache.get(uid)
-    const snap = await db.collection('calendarNotificationSettings').doc(uid).get()
-    const settings = { ...DEFAULT_NOTIFICATION_SETTINGS, ...(snap.exists ? snap.data() : {}) }
-    settingsCache.set(uid, settings)
+  async function loadSettings(uid, employeeId) {
+    const key = `${uid || ''}:${employeeId || ''}`
+    if (settingsCache.has(key)) return settingsCache.get(key)
+    const snap = uid ? await db.collection('calendarNotificationSettings').doc(uid).get() : null
+    const employeeSnap = (!snap || !snap.exists) && employeeId
+      ? await db.collection('calendarNotificationSettings').doc(employeeId).get()
+      : null
+    const data = snap && snap.exists ? snap.data() : employeeSnap && employeeSnap.exists ? employeeSnap.data() : {}
+    const settings = { ...DEFAULT_NOTIFICATION_SETTINGS, ...data }
+    settingsCache.set(key, settings)
     return settings
   }
 
@@ -273,7 +278,7 @@ function createNotificationGate(db) {
 
   return async function canReceiveCalendarNotification(sub, date, minutes) {
     if (!sub.uid || !sub.employeeId) return false
-    const settings = await loadSettings(sub.uid)
+    const settings = await loadSettings(sub.uid, sub.employeeId)
     if (!settings.shiftStartEnabled && !settings.shiftEndEnabled) return false
 
     const employee = await loadEmployee(sub.employeeId)
@@ -401,7 +406,13 @@ async function sendShiftAndPunchReminders(db, subscriptionsByEmployee, windowSta
       let settings = settingsCache.get(sub.uid)
       if (!settings) {
         const settingsSnap = await db.collection('calendarNotificationSettings').doc(sub.uid).get()
-        settings = { ...DEFAULT_NOTIFICATION_SETTINGS, ...(settingsSnap.exists ? settingsSnap.data() : {}) }
+        const employeeSettingsSnap = !settingsSnap.exists && sub.employeeId
+          ? await db.collection('calendarNotificationSettings').doc(sub.employeeId).get()
+          : null
+        settings = {
+          ...DEFAULT_NOTIFICATION_SETTINGS,
+          ...(settingsSnap.exists ? settingsSnap.data() : employeeSettingsSnap?.exists ? employeeSettingsSnap.data() : {})
+        }
         settingsCache.set(sub.uid, settings)
       }
 
