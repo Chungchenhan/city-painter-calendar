@@ -26,6 +26,7 @@ const NOTIFIED_TAGS_KEY = 'cityPainterCalendarNotifiedTags'
 const NOTIFIED_TAG_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
 const TOUCH_DRAG_LONG_PRESS_MS = 360
 const TOUCH_DRAG_START_TOLERANCE = 48
+const HR_CALENDAR_NOTIFY_API_URL = import.meta.env.VITE_HR_CALENDAR_NOTIFY_API_URL || 'https://hr.city-painter.com/api/notify-calendar'
 const DEFAULT_USER_NOTIFICATION_SETTINGS: UserNotificationSettings = {
   shiftStartEnabled: true,
   shiftEndEnabled: false,
@@ -1961,13 +1962,13 @@ export default function CalendarPage() {
     if (!user || !eventId) return
     try {
       const token = await user.getIdToken()
-      const res = await fetch('/api/notify-calendar', {
+      const res = await fetch(HR_CALENDAR_NOTIFY_API_URL, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`
         },
-        body: JSON.stringify({ eventId })
+        body: JSON.stringify({ eventId, calendarUrl: window.location.origin })
       })
       if (!res.ok) {
         console.warn('[notify-calendar] 通知 API 回應失敗', res.status)
