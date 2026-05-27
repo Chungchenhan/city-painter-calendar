@@ -1,6 +1,7 @@
 import { auth } from './firebase'
 
 const VAPID_PUBLIC_KEY = import.meta.env.VITE_WEB_PUSH_PUBLIC_KEY || ''
+const VAPID_KEY_CACHE_KEY = 'cityPainterCalendarVapidPublicKey'
 
 export interface PushUserMeta {
   role: 'admin' | 'employee' | 'loading' | 'unknown'
@@ -26,6 +27,22 @@ function subscriptionUsesCurrentKey(subscription: PushSubscription): boolean {
   const existingKey = new Uint8Array(key)
   if (existingKey.length !== currentKey.length) return false
   return existingKey.every((value, index) => value === currentKey[index])
+}
+
+function storedVapidKeyMatches() {
+  try {
+    return window.localStorage.getItem(VAPID_KEY_CACHE_KEY) === VAPID_PUBLIC_KEY
+  } catch {
+    return false
+  }
+}
+
+function rememberVapidKey() {
+  try {
+    window.localStorage.setItem(VAPID_KEY_CACHE_KEY, VAPID_PUBLIC_KEY)
+  } catch {
+    // 本機快取失敗不影響推播訂閱。
+  }
 }
 
 async function setBadge(count: number) {
@@ -59,7 +76,7 @@ export async function ensurePushSubscription(meta: PushUserMeta): Promise<boolea
 
   const registration = await navigator.serviceWorker.ready
   let subscription = await registration.pushManager.getSubscription()
-  if (subscription && !subscriptionUsesCurrentKey(subscription)) {
+  if (subscription && (!storedVapidKeyMatches() || !subscriptionUsesCurrentKey(subscription))) {
     await subscription.unsubscribe()
     subscription = null
   }
@@ -86,6 +103,7 @@ export async function ensurePushSubscription(meta: PushUserMeta): Promise<boolea
   })
   if (!res.ok) return false
 
+  rememberVapidKey()
   return true
 }
 
@@ -96,5 +114,10 @@ export async function disableCurrentPushSubscription(): Promise<void> {
   if (!subscription) return
 
   await subscription.unsubscribe()
+  try {
+    window.localStorage.removeItem(VAPID_KEY_CACHE_KEY)
+  } catch {
+    // 本機快取失敗不影響取消訂閱。
+  }
   await setBadge(0)
 }
