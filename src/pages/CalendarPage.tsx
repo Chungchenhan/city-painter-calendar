@@ -951,8 +951,8 @@ export default function CalendarPage() {
 
   const visibleActivityLogs = useMemo(() => (
     activityLogs
-      .filter((log) => selectedCalendarIds.includes(log.calendarId))
-  ), [activityLogs, selectedCalendarIds])
+      .filter((log) => selectedCalendarIds.includes(log.calendarId) || canReceiveActivityLog(log))
+  ), [activityLogs, employeeId, selectedCalendarIds])
   const pushActivityLogs = useMemo(() => (
     visibleActivityLogs.filter(canReceiveActivityLog)
   ), [employeeId, visibleActivityLogs])
