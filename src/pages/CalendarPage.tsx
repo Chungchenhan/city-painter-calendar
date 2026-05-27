@@ -1166,7 +1166,6 @@ export default function CalendarPage() {
     seenActivityLogIdsRef.current = currentIds
 
     if (notificationPermission !== 'granted') return
-    if (!canSendCalendarNotificationAt(dayjs())) return
     addedLogs.slice(-3).forEach((log) => {
       void showLocalNotification('行事曆通知', {
         body: activityLogText(log),
@@ -1176,7 +1175,7 @@ export default function CalendarPage() {
         data: { url: '/' }
       })
     })
-  }, [backgroundDataReady, canSendCalendarNotificationAt, notificationPermission, pushActivityLogs, user?.uid])
+  }, [backgroundDataReady, notificationPermission, pushActivityLogs, user?.uid])
 
   useEffect(() => {
     const textarea = noteTextareaRef.current
