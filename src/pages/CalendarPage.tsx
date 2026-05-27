@@ -2036,13 +2036,13 @@ export default function CalendarPage() {
   }, [cachedEventArchive, events])
   const titleSuggestionIndex = useMemo(() => (
     titleSuggestionEvents
-      .filter((event) => dayjs(event.date).isBefore(dayjs().add(1, 'day'), 'day'))
+      .filter((event) => dayjs(event.date).isBefore(dayjs(eventForm.date).add(1, 'day'), 'day'))
       .sort((a, b) => `${b.date} ${b.startTime}`.localeCompare(`${a.date} ${a.startTime}`))
       .map((event) => ({
         event,
         normalizedTitle: normalizeSearchText(eventDisplayTitle(event), titleIconOptions)
       }))
-  ), [employees, titleIconOptions, titleSuggestionEvents])
+  ), [eventForm.date, employees, titleIconOptions, titleSuggestionEvents])
   const titleSuggestions = useMemo(() => {
     const query = normalizeSearchText(currentTitleText, titleIconOptions)
     if (query.length < 1) return []
