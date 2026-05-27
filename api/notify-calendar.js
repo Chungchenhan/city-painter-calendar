@@ -54,17 +54,17 @@ async function readBody(req) {
   return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')
 }
 
-async function loadRecipientUids(db, assigneeIds) {
+async function loadRecipientTargets(db, assigneeIds) {
   const ids = new Set((assigneeIds || []).filter(Boolean))
   const uids = new Set()
-  if (ids.size === 0) return uids
+  if (ids.size === 0) return { employeeIds: ids, uids }
 
   const rolesSnap = await db.collection('userRoles').get()
   rolesSnap.forEach((item) => {
     const data = item.data()
     if (data.employeeId && ids.has(data.employeeId)) uids.add(item.id)
   })
-  return uids
+  return { employeeIds: ids, uids }
 }
 
 function eventTimeLabel(event) {
@@ -75,12 +75,14 @@ function eventTimeLabel(event) {
   return `${date} ${start}${end ? `-${end}` : ''}`.trim()
 }
 
-async function sendPushes(db, event, recipientUids, actorUid) {
+async function sendPushes(db, event, recipients, actorUid) {
   const subsSnap = await db.collection('calendarNotificationSubscriptions').where('enabled', '==', true).get()
   const targets = []
   subsSnap.forEach((item) => {
     const sub = item.data()
-    if (!sub.uid || sub.uid === actorUid || !recipientUids.has(sub.uid) || !sub.subscription) return
+    const matchesUid = sub.uid && recipients.uids.has(sub.uid)
+    const matchesEmployee = sub.employeeId && recipients.employeeIds.has(sub.employeeId)
+    if (!sub.uid || sub.uid === actorUid || (!matchesUid && !matchesEmployee) || !sub.subscription) return
     targets.push({ ref: item.ref, id: item.id, ...sub })
   })
   if (targets.length === 0) return 0
@@ -144,12 +146,12 @@ export default async function handler(req, res) {
     if (!eventSnap.exists) return res.status(404).json({ error: 'Calendar event not found' })
 
     const event = { id: eventSnap.id, ...eventSnap.data() }
-    const recipientUids = await loadRecipientUids(db, event.assigneeIds)
-    if (recipientUids.size === 0) {
+    const recipients = await loadRecipientTargets(db, event.assigneeIds)
+    if (recipients.employeeIds.size === 0) {
       return res.status(200).json({ ok: true, sent: 0 })
     }
 
-    const sent = await sendPushes(db, event, recipientUids, decoded.uid)
+    const sent = await sendPushes(db, event, recipients, decoded.uid)
     return res.status(200).json({ ok: true, sent })
   } catch (error) {
     console.error(error)
