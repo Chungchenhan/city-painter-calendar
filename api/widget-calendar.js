@@ -9,6 +9,7 @@ const COLORS = ['#f6b100', '#1fb6a6', '#3c82f6', '#ef6262', '#8d6df2', '#31a24c'
 const DEPARTMENT_CALENDAR_PREFIX = 'department:'
 const REPEAT_VALUES = ['daily', 'weekly', 'weekdays', 'monthly', 'monthlyNthWeekday', 'monthlyDay', 'yearly', 'custom']
 const HR_PUNCH_CORRECTION_LEAVE_TYPE = '補打卡'
+const HR_LEAVE_CALENDAR_NAME = 'HR 請假'
 
 function serviceAccountJson() {
   const source = process.env.FIREBASE_SERVICE_ACCOUNT_JSON ||
@@ -162,6 +163,18 @@ function eventCalendarId(event) {
   return ''
 }
 
+function eventCalendarIds(event) {
+  if (event.calendarIds?.length) return event.calendarIds
+  if (event.calendarId?.startsWith(DEPARTMENT_CALENDAR_PREFIX)) return [event.calendarId]
+  if (event.departmentId) return [departmentCalendarId(event.departmentId)]
+  return event.calendarId ? [event.calendarId] : []
+}
+
+function widgetVisibleEvent(event, validCalendarIds) {
+  if (isHrPunchCorrectionEvent(event)) return false
+  return eventCalendarIds(event).some((calendarId) => validCalendarIds.has(calendarId))
+}
+
 function eventColor(event, calendarColors, departmentColors) {
   const calendarId = eventCalendarId(event)
   return calendarColors.get(calendarId) ||
@@ -243,16 +256,21 @@ export default async function handler(req, res) {
     ])
 
     const calendarColors = new Map()
+    const validCalendarIds = new Set()
     calendarSnap.docs.forEach((doc) => {
       const data = doc.data()
       if (data.color) calendarColors.set(doc.id, data.color)
       if (doc.id.startsWith('departmentCalendar_') && data.departmentIds?.[0] && data.color) {
         calendarColors.set(departmentCalendarId(data.departmentIds[0]), data.color)
       }
+      if (doc.id === 'hr-approved-leaves' || `${data.name || ''}`.trim() === HR_LEAVE_CALENDAR_NAME) {
+        validCalendarIds.add(doc.id)
+      }
     })
 
     const departmentColors = new Map()
     departmentSnap.docs.forEach((doc, index) => {
+      validCalendarIds.add(departmentCalendarId(doc.id))
       const settingColor = calendarColors.get(departmentCalendarDocId(doc.id)) || calendarColors.get(departmentCalendarId(doc.id))
       departmentColors.set(doc.id, settingColor || COLORS[index % COLORS.length])
     })
@@ -265,7 +283,7 @@ export default async function handler(req, res) {
     })
 
     const expanded = expandRecurringEvents(
-      Array.from(map.values()).filter((event) => !isHrPunchCorrectionEvent(event)),
+      Array.from(map.values()).filter((event) => widgetVisibleEvent(event, validCalendarIds)),
       startDate,
       endDate
     )
