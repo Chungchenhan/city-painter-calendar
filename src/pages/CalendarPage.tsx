@@ -10,7 +10,7 @@ import { ensurePushSubscription, isPushSupported } from '../lib/pushNotification
 import { useAuth } from '../contexts/AuthContext'
 import { useCalendarActivityLogs, useCalendarEvents, useCalendarGroups, useCalendarSearchEvents } from '../hooks/useCalendarData'
 import { useDepartments, useEmployees, useShifts } from '../hooks/useHrData'
-import type { CalendarActivityLog, CalendarEvent, CalendarGroup, Employee, PunchLog, UserNotificationSettings } from '../types'
+import type { CalendarActivityLog, CalendarEvent, CalendarGroup, Employee, UserNotificationSettings } from '../types'
 
 const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六']
 const DEFAULT_MONTH_DAY_EVENT_ROW_LIMIT = 6
@@ -28,10 +28,7 @@ const TOUCH_DRAG_LONG_PRESS_MS = 360
 const TOUCH_DRAG_START_TOLERANCE = 48
 const DEFAULT_USER_NOTIFICATION_SETTINGS: UserNotificationSettings = {
   shiftStartEnabled: true,
-  shiftEndEnabled: false,
-  punchInEnabled: false,
-  punchOutEnabled: false,
-  punchLeadMinutes: 0
+  shiftEndEnabled: false
 }
 const REMINDER_OPTIONS = [
   { value: 'none', label: '無通知' },
@@ -300,12 +297,6 @@ function reminderOffsetMinutes(reminder: CalendarEvent['reminder']) {
   if (reminder === '1h') return 60
   if (reminder === '1d') return 1440
   return 0
-}
-
-function clampNotificationLeadMinutes(value: unknown) {
-  const minutes = Number(value)
-  if (!Number.isFinite(minutes)) return 0
-  return Math.max(0, Math.min(240, Math.round(minutes)))
 }
 
 function employeeActiveForCalendar(employee: Employee) {
@@ -1110,22 +1101,6 @@ export default function CalendarPage() {
         title: '行事曆通知',
         body: `今日班表 ${currentShift.startTime} - ${currentShift.endTime}`,
         tag: `calendar-shift-end-${employeeId}-${today}`
-      },
-      {
-        enabled: notificationSettings.punchInEnabled,
-        at: shiftStart.subtract(notificationSettings.punchLeadMinutes, 'minute'),
-        title: '上班打卡提醒',
-        body: `${currentShift.startTime} 上班，記得打卡`,
-        tag: `calendar-punch-in-${employeeId}-${today}`,
-        punchKind: 'in' as const
-      },
-      {
-        enabled: notificationSettings.punchOutEnabled,
-        at: shiftEnd.subtract(notificationSettings.punchLeadMinutes, 'minute'),
-        title: '下班打卡提醒',
-        body: `${currentShift.endTime} 下班，記得打卡`,
-        tag: `calendar-punch-out-${employeeId}-${today}`,
-        punchKind: 'out' as const
       }
     ]
 
@@ -1133,11 +1108,7 @@ export default function CalendarPage() {
       if (!schedule.enabled) return []
       const delay = schedule.at.diff(dayjs())
       if (delay <= 0 || delay > 2147483647) return []
-      const timer = window.setTimeout(async () => {
-        if (schedule.punchKind) {
-          const punched = await hasCompletedPunch(employeeId, today, schedule.punchKind)
-          if (punched) return
-        }
+      const timer = window.setTimeout(() => {
         void showLocalNotification(schedule.title, {
           body: schedule.body,
           tag: schedule.tag,
@@ -2759,30 +2730,13 @@ export default function CalendarPage() {
     }
   }
 
-  async function hasCompletedPunch(targetEmployeeId: string, date: string, kind: 'in' | 'out') {
-    try {
-      const snap = await getDocs(query(
-        collection(db, 'punchLogs'),
-        where('employeeId', '==', targetEmployeeId),
-        where('date', '==', date)
-      ))
-      const punchLog = snap.docs[0] ? ({ id: snap.docs[0].id, ...snap.docs[0].data() } as PunchLog) : null
-      const count = punchLog?.punches?.filter(Boolean).length ?? 0
-      return kind === 'in' ? count >= 1 : count >= 2
-    } catch {
-      return false
-    }
-  }
-
   async function saveNotificationSettings() {
     if (!user?.uid) return
     setSavingNotificationSettings(true)
     try {
       if (
         (notificationSettings.shiftStartEnabled ||
-          notificationSettings.shiftEndEnabled ||
-          notificationSettings.punchInEnabled ||
-          notificationSettings.punchOutEnabled) &&
+          notificationSettings.shiftEndEnabled) &&
         'Notification' in window &&
         Notification.permission === 'default'
       ) {
@@ -2791,7 +2745,6 @@ export default function CalendarPage() {
       }
       const payload: UserNotificationSettings = {
         ...notificationSettings,
-        punchLeadMinutes: clampNotificationLeadMinutes(notificationSettings.punchLeadMinutes),
         updatedAt: new Date().toISOString()
       }
       await setDoc(doc(db, 'calendarNotificationSettings', user.uid), payload, { merge: true })
@@ -4718,45 +4671,6 @@ export default function CalendarPage() {
               </label>
             </section>
 
-            <section className="notification-settings-section">
-              <div className="notification-section-head">
-                <strong>打卡提醒</strong>
-                <small>到打卡時段才檢查；若已打卡就不提醒，錯過時間不補通知。</small>
-              </div>
-              <label className="notification-setting-row compact">
-                <span>
-                  <strong>上班卡</strong>
-                  <small>檢查今天是否已有第一筆打卡。</small>
-                </span>
-                <input
-                  type="checkbox"
-                  checked={notificationSettings.punchInEnabled}
-                  onChange={(event) => setNotificationSettings((settings) => ({ ...settings, punchInEnabled: event.target.checked }))}
-                />
-              </label>
-              <label className="notification-setting-row compact">
-                <span>
-                  <strong>下班卡</strong>
-                  <small>檢查今天是否已有第二筆打卡。</small>
-                </span>
-                <input
-                  type="checkbox"
-                  checked={notificationSettings.punchOutEnabled}
-                  onChange={(event) => setNotificationSettings((settings) => ({ ...settings, punchOutEnabled: event.target.checked }))}
-                />
-              </label>
-              <label className="notification-lead-row">
-                <span>提前提醒</span>
-                <input
-                  type="number"
-                  min="0"
-                  max="240"
-                  value={notificationSettings.punchLeadMinutes}
-                  onChange={(event) => setNotificationSettings((settings) => ({ ...settings, punchLeadMinutes: clampNotificationLeadMinutes(event.target.value) }))}
-                />
-                <span>分鐘</span>
-              </label>
-            </section>
           </div>
           <div className="modal-footer">
             <button type="button" onClick={() => setShowNotificationSettings(false)}>取消</button>

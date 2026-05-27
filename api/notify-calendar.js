@@ -10,9 +10,6 @@ const HR_PUNCH_CORRECTION_LEAVE_TYPE = '補打卡'
 const DEFAULT_NOTIFICATION_SETTINGS = {
   shiftStartEnabled: true,
   shiftEndEnabled: false,
-  punchInEnabled: false,
-  punchOutEnabled: false,
-  punchLeadMinutes: 0,
 }
 
 function setCorsHeaders(req, res) {

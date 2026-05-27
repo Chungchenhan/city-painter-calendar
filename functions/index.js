@@ -15,9 +15,6 @@ const HR_PUNCH_CORRECTION_LEAVE_TYPE = '補打卡'
 const DEFAULT_NOTIFICATION_SETTINGS = {
   shiftStartEnabled: true,
   shiftEndEnabled: false,
-  punchInEnabled: false,
-  punchOutEnabled: false,
-  punchLeadMinutes: 0,
 }
 
 let vapidDetailsReady = false
@@ -198,26 +195,6 @@ function eventStartMs(event) {
 function eventTimeBody(event) {
   const time = event.allDay ? '整天' : (event.startTime || '')
   return `${event.date} ${time}${event.location ? ` · ${event.location}` : ''}`.trim()
-}
-
-function validPunches(log) {
-  return Array.isArray(log && log.punches)
-    ? log.punches.filter(p => typeof p === 'string' && p.trim().length >= 5)
-    : []
-}
-
-async function fetchPunchLog(db, employeeId, date) {
-  const fixed = await db.collection('punchLogs').doc(`${employeeId}_${date}`).get()
-  if (fixed.exists) return { id: fixed.id, ...fixed.data() }
-
-  const snap = await db.collection('punchLogs')
-    .where('employeeId', '==', employeeId)
-    .where('date', '==', date)
-    .limit(1)
-    .get()
-  if (snap.empty) return null
-  const doc = snap.docs[0]
-  return { id: doc.id, ...doc.data() }
 }
 
 async function hasTodayLeave(db, employeeId, today) {
@@ -438,41 +415,19 @@ async function sendShiftAndPunchReminders(db, subscriptionsByEmployee, windowSta
           body: `今日班表 ${shift.startTime} - ${shift.endTime}`,
           tag: `calendar-shift-start-${employee.id}-${today}`,
         },
-        {
-          enabled: settings.shiftEndEnabled,
-          at: endMinutes,
-          title: '行事曆通知',
-          body: `今日班表 ${shift.startTime} - ${shift.endTime}`,
-          tag: `calendar-shift-end-${employee.id}-${today}`,
-        },
-        {
-          enabled: settings.punchInEnabled,
-          at: startMinutes - Math.max(0, Math.min(240, Number(settings.punchLeadMinutes) || 0)),
-          title: '上班打卡提醒',
-          body: `${shift.startTime} 上班，記得打卡`,
-          tag: `calendar-punch-in-${employee.id}-${today}`,
-          punchKind: 'in',
-        },
-        {
-          enabled: settings.punchOutEnabled,
-          at: endMinutes - Math.max(0, Math.min(240, Number(settings.punchLeadMinutes) || 0)),
-          title: '下班打卡提醒',
-          body: `${shift.endTime} 下班，記得打卡`,
-          tag: `calendar-punch-out-${employee.id}-${today}`,
-          punchKind: 'out',
-        },
-      ]
+      {
+        enabled: settings.shiftEndEnabled,
+        at: endMinutes,
+        title: '行事曆通知',
+        body: `今日班表 ${shift.startTime} - ${shift.endTime}`,
+        tag: `calendar-shift-end-${employee.id}-${today}`,
+      },
+    ]
 
       for (const schedule of schedules) {
         if (!schedule.enabled) continue
         const targetMs = new Date(`${today}T00:00:00+08:00`).getTime() + schedule.at * 60000
         if (targetMs < windowStartMs || targetMs > windowEndMs) continue
-        if (schedule.punchKind) {
-          const log = await fetchPunchLog(db, employee.id, today)
-          const count = validPunches(log).length
-          if (schedule.punchKind === 'in' && count >= 1) continue
-          if (schedule.punchKind === 'out' && count >= 2) continue
-        }
         sent += await sendPush(db, sub, {
           title: schedule.title,
           body: schedule.body,

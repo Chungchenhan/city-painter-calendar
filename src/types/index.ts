@@ -27,15 +27,6 @@ export interface Shift {
   earlyLeaveToleranceMinutes?: number
 }
 
-export interface PunchLog {
-  id: string
-  employeeId: string
-  date: string
-  punches: string[]
-  firstPunch?: string
-  lastPunch?: string
-}
-
 export interface UserRole {
   uid: string
   email: string
@@ -144,8 +135,5 @@ export interface CalendarActivityLog {
 export interface UserNotificationSettings {
   shiftStartEnabled: boolean
   shiftEndEnabled: boolean
-  punchInEnabled: boolean
-  punchOutEnabled: boolean
-  punchLeadMinutes: number
   updatedAt?: string
 }
