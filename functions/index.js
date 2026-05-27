@@ -256,6 +256,67 @@ function groupByEmployee(subscriptions) {
   return map
 }
 
+function createNotificationGate(db) {
+  const employeeCache = new Map()
+  const shiftCache = new Map()
+  const settingsCache = new Map()
+  const leaveCache = new Map()
+
+  async function loadEmployee(employeeId) {
+    if (employeeCache.has(employeeId)) return employeeCache.get(employeeId)
+    const snap = await db.collection('employees').doc(employeeId).get()
+    const employee = snap.exists ? { id: snap.id, ...snap.data() } : null
+    employeeCache.set(employeeId, employee)
+    return employee
+  }
+
+  async function loadShift(shiftId) {
+    if (shiftCache.has(shiftId)) return shiftCache.get(shiftId)
+    const snap = await db.collection('shifts').doc(shiftId).get()
+    const shift = snap.exists ? snap.data() : null
+    shiftCache.set(shiftId, shift)
+    return shift
+  }
+
+  async function loadSettings(uid) {
+    if (settingsCache.has(uid)) return settingsCache.get(uid)
+    const snap = await db.collection('calendarNotificationSettings').doc(uid).get()
+    const settings = { ...DEFAULT_NOTIFICATION_SETTINGS, ...(snap.exists ? snap.data() : {}) }
+    settingsCache.set(uid, settings)
+    return settings
+  }
+
+  async function employeeHasLeave(employeeId, date) {
+    const key = `${employeeId}:${date}`
+    if (leaveCache.has(key)) return leaveCache.get(key)
+    const value = await hasTodayLeave(db, employeeId, date)
+    leaveCache.set(key, value)
+    return value
+  }
+
+  return async function canReceiveCalendarNotification(sub, date, minutes) {
+    if (!sub.uid || !sub.employeeId) return false
+    const settings = await loadSettings(sub.uid)
+    if (!settings.shiftStartEnabled && !settings.shiftEndEnabled) return false
+
+    const employee = await loadEmployee(sub.employeeId)
+    if (!employee || employee.status !== 'active' || !employee.shiftId) return false
+    if (await employeeHasLeave(sub.employeeId, date)) return false
+
+    const shift = await loadShift(employee.shiftId)
+    if (!shift) return false
+    const startMinutes = minutesFromTime(shift.startTime)
+    const rawEndMinutes = minutesFromTime(shift.endTime)
+    if (startMinutes == null || rawEndMinutes == null) return false
+
+    const endMinutes = rawEndMinutes <= startMinutes ? rawEndMinutes + 1440 : rawEndMinutes
+    const normalizedMinutes = minutes < startMinutes ? minutes + 1440 : minutes
+    const isDuringShift = normalizedMinutes >= startMinutes && normalizedMinutes < endMinutes
+    const isAfterShift = normalizedMinutes >= endMinutes
+    return (settings.shiftStartEnabled && isDuringShift) || (settings.shiftEndEnabled && isAfterShift)
+  }
+}
+
 async function sendPush(db, sub, payload) {
   ensureVapidDetails()
   const key = sha256(`${sub.id}:${payload.tag}`)
@@ -293,7 +354,7 @@ async function sendToSubscriptions(db, subscriptions, payload) {
   return results.filter(Boolean).length
 }
 
-async function sendEventReminders(db, subscriptionsByEmployee, windowStartMs, windowEndMs, today) {
+async function sendEventReminders(db, subscriptionsByEmployee, windowStartMs, windowEndMs, today, canReceiveCalendarNotification) {
   const startDate = addDays(today, -1)
   const endDate = addDays(today, 2)
   const [rangeSnap, repeatSnap] = await Promise.all([
@@ -314,11 +375,17 @@ async function sendEventReminders(db, subscriptionsByEmployee, windowStartMs, wi
     if (!event.reminder || event.reminder === 'none' || !(event.assigneeIds || []).length) continue
     const notifyAt = eventStartMs(event) - reminderOffsetMinutes(event.reminder) * 60000
     if (notifyAt < windowStartMs || notifyAt > windowEndMs) continue
+    const notifyParts = getTaipeiParts(new Date(notifyAt))
     const tag = `calendar-reminder-${event.id}-${notifyAt}`
     for (const employeeId of event.assigneeIds || []) {
       const subscriptions = subscriptionsByEmployee.get(employeeId)
       if (!subscriptions || subscriptions.length === 0) continue
-      sent += await sendToSubscriptions(db, subscriptions, {
+      const targets = []
+      for (const sub of subscriptions) {
+        if (await canReceiveCalendarNotification(sub, notifyParts.date, notifyParts.minutes)) targets.push(sub)
+      }
+      if (targets.length === 0) continue
+      sent += await sendToSubscriptions(db, targets, {
         title: event.title || '行事曆提醒',
         body: eventTimeBody(event),
         tag,
@@ -434,7 +501,8 @@ exports.sendCalendarScheduledNotifications = onSchedule({
   if (subscriptions.length === 0) return
 
   const subscriptionsByEmployee = groupByEmployee(subscriptions)
-  await sendEventReminders(db, subscriptionsByEmployee, windowStartMs, windowEndMs, today)
+  const canReceiveCalendarNotification = createNotificationGate(db)
+  await sendEventReminders(db, subscriptionsByEmployee, windowStartMs, windowEndMs, today, canReceiveCalendarNotification)
   await sendShiftAndPunchReminders(db, subscriptionsByEmployee, windowStartMs, windowEndMs, today)
 })
 
@@ -447,10 +515,13 @@ exports.sendCalendarActivityNotifications = onDocumentCreated({
 
   const db = admin.firestore()
   const subscriptions = await loadSubscriptions(db)
-  const targets = subscriptions.filter(sub => (
-    (log.assigneeIds || []).includes(sub.employeeId) &&
-    sub.uid !== log.actorUid
-  ))
+  const canReceiveCalendarNotification = createNotificationGate(db)
+  const now = getTaipeiParts()
+  const targets = []
+  for (const sub of subscriptions) {
+    if (!(log.assigneeIds || []).includes(sub.employeeId) || sub.uid === log.actorUid) continue
+    if (await canReceiveCalendarNotification(sub, now.date, now.minutes)) targets.push(sub)
+  }
   if (targets.length === 0) return
 
   const actionText = log.action === 'create' ? '新增' : log.action === 'delete' ? '刪除' : log.action === 'move' ? '移動' : log.action === 'copy' ? '複製' : '更新'

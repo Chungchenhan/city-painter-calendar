@@ -1171,7 +1171,7 @@ export default function CalendarPage() {
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
     seenActivityLogIdsRef.current = currentIds
 
-    if (notificationPermission !== 'granted') return
+    if (notificationPermission !== 'granted' || !canSendCalendarNotificationAt(dayjs())) return
     addedLogs.slice(-3).forEach((log) => {
       void showLocalNotification('行事曆通知', {
         body: activityLogText(log),
@@ -1181,7 +1181,7 @@ export default function CalendarPage() {
         data: { url: '/' }
       })
     })
-  }, [backgroundDataReady, notificationPermission, pushActivityLogs, user?.uid])
+  }, [backgroundDataReady, canSendCalendarNotificationAt, notificationPermission, pushActivityLogs, user?.uid])
 
   useEffect(() => {
     const textarea = noteTextareaRef.current

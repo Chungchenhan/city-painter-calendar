@@ -5,6 +5,15 @@ import admin from 'firebase-admin'
 import webpush from 'web-push'
 
 const PROJECT_ID = 'city-painter-erp'
+const TAIPEI_TIME_ZONE = 'Asia/Taipei'
+const HR_PUNCH_CORRECTION_LEAVE_TYPE = '補打卡'
+const DEFAULT_NOTIFICATION_SETTINGS = {
+  shiftStartEnabled: true,
+  shiftEndEnabled: false,
+  punchInEnabled: false,
+  punchOutEnabled: false,
+  punchLeadMinutes: 0,
+}
 
 function setCorsHeaders(req, res) {
   const origin = req.headers.origin || '*'
@@ -75,6 +84,80 @@ function eventTimeLabel(event) {
   return `${date} ${start}${end ? `-${end}` : ''}`.trim()
 }
 
+function getTaipeiParts(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: TAIPEI_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(date)
+  const map = Object.fromEntries(parts.map((part) => [part.type, part.value]))
+  return {
+    date: `${map.year}-${map.month}-${map.day}`,
+    minutes: Number(map.hour) * 60 + Number(map.minute),
+  }
+}
+
+function minutesFromTime(value) {
+  const [hour, minute] = String(value || '').split(':').map(Number)
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null
+  return hour * 60 + minute
+}
+
+function eventEndDate(event) {
+  return event.endDate || event.date
+}
+
+function isHrPunchCorrectionEvent(event) {
+  const isHrLeaveRequest = event.source === 'hrLeaveRequest' || `${event.id || ''}`.startsWith('hrLeaveRequest_')
+  if (!isHrLeaveRequest) return false
+  return `${event.title || ''}`.includes(HR_PUNCH_CORRECTION_LEAVE_TYPE) ||
+    `${event.note || ''}`.includes(HR_PUNCH_CORRECTION_LEAVE_TYPE)
+}
+
+async function hasTodayLeave(db, employeeId, today) {
+  const snap = await db.collection('calendarEvents')
+    .where('date', '<=', today)
+    .get()
+  return snap.docs.some((doc) => {
+    const event = { id: doc.id, ...doc.data() }
+    return !isHrPunchCorrectionEvent(event) &&
+      (event.source === 'hrLeaveRequest' || event.id.startsWith('hrLeaveRequest_')) &&
+      (event.assigneeIds || []).includes(employeeId) &&
+      eventEndDate(event) >= today
+  })
+}
+
+async function canReceiveCalendarNotification(db, sub) {
+  if (!sub.uid || !sub.employeeId) return false
+  const now = getTaipeiParts()
+  const settingsSnap = await db.collection('calendarNotificationSettings').doc(sub.uid).get()
+  const settings = { ...DEFAULT_NOTIFICATION_SETTINGS, ...(settingsSnap.exists ? settingsSnap.data() : {}) }
+  if (!settings.shiftStartEnabled && !settings.shiftEndEnabled) return false
+
+  const employeeSnap = await db.collection('employees').doc(sub.employeeId).get()
+  if (!employeeSnap.exists) return false
+  const employee = employeeSnap.data()
+  if (employee.status !== 'active' || !employee.shiftId) return false
+  if (await hasTodayLeave(db, sub.employeeId, now.date)) return false
+
+  const shiftSnap = await db.collection('shifts').doc(employee.shiftId).get()
+  if (!shiftSnap.exists) return false
+  const shift = shiftSnap.data()
+  const startMinutes = minutesFromTime(shift.startTime)
+  const rawEndMinutes = minutesFromTime(shift.endTime)
+  if (startMinutes == null || rawEndMinutes == null) return false
+
+  const endMinutes = rawEndMinutes <= startMinutes ? rawEndMinutes + 1440 : rawEndMinutes
+  const normalizedMinutes = now.minutes < startMinutes ? now.minutes + 1440 : now.minutes
+  const isDuringShift = normalizedMinutes >= startMinutes && normalizedMinutes < endMinutes
+  const isAfterShift = normalizedMinutes >= endMinutes
+  return (settings.shiftStartEnabled && isDuringShift) || (settings.shiftEndEnabled && isAfterShift)
+}
+
 async function sendPushes(db, event, recipients, actorUid) {
   const subsSnap = await db.collection('calendarNotificationSubscriptions').where('enabled', '==', true).get()
   const targets = []
@@ -93,7 +176,13 @@ async function sendPushes(db, event, recipients, actorUid) {
 
   webpush.setVapidDetails('mailto:admin@city-painter.com', publicKey, privateKey)
 
-  const jobs = targets.map(async (sub) => {
+  const allowedTargets = []
+  for (const sub of targets) {
+    if (await canReceiveCalendarNotification(db, sub)) allowedTargets.push(sub)
+  }
+  if (allowedTargets.length === 0) return 0
+
+  const jobs = allowedTargets.map(async (sub) => {
     const payload = JSON.stringify({
       title: '行事曆通知',
       body: `您被標記在「${event.title || '未命名活動'}」 ${eventTimeLabel(event)}`,
