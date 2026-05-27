@@ -1923,28 +1923,8 @@ export default function CalendarPage() {
         createdAt: new Date().toISOString()
       })
       await queryClient.invalidateQueries({ queryKey: ['calendarActivityLogs'] })
-    } catch {
-      // 活動紀錄失敗不應阻擋主要操作。
-    }
-  }
-
-  async function notifyCalendarEventAssignees(eventId: string) {
-    if (!user || !eventId) return
-    try {
-      const token = await user.getIdToken()
-      const res = await fetch('/api/notify-calendar', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
-        },
-        body: JSON.stringify({ eventId })
-      })
-      if (!res.ok) {
-        console.warn('[notify-calendar] 通知 API 回應失敗', res.status)
-      }
     } catch (error) {
-      console.warn('[notify-calendar] 通知 API 呼叫失敗', error)
+      throw new Error(error instanceof Error ? error.message : '活動通知紀錄寫入失敗')
     }
   }
 
@@ -3270,9 +3250,6 @@ export default function CalendarPage() {
       void (async () => {
         try {
           await backgroundSave()
-          if (savedEventId && payload.assigneeIds.length) {
-            await notifyCalendarEventAssignees(savedEventId)
-          }
           await Promise.all(savedViewEvents.map((event) => syncCalendarEventViews(event)))
           await refreshCalendarData()
           if (savedEventId) {
