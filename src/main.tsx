@@ -20,6 +20,16 @@ if (import.meta.env.DEV && window.location.hostname === '127.0.0.1') {
 setupAppUpdateChecks()
 setupVisualViewportVars()
 
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.addEventListener('message', (event) => {
+    if (event.data?.type !== 'OPEN_URL' || !event.data.url) return
+    const url = new URL(event.data.url, window.location.origin)
+    if (url.origin === window.location.origin) {
+      window.location.href = `${url.pathname}${url.search}${url.hash}`
+    }
+  })
+}
+
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const { user, role, loading } = useAuth()
 

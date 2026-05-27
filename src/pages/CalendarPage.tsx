@@ -6,6 +6,7 @@ import { signOut } from 'firebase/auth'
 import { useQueryClient } from '@tanstack/react-query'
 import { auth, db } from '../lib/firebase'
 import { readLocalQueryCache, updateLocalQueryCache } from '../lib/localQueryCache'
+import { ensurePushSubscription, isPushSupported } from '../lib/pushNotifications'
 import { useAuth } from '../contexts/AuthContext'
 import { useCalendarActivityLogs, useCalendarEvents, useCalendarGroups, useCalendarSearchEvents } from '../hooks/useCalendarData'
 import { useDepartments, useEmployees, useShifts } from '../hooks/useHrData'
@@ -1023,6 +1024,11 @@ export default function CalendarPage() {
   }, [backgroundDataReady, user?.uid])
 
   useEffect(() => {
+    if (!backgroundDataReady || !user?.uid || notificationPermission !== 'granted' || !isPushSupported()) return
+    void ensurePushSubscription({ role, employeeId, displayName })
+  }, [backgroundDataReady, displayName, employeeId, notificationPermission, role, user?.uid])
+
+  useEffect(() => {
     if (!backgroundDataReady) return
     let cancelled = false
     async function loadTitleIconOptions() {
@@ -1951,6 +1957,26 @@ export default function CalendarPage() {
     }
   }
 
+  async function notifyCalendarEventAssignees(eventId: string) {
+    if (!user || !eventId) return
+    try {
+      const token = await user.getIdToken()
+      const res = await fetch('/api/notify-calendar', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ eventId })
+      })
+      if (!res.ok) {
+        console.warn('[notify-calendar] 通知 API 回應失敗', res.status)
+      }
+    } catch (error) {
+      console.warn('[notify-calendar] 通知 API 呼叫失敗', error)
+    }
+  }
+
   function getDepartmentEmployeeIds(departmentId: string) {
     const department = departments.find((item) => item.id === departmentId)
     return employees
@@ -2702,6 +2728,9 @@ export default function CalendarPage() {
     try {
       const permission = await Notification.requestPermission()
       setNotificationPermission(permission)
+      if (permission === 'granted') {
+        await ensurePushSubscription({ role, employeeId, displayName })
+      }
       if (permission !== 'granted') {
         alert('通知尚未啟用，請到瀏覽器或手機設定允許通知')
       }
@@ -2722,6 +2751,9 @@ export default function CalendarPage() {
     try {
       const permission = await Notification.requestPermission()
       setNotificationPermission(permission)
+      if (permission === 'granted') {
+        await ensurePushSubscription({ role, employeeId, displayName })
+      }
     } finally {
       dismissStartupNotificationPrompt()
     }
@@ -3268,6 +3300,9 @@ export default function CalendarPage() {
       void (async () => {
         try {
           await backgroundSave()
+          if (savedEventId && payload.assigneeIds.length) {
+            await notifyCalendarEventAssignees(savedEventId)
+          }
           await Promise.all(savedViewEvents.map((event) => syncCalendarEventViews(event)))
           await refreshCalendarData()
           if (savedEventId) {

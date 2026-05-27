@@ -25,6 +25,7 @@ function localApiPlugin(): Plugin {
       loadLocalServerEnv()
       const localApiHandlers: Record<string, string> = {
         '/api/upload-drive': './api/upload-drive.js',
+        '/api/notify-calendar': './api/notify-calendar.js',
         '/api/widget-calendar': './api/widget-calendar.js'
       }
 
@@ -46,7 +47,7 @@ function localApiPlugin(): Plugin {
           }
 
           try {
-            const { default: handler } = await import(handlerPath)
+            const { default: handler } = await import(path.resolve(process.cwd(), handlerPath))
             await handler(req, apiRes)
           } catch (error) {
             const message = error instanceof Error ? error.message : 'Local API failed'
@@ -92,7 +93,7 @@ export default defineConfig({
     htmlIconVersionPlugin(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['favicon.svg', 'apple-touch-icon.png', 'icons.svg'],
+      includeAssets: ['favicon.svg', 'apple-touch-icon.png', 'icons.svg', 'push-handler.js'],
       manifest: {
         name: '行事曆',
         short_name: '行事曆',
@@ -112,6 +113,7 @@ export default defineConfig({
       workbox: {
         skipWaiting: true,
         clientsClaim: true,
+        importScripts: ['push-handler.js'],
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
         navigateFallbackDenylist: [/^\/__\/auth\//, /^\/api\//],
         runtimeCaching: [
@@ -137,6 +139,8 @@ export default defineConfig({
     })
   ],
   server: {
+    host: '0.0.0.0',
+    port: 5175,
     hmr: { overlay: false }
   }
 })
