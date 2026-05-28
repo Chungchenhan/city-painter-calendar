@@ -71,6 +71,21 @@ textarea {
   border-bottom: 1px solid #e7e7e7;
   padding: 0 12px;
   background: #fff;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.timetree-topbar *,
+.timetree-topbar *::before,
+.timetree-topbar *::after {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.timetree-topbar ::selection {
+  background: transparent;
 }
 
 .topbar-left,
@@ -303,6 +318,21 @@ textarea {
   border-right: 1px solid #e7e7e7;
   background: #fff;
   padding: 14px 8px;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.tt-left-rail *,
+.tt-left-rail *::before,
+.tt-left-rail *::after {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.tt-left-rail ::selection {
+  background: transparent;
 }
 
 .rail-button,
