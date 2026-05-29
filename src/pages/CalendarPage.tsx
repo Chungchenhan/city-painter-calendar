@@ -5,7 +5,7 @@ import { addDoc, arrayUnion, collection, deleteDoc, doc, getDoc, getDocs, query,
 import { signOut } from 'firebase/auth'
 import { useQueryClient } from '@tanstack/react-query'
 import { auth, db } from '../lib/firebase'
-import { readLocalQueryCache, updateLocalQueryCache } from '../lib/localQueryCache'
+import { readLocalQueryCache, updateLocalQueryCache, writeLocalQueryCache } from '../lib/localQueryCache'
 import { ensurePushSubscription, isPushSupported } from '../lib/pushNotifications'
 import { useAuth } from '../contexts/AuthContext'
 import { useCalendarActivityLogs, useCalendarEvents, useCalendarGroups, useCalendarSearchEvents } from '../hooks/useCalendarData'
@@ -1537,16 +1537,17 @@ export default function CalendarPage() {
   function optimisticallyPatchCalendarEvents(patches: CalendarEvent[]) {
     if (!patches.length) return
     queryClient.setQueriesData<CalendarEvent[]>({ queryKey: ['calendarEvents'] }, (cached) => (
-      patchCalendarEventRows(cached, patches)
+      cached ? patchCalendarEventRows(cached, patches) : cached
     ))
     queryClient.setQueriesData<CalendarEvent[]>({ queryKey: ['calendarEventsSearchIndex'] }, (cached) => (
       cached ? patchCalendarEventRows(cached, patches) : cached
     ))
-    updateLocalQueryCache<CalendarEvent[]>('calendarEventsArchive', (cached) => (
-      patchCalendarEventRows(cached, patches)
+    const cachedArchive = readLocalQueryCache<CalendarEvent[]>('calendarEventsArchive')
+    if (cachedArchive) {
+      writeLocalQueryCache('calendarEventsArchive', patchCalendarEventRows(cachedArchive, patches)
         .sort((a, b) => `${b.date} ${b.startTime}`.localeCompare(`${a.date} ${a.startTime}`))
-        .slice(0, 2000)
-    ))
+        .slice(0, 2000))
+    }
   }
 
   function eventDisplayCalendarId(event: CalendarEvent) {
