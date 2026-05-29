@@ -207,10 +207,10 @@
 			};
 			buildConfigurationList = 4BC98498A974351FFE11F744 /* Build configuration list for PBXProject "CityPainterCalendar" */;
 			compatibilityVersion = "Xcode 3.2";
-			developmentRegion = en;
+			developmentRegion = "zh-Hant";
 			hasScannedForEncodings = 0;
 			knownRegions = (
-				en,
+				"zh-Hant",
 				Base,
 			);
 			mainGroup = 2826AC16C99336BF04E3CDA6;

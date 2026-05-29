@@ -32,7 +32,7 @@ const DEFAULT_USER_NOTIFICATION_SETTINGS: UserNotificationSettings = {
 }
 const REMINDER_OPTIONS = [
   { value: 'none', label: '無通知' },
-  { value: 'start', label: '活動開始時' },
+  { value: 'start', label: '事件開始時' },
   { value: '5m', label: '5 分鐘前' },
   { value: '15m', label: '15 分鐘前' },
   { value: '1h', label: '1 小時前' },
@@ -1882,7 +1882,7 @@ export default function CalendarPage() {
       })
       await queryClient.invalidateQueries({ queryKey: ['calendarActivityLogs'] })
     } catch (error) {
-      throw new Error(error instanceof Error ? error.message : '活動通知紀錄寫入失敗')
+      throw new Error(error instanceof Error ? error.message : '事件通知紀錄寫入失敗')
     }
   }
 
@@ -2454,11 +2454,11 @@ export default function CalendarPage() {
 
   function openEditEvent(event: CalendarEvent) {
     if (isHrReadonlyEvent(event)) {
-      alert('此活動來自 HR 後台，請至 HR 後台編輯')
+      alert('此事件來自 HR 後台，請至 HR 後台編輯')
       return
     }
     if (!canManageCalendarEvent(event)) {
-      alert('沒有此活動的編輯權限')
+      alert('沒有此事件的編輯權限')
       return
     }
     if (canUseRecurrenceScope(event)) {
@@ -2470,7 +2470,7 @@ export default function CalendarPage() {
 
   function openCopyEvent(event: CalendarEvent, copyDate?: string) {
     if (!canCreateEvent) {
-      alert('沒有新增活動的權限')
+      alert('沒有新增事件的權限')
       return
     }
     const targetDate = copyDate || selectedDate || event.date
@@ -2998,7 +2998,7 @@ export default function CalendarPage() {
     const normalizedEndDate = dayjs(eventForm.endDate).isBefore(dayjs(eventForm.date), 'day') ? eventForm.date : eventForm.endDate
     const editingEvent = editingEventId ? events.find((event) => event.id === editingEventId) : null
     if (editingEvent && isHrReadonlyEvent(editingEvent)) {
-      alert('此活動來自 HR 後台，請至 HR 後台編輯')
+      alert('此事件來自 HR 後台，請至 HR 後台編輯')
       return
     }
 
@@ -3313,7 +3313,7 @@ export default function CalendarPage() {
     event.target.value = ''
     if (!files.length || !selectedEvent) return
     if (!canManageCalendarEvent(selectedEvent) || isHrReadonlyEvent(selectedEvent)) {
-      alert('沒有此活動的附件上傳權限')
+      alert('沒有此事件的附件上傳權限')
       return
     }
 
@@ -3403,9 +3403,9 @@ export default function CalendarPage() {
       }
 
       if (hasUploadFailure) {
-        alert('活動已儲存，但附件背景上傳失敗，請稍後重新上傳')
+        alert('事件已儲存，但附件背景上傳失敗，請稍後重新上傳')
       } else if (deleteFailures > 0) {
-        alert('活動已儲存，但部分雲端附件刪除失敗，請稍後再試')
+        alert('事件已儲存，但部分雲端附件刪除失敗，請稍後再試')
       }
     })()
   }
@@ -3451,11 +3451,11 @@ export default function CalendarPage() {
 
   async function deleteEvent(event: CalendarEvent) {
     if (isHrReadonlyEvent(event)) {
-      alert('此活動來自 HR 後台，請至 HR 後台刪除')
+      alert('此事件來自 HR 後台，請至 HR 後台刪除')
       return
     }
     if (!canManageCalendarEvent(event)) {
-      alert('沒有此活動的刪除權限')
+      alert('沒有此事件的刪除權限')
       return
     }
     if (canUseRecurrenceScope(event)) {
@@ -3961,7 +3961,7 @@ export default function CalendarPage() {
       setDragOverDateIfChanged(null)
       await refreshCalendarData()
     } catch {
-      alert(action === 'move' ? '活動移動失敗，請稍後再試' : '活動複製失敗，請稍後再試')
+      alert(action === 'move' ? '事件移動失敗，請稍後再試' : '事件複製失敗，請稍後再試')
     } finally {
       setSaving(false)
     }
@@ -4226,7 +4226,7 @@ export default function CalendarPage() {
         onTouchCancel={handleEventDetailSwipeEnd}
       >
         <div className="event-detail-header">
-          <strong>活動詳情</strong>
+          <strong>事件詳情</strong>
           <div>
             {canManageEvent && (
               <>
@@ -4253,7 +4253,7 @@ export default function CalendarPage() {
               <div className="event-detail-action-wrap">
                 <button
                   onClick={() => setShowEventActionMenu((open) => !open)}
-                  aria-label="開啟活動選單"
+                  aria-label="開啟事件選單"
                   aria-expanded={showEventActionMenu}
                 >
                   ⋮
@@ -4297,7 +4297,7 @@ export default function CalendarPage() {
                 setShowEventActionMenu(false)
                 setSelectedEventId(null)
               }}
-              aria-label="關閉活動詳情"
+              aria-label="關閉事件詳情"
             >
               ×
             </button>
@@ -4452,16 +4452,16 @@ export default function CalendarPage() {
         onTouchCancel={handleDayListSwipeEnd}
       >
         <div className="panel-head">
-          <h2>{dayjs(dayListDate).format('M月D日')}活動</h2>
-          <button onClick={() => setDayListDate(null)} aria-label="關閉當日活動">×</button>
+          <h2>{dayjs(dayListDate).format('M月D日')}事件</h2>
+          <button onClick={() => setDayListDate(null)} aria-label="關閉當日事件">×</button>
         </div>
         <p className="panel-hint">共 {dayEvents.length} 筆</p>
         <div className="panel-list">
           {dayEvents.map((event) => renderEventSummary(event, { enableTouchDrag: true }))}
-          {dayEvents.length === 0 && <p className="panel-empty">這天沒有活動</p>}
+          {dayEvents.length === 0 && <p className="panel-empty">這天沒有事件</p>}
         </div>
         {canCreateEvent && (
-          <button className="day-list-add-btn" onClick={() => openAddEvent(dayListDate)}>新增這天活動</button>
+          <button className="day-list-add-btn" onClick={() => openAddEvent(dayListDate)}>新增這天事件</button>
         )}
       </aside>
     )
@@ -4512,7 +4512,7 @@ export default function CalendarPage() {
               </article>
             )
           })}
-          {visibleActivityLogs.length === 0 && <p className="panel-empty">目前沒有新的活動紀錄</p>}
+          {visibleActivityLogs.length === 0 && <p className="panel-empty">目前沒有新的事件紀錄</p>}
         </div>
       </aside>
     )
@@ -4602,7 +4602,7 @@ export default function CalendarPage() {
               <label className="notification-setting-row compact">
                 <span>
                   <strong>上班時間通知</strong>
-                  <small>勾選後，上班時間內有活動新增、修改、刪除，或活動提醒時間到時都會通知。</small>
+                  <small>勾選後，上班時間內有事件新增、修改、刪除，或事件提醒時間到時都會通知。</small>
                 </span>
                 <input
                   type="checkbox"
@@ -5188,7 +5188,7 @@ export default function CalendarPage() {
           >
             <div className="event-editor-header">
               <button className="text-btn" onClick={closeEventModal}>取消</button>
-              <strong>{editingEventId ? '編輯活動' : '新增活動'}</strong>
+              <strong>{editingEventId ? '編輯事件' : '新增事件'}</strong>
               <button className="text-btn save" onClick={saveEvent} disabled={saving}>{saving ? '儲存中' : '儲存'}</button>
               <button className="close-btn" onClick={closeEventModal}>×</button>
             </div>
@@ -5218,7 +5218,7 @@ export default function CalendarPage() {
                   }))}
                   onFocus={() => setShowTitleSuggestions(true)}
                   placeholder="新增標題"
-                  autoFocus={!eventEditorTouchLocked}
+                  autoFocus={!eventEditorTouchLocked && !editingEventId}
                 />
                 {showTitleSuggestions && titleSuggestions.length > 0 && (
                   <div className="title-suggestion-menu">

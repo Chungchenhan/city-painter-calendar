@@ -6,6 +6,12 @@
   <string>$(EXECUTABLE_NAME)</string>
   <key>CFBundleIdentifier</key>
   <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>zh-Hant</string>
+  <key>CFBundleLocalizations</key>
+  <array>
+    <string>zh-Hant</string>
+  </array>
   <key>CFBundleName</key>
   <string>$(PRODUCT_NAME)</string>
   <key>CFBundlePackageType</key>

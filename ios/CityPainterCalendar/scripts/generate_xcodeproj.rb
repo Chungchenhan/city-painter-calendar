@@ -15,6 +15,8 @@ DEVELOPMENT_TEAM = 'YMV24PTPJ5'
 
 FileUtils.rm_rf(PROJECT_PATH)
 project = Xcodeproj::Project.new(PROJECT_PATH)
+project.root_object.development_region = 'zh-Hant'
+project.root_object.known_regions = ['zh-Hant', 'Base']
 
 project.build_configurations.each do |config|
   config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = DEPLOYMENT_TARGET
