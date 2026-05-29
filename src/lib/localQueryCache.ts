@@ -22,3 +22,14 @@ export function writeLocalQueryCache<T>(key: string, data: T) {
 export function updateLocalQueryCache<T>(key: string, updater: (data: T | undefined) => T) {
   writeLocalQueryCache(key, updater(readLocalQueryCache<T>(key)))
 }
+
+export function clearLocalQueryCaches() {
+  if (typeof window === 'undefined') return
+  try {
+    Object.keys(window.localStorage)
+      .filter((key) => key.startsWith(PREFIX))
+      .forEach((key) => window.localStorage.removeItem(key))
+  } catch {
+    // 本機快取清除失敗不影響主要資料讀取。
+  }
+}
