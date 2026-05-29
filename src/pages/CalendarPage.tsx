@@ -2589,8 +2589,8 @@ export default function CalendarPage() {
 
   async function refreshCalendarData() {
     await Promise.all([
+      queryClient.refetchQueries({ queryKey: ['calendarEvents'], type: 'active' }),
       queryClient.invalidateQueries({ queryKey: ['calendarCalendars'] }),
-      queryClient.invalidateQueries({ queryKey: ['calendarEvents'] }),
       queryClient.invalidateQueries({ queryKey: ['calendarEventsSearchIndex'] }),
       queryClient.invalidateQueries({ queryKey: ['calendarActivityLogs'] })
     ])
@@ -3215,12 +3215,12 @@ export default function CalendarPage() {
           }
         } catch (error) {
           await refreshCalendarData().catch(() => undefined)
-          const message = error instanceof Error ? error.message : '工作儲存失敗，請稍後再試'
+          const message = error instanceof Error ? error.message : '事件儲存失敗，請稍後再試'
           alert(message)
         }
       })()
     } catch (error) {
-      const message = error instanceof Error ? error.message : '工作儲存失敗，請稍後再試'
+      const message = error instanceof Error ? error.message : '事件儲存失敗，請稍後再試'
       alert(message)
       setSaving(false)
     } finally {
@@ -3466,7 +3466,7 @@ export default function CalendarPage() {
   }
 
   async function applyDeleteEvent(event: CalendarEvent, scope: RecurrenceEditScope) {
-    if (!confirm('確定刪除此工作？')) return
+    if (!confirm('確定刪除此事件？')) return
     setRecurrenceDeleteCandidate(null)
     try {
       const rootId = recurrenceRootId(event)
@@ -3475,7 +3475,7 @@ export default function CalendarPage() {
       const sourceDate = recurrenceSourceDate(event)
       if (isRecurrenceOccurrence(event) && !existingRootEvent) {
         await deleteDoc(doc(db, 'calendarEvents', event.id))
-        await deleteCalendarEventViews(event.id)
+        void deleteCalendarEventViews(event.id).catch(() => undefined)
         removeEventsFromArchiveCache([event.id])
         await writeActivityLog({
           action: 'delete',
@@ -3515,7 +3515,7 @@ export default function CalendarPage() {
         })
       } else {
         await deleteDoc(doc(db, 'calendarEvents', rootId))
-        await deleteCalendarEventViews(rootId)
+        void deleteCalendarEventViews(rootId).catch(() => undefined)
         removeEventsFromArchiveCache([rootId])
       }
       await writeActivityLog({
@@ -3529,8 +3529,9 @@ export default function CalendarPage() {
       })
       setSelectedEventId((current) => current === event.id ? null : current)
       await refreshCalendarData()
-    } catch {
-      alert('工作刪除失敗')
+    } catch (error) {
+      console.warn('[calendar] delete event failed', error)
+      alert('事件刪除失敗')
     }
   }
 
