@@ -378,79 +378,6 @@ async function sendEventReminders(db, subscriptionsByEmployee, windowStartMs, wi
   return sent
 }
 
-async function sendShiftAndPunchReminders(db, subscriptionsByEmployee, windowStartMs, windowEndMs, today) {
-  const employeesSnap = await db.collection('employees').where('status', '==', 'active').get()
-  const shiftCache = new Map()
-  const settingsCache = new Map()
-  let sent = 0
-
-  for (const employeeDoc of employeesSnap.docs) {
-    const employee = { id: employeeDoc.id, ...employeeDoc.data() }
-    const subscriptions = subscriptionsByEmployee.get(employee.id)
-    if (!subscriptions || subscriptions.length === 0 || !employee.shiftId) continue
-    if (await hasTodayLeave(db, employee.id, today)) continue
-
-    let shift = shiftCache.get(employee.shiftId)
-    if (!shift) {
-      const shiftSnap = await db.collection('shifts').doc(employee.shiftId).get()
-      if (!shiftSnap.exists) continue
-      shift = shiftSnap.data()
-      shiftCache.set(employee.shiftId, shift)
-    }
-
-    const startMinutes = minutesFromTime(shift.startTime)
-    const endMinutes = minutesFromTime(shift.endTime)
-    if (startMinutes == null || endMinutes == null) continue
-
-    for (const sub of subscriptions) {
-      let settings = settingsCache.get(sub.uid)
-      if (!settings) {
-        const settingsSnap = await db.collection('calendarNotificationSettings').doc(sub.uid).get()
-        const employeeSettingsSnap = !settingsSnap.exists && sub.employeeId
-          ? await db.collection('calendarNotificationSettings').doc(sub.employeeId).get()
-          : null
-        settings = {
-          ...DEFAULT_NOTIFICATION_SETTINGS,
-          ...(settingsSnap.exists ? settingsSnap.data() : employeeSettingsSnap?.exists ? employeeSettingsSnap.data() : {})
-        }
-        settingsCache.set(sub.uid, settings)
-      }
-
-      const schedules = [
-        {
-          enabled: settings.shiftStartEnabled,
-          at: startMinutes,
-          title: '行事曆通知',
-          body: `今日班表 ${shift.startTime} - ${shift.endTime}`,
-          tag: `calendar-shift-start-${employee.id}-${today}`,
-        },
-      {
-        enabled: settings.shiftEndEnabled,
-        at: endMinutes,
-        title: '行事曆通知',
-        body: `今日班表 ${shift.startTime} - ${shift.endTime}`,
-        tag: `calendar-shift-end-${employee.id}-${today}`,
-      },
-    ]
-
-      for (const schedule of schedules) {
-        if (!schedule.enabled) continue
-        const targetMs = new Date(`${today}T00:00:00+08:00`).getTime() + schedule.at * 60000
-        if (targetMs < windowStartMs || targetMs > windowEndMs) continue
-        sent += await sendPush(db, sub, {
-          title: schedule.title,
-          body: schedule.body,
-          tag: schedule.tag,
-          url: '/',
-          unreadCount: 1,
-        }) ? 1 : 0
-      }
-    }
-  }
-
-  return sent
-}
-
 exports.sendCalendarScheduledNotifications = onSchedule({
   schedule: 'every 5 minutes',
   timeZone: TAIPEI_TIME_ZONE,
@@ -467,7 +394,6 @@ exports.sendCalendarScheduledNotifications = onSchedule({
   const subscriptionsByEmployee = groupByEmployee(subscriptions)
   const canReceiveCalendarNotification = createNotificationGate(db)
   await sendEventReminders(db, subscriptionsByEmployee, windowStartMs, windowEndMs, today, canReceiveCalendarNotification)
-  await sendShiftAndPunchReminders(db, subscriptionsByEmployee, windowStartMs, windowEndMs, today)
 })
 
 exports.sendCalendarActivityNotifications = onDocumentCreated({

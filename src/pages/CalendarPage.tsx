@@ -1082,51 +1082,6 @@ export default function CalendarPage() {
 
   useEffect(() => {
     if (!backgroundDataReady) return
-    if (!employeeId || !currentShift || hasTodayLeave) return
-    if (!('Notification' in window) || notificationPermission !== 'granted') return
-
-    const today = dayjs().format('YYYY-MM-DD')
-    const shiftStart = todayShiftTime(today, currentShift.startTime, '09:00')
-    let shiftEnd = todayShiftTime(today, currentShift.endTime, '18:00')
-    if (shiftEnd.isBefore(shiftStart)) shiftEnd = shiftEnd.add(1, 'day')
-
-    const schedules = [
-      {
-        enabled: notificationSettings.shiftStartEnabled,
-        at: shiftStart,
-        title: '行事曆通知',
-        body: `今日班表 ${currentShift.startTime} - ${currentShift.endTime}`,
-        tag: `calendar-shift-start-${employeeId}-${today}`
-      },
-      {
-        enabled: notificationSettings.shiftEndEnabled,
-        at: shiftEnd,
-        title: '行事曆通知',
-        body: `今日班表 ${currentShift.startTime} - ${currentShift.endTime}`,
-        tag: `calendar-shift-end-${employeeId}-${today}`
-      }
-    ]
-
-    const timers = schedules.flatMap((schedule) => {
-      if (!schedule.enabled) return []
-      const delay = schedule.at.diff(dayjs())
-      if (delay <= 0 || delay > 2147483647) return []
-      const timer = window.setTimeout(() => {
-        void showLocalNotification(schedule.title, {
-          body: schedule.body,
-          tag: schedule.tag,
-          icon: '/pwa-192x192.png',
-          badge: '/pwa-192x192.png',
-          data: { url: '/' }
-        })
-      }, delay)
-      return [timer]
-    })
-    return () => timers.forEach((timer) => window.clearTimeout(timer))
-  }, [backgroundDataReady, currentShift, employeeId, hasTodayLeave, notificationPermission, notificationSettings])
-
-  useEffect(() => {
-    if (!backgroundDataReady) return
     void setLocalBadge(unreadActivityCount)
   }, [backgroundDataReady, unreadActivityCount])
 
