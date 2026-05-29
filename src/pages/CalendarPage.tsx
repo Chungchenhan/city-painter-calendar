@@ -1524,12 +1524,6 @@ export default function CalendarPage() {
     })
   }
 
-  function writeDeleteActivityLog(input: Omit<CalendarActivityLog, 'id' | 'actorUid' | 'actorName' | 'createdAt'>) {
-    void writeActivityLog(input).catch((error) => {
-      console.warn('[calendar] write delete activity log failed', error)
-    })
-  }
-
   function sortCalendarEventsAscending(rows: CalendarEvent[]) {
     return [...rows].sort((a, b) => `${a.date} ${a.startTime}`.localeCompare(`${b.date} ${b.startTime}`))
   }
@@ -1989,15 +1983,6 @@ export default function CalendarPage() {
           updatedAt: new Date().toISOString()
         }, { merge: true })
       })
-    await batch.commit()
-  }
-
-  async function deleteCalendarEventViews(eventId: string) {
-    if (!eventId || !employees.length) return
-    const batch = writeBatch(db)
-    employees.forEach((employee) => {
-      batch.delete(doc(db, 'calendarEventViews', employee.id, 'events', eventId))
-    })
     await batch.commit()
   }
 
@@ -3471,6 +3456,28 @@ export default function CalendarPage() {
     return results.filter((result) => result.status === 'rejected').length
   }
 
+  async function deleteEventViaApi(event: CalendarEvent, scope: RecurrenceEditScope, rootId: string, sourceDate: string) {
+    if (!user) throw new Error('尚未登入')
+    const token = await user.getIdToken()
+    const response = await fetch('/api/delete-calendar-event', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify({
+        eventId: event.id,
+        rootId,
+        sourceDate,
+        scope
+      })
+    })
+    if (!response.ok) {
+      const result = await response.json().catch(() => ({})) as { error?: string }
+      throw new Error(result.error || `HTTP ${response.status}`)
+    }
+  }
+
   async function deleteEvent(event: CalendarEvent) {
     if (isHrReadonlyEvent(event)) {
       alert('此事件來自 HR 後台，請至 HR 後台刪除')
@@ -3495,60 +3502,21 @@ export default function CalendarPage() {
       const existingRootEvent = events.find((item) => item.id === rootId)
       const rootEvent = existingRootEvent ?? event
       const sourceDate = recurrenceSourceDate(event)
+      await deleteEventViaApi(event, scope, rootId, sourceDate)
       if (isRecurrenceOccurrence(event) && !existingRootEvent) {
-        await deleteDoc(doc(db, 'calendarEvents', event.id))
-        void deleteCalendarEventViews(event.id).catch(() => undefined)
         optimisticallyRemoveCalendarEvents([event.id])
-        writeDeleteActivityLog({
-          action: 'delete',
-          eventId: event.id,
-          eventTitle: eventDisplayTitle(event),
-          calendarId: eventDisplayCalendarId(event),
-          departmentId: event.departmentId,
-          assigneeIds: event.assigneeIds,
-          date: event.date
-        })
         setSelectedEventId(null)
         syncAfterDelete()
         return
       }
       if (scope === 'single' && (isRecurrenceOccurrence(event) || isRepeatingEvent(rootEvent))) {
-        await updateDoc(doc(db, 'calendarEvents', rootId), {
-          repeatExceptions: arrayUnion(sourceDate),
-          updatedAt: new Date().toISOString()
-        })
-        writeDeleteActivityLog({
-          action: 'delete',
-          eventId: rootId,
-          eventTitle: eventDisplayTitle(event),
-          calendarId: eventDisplayCalendarId(event),
-          departmentId: event.departmentId,
-          assigneeIds: event.assigneeIds,
-          date: event.date
-        })
         setSelectedEventId(null)
         syncAfterDelete()
         return
       }
-      if (scope === 'future' && isRepeatingEvent(rootEvent) && sourceDate !== rootEvent.date) {
-        await updateDoc(doc(db, 'calendarEvents', rootId), {
-          repeatUntil: dayjs(sourceDate).subtract(1, 'day').format('YYYY-MM-DD'),
-          updatedAt: new Date().toISOString()
-        })
-      } else {
-        await deleteDoc(doc(db, 'calendarEvents', rootId))
-        void deleteCalendarEventViews(rootId).catch(() => undefined)
+      if (!(scope === 'future' && isRepeatingEvent(rootEvent) && sourceDate !== rootEvent.date)) {
         optimisticallyRemoveCalendarEvents([rootId])
       }
-      writeDeleteActivityLog({
-        action: 'delete',
-        eventId: rootId,
-        eventTitle: eventDisplayTitle(event),
-        calendarId: eventDisplayCalendarId(event),
-        departmentId: event.departmentId,
-        assigneeIds: event.assigneeIds,
-        date: event.date
-      })
       setSelectedEventId((current) => current === event.id ? null : current)
       syncAfterDelete()
     } catch (error) {

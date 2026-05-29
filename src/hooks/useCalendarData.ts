@@ -107,6 +107,9 @@ export function useCalendarEvents(activeMonth: string) {
       return sorted
     },
     placeholderData: () => cachedEventsInRange(startDate, endDate),
+    refetchInterval: 15 * 1000,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: 'always',
     staleTime: 60 * 1000
   })
 
@@ -142,10 +145,16 @@ export function useCalendarEvents(activeMonth: string) {
       unsubscribeRange = onSnapshot(rangeQuery, (snap) => {
         rangeRows = snap.docs.map((d) => ({ id: d.id, ...d.data() })) as CalendarEvent[]
         publishRows()
+      }, (error) => {
+        console.warn('[calendar] range listener failed', error)
+        void queryClient.invalidateQueries({ queryKey })
       })
       unsubscribeRepeat = onSnapshot(repeatQuery, (snap) => {
         repeatRows = snap.docs.map((d) => ({ id: d.id, ...d.data() })) as CalendarEvent[]
         publishRows()
+      }, (error) => {
+        console.warn('[calendar] repeat listener failed', error)
+        void queryClient.invalidateQueries({ queryKey })
       })
     }, 900)
 
