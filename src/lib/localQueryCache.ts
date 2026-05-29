@@ -1,4 +1,6 @@
 const PREFIX = 'cityPainterCalendarQuery:'
+const CACHE_SCHEMA_KEY = 'cityPainterCalendarQuerySchemaVersion'
+const CACHE_SCHEMA_VERSION = '2026-05-29-calendar-events-v2'
 
 export function readLocalQueryCache<T>(key: string): T | undefined {
   if (typeof window === 'undefined') return undefined
@@ -31,5 +33,16 @@ export function clearLocalQueryCaches() {
       .forEach((key) => window.localStorage.removeItem(key))
   } catch {
     // 本機快取清除失敗不影響主要資料讀取。
+  }
+}
+
+export function ensureLocalQueryCacheSchema() {
+  if (typeof window === 'undefined') return
+  try {
+    if (window.localStorage.getItem(CACHE_SCHEMA_KEY) === CACHE_SCHEMA_VERSION) return
+    clearLocalQueryCaches()
+    window.localStorage.setItem(CACHE_SCHEMA_KEY, CACHE_SCHEMA_VERSION)
+  } catch {
+    // 本機快取版本檢查失敗不影響主要資料讀取。
   }
 }

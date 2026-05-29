@@ -1,5 +1,5 @@
 import { registerSW } from 'virtual:pwa-register'
-import { clearLocalQueryCaches } from './localQueryCache'
+import { clearLocalQueryCaches, ensureLocalQueryCacheSchema } from './localQueryCache'
 
 const APP_VERSION_KEY = 'cityPainterCalendarAppVersion'
 const RELOAD_FLAG_KEY = 'cityPainterCalendarReloadingForUpdate'
@@ -45,6 +45,8 @@ async function checkAppVersion() {
 
 export function setupAppUpdateChecks() {
   if (import.meta.env.DEV) return
+
+  ensureLocalQueryCacheSchema()
 
   registerSW({
     immediate: true,
