@@ -1508,6 +1508,28 @@ export default function CalendarPage() {
     ))
   }
 
+  function optimisticallyRemoveCalendarEvents(ids: string[]) {
+    const idSet = new Set(ids)
+    const removeRows = (rows: CalendarEvent[] | undefined) => (
+      rows?.filter((event) => !idSet.has(event.id) && !idSet.has(recurrenceRootId(event)))
+    )
+    queryClient.setQueriesData<CalendarEvent[]>({ queryKey: ['calendarEvents'] }, removeRows)
+    queryClient.setQueriesData<CalendarEvent[]>({ queryKey: ['calendarEventsSearchIndex'] }, removeRows)
+    removeEventsFromArchiveCache(ids)
+  }
+
+  function syncAfterDelete() {
+    void refreshCalendarData().catch((error) => {
+      console.warn('[calendar] refresh after delete failed', error)
+    })
+  }
+
+  function writeDeleteActivityLog(input: Omit<CalendarActivityLog, 'id' | 'actorUid' | 'actorName' | 'createdAt'>) {
+    void writeActivityLog(input).catch((error) => {
+      console.warn('[calendar] write delete activity log failed', error)
+    })
+  }
+
   function sortCalendarEventsAscending(rows: CalendarEvent[]) {
     return [...rows].sort((a, b) => `${a.date} ${a.startTime}`.localeCompare(`${b.date} ${b.startTime}`))
   }
@@ -3476,8 +3498,8 @@ export default function CalendarPage() {
       if (isRecurrenceOccurrence(event) && !existingRootEvent) {
         await deleteDoc(doc(db, 'calendarEvents', event.id))
         void deleteCalendarEventViews(event.id).catch(() => undefined)
-        removeEventsFromArchiveCache([event.id])
-        await writeActivityLog({
+        optimisticallyRemoveCalendarEvents([event.id])
+        writeDeleteActivityLog({
           action: 'delete',
           eventId: event.id,
           eventTitle: eventDisplayTitle(event),
@@ -3487,7 +3509,7 @@ export default function CalendarPage() {
           date: event.date
         })
         setSelectedEventId(null)
-        await refreshCalendarData()
+        syncAfterDelete()
         return
       }
       if (scope === 'single' && (isRecurrenceOccurrence(event) || isRepeatingEvent(rootEvent))) {
@@ -3495,7 +3517,7 @@ export default function CalendarPage() {
           repeatExceptions: arrayUnion(sourceDate),
           updatedAt: new Date().toISOString()
         })
-        await writeActivityLog({
+        writeDeleteActivityLog({
           action: 'delete',
           eventId: rootId,
           eventTitle: eventDisplayTitle(event),
@@ -3505,7 +3527,7 @@ export default function CalendarPage() {
           date: event.date
         })
         setSelectedEventId(null)
-        await refreshCalendarData()
+        syncAfterDelete()
         return
       }
       if (scope === 'future' && isRepeatingEvent(rootEvent) && sourceDate !== rootEvent.date) {
@@ -3516,9 +3538,9 @@ export default function CalendarPage() {
       } else {
         await deleteDoc(doc(db, 'calendarEvents', rootId))
         void deleteCalendarEventViews(rootId).catch(() => undefined)
-        removeEventsFromArchiveCache([rootId])
+        optimisticallyRemoveCalendarEvents([rootId])
       }
-      await writeActivityLog({
+      writeDeleteActivityLog({
         action: 'delete',
         eventId: rootId,
         eventTitle: eventDisplayTitle(event),
@@ -3528,7 +3550,7 @@ export default function CalendarPage() {
         date: event.date
       })
       setSelectedEventId((current) => current === event.id ? null : current)
-      await refreshCalendarData()
+      syncAfterDelete()
     } catch (error) {
       console.warn('[calendar] delete event failed', error)
       alert('事件刪除失敗')
