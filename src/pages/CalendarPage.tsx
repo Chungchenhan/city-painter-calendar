@@ -2265,11 +2265,12 @@ export default function CalendarPage() {
 
   function canSwipeCalendarWithTouch() {
     const touchDrag = dayListTouchDragRef.current
-    const draggingEvent = Boolean(touchDrag?.dragging)
     return (viewMode === 'month' || viewMode === 'week') &&
       !showEventModal &&
       !selectedEventId &&
-      (!dayListDate || draggingEvent)
+      !dragActionMenu &&
+      !touchDrag &&
+      !dayListDate
   }
 
   function handleCalendarTouchStart(event: ReactTouchEvent<HTMLElement>) {
@@ -2355,6 +2356,7 @@ export default function CalendarPage() {
   function monthLongPressTarget(target: EventTarget | null) {
     if (viewMode !== 'month' || !shouldUseMobileEventListFlow()) return false
     if (!(target instanceof Element)) return false
+    if (target.closest('.event-pill, .event-line, .week-event, .event-drag-menu, .event-drag-preview, .tt-day-list-panel')) return false
     const dateElement = target.closest<HTMLElement>('.month-grid [data-calendar-date]')
     if (!dateElement?.dataset.calendarDate) return false
     return {
@@ -3749,6 +3751,8 @@ export default function CalendarPage() {
     drag.latestX = event.clientX
     drag.latestY = event.clientY
     if (drag.active) {
+      event.preventDefault()
+      event.stopPropagation()
       moveDragPreview(event.clientX, event.clientY)
     }
     if (!drag.active) {
@@ -3764,7 +3768,6 @@ export default function CalendarPage() {
       setSelectedEventId(null)
       setDragActionMenu(null)
     }
-    event.preventDefault()
     setDragOverDateIfChanged(dragDateFromPoint(event.clientX, event.clientY) || null)
   }
 
@@ -5091,7 +5094,13 @@ export default function CalendarPage() {
       )}
 
       {dragActionMenu && (
-        <div className="event-drag-menu" style={{ left: dragActionMenu.x, top: dragActionMenu.y } as CSSProperties}>
+        <div
+          className="event-drag-menu"
+          style={{ left: dragActionMenu.x, top: dragActionMenu.y } as CSSProperties}
+          onPointerDown={(event) => event.stopPropagation()}
+          onTouchStart={(event) => event.stopPropagation()}
+          onClick={(event) => event.stopPropagation()}
+        >
           <button onClick={() => applyDragEventAction('move')} disabled={saving}>移動</button>
           <button onClick={() => applyDragEventAction('copy')} disabled={saving}>複製</button>
         </div>
