@@ -1435,6 +1435,7 @@ export default function CalendarPage() {
 
   useEffect(() => {
     return () => {
+      setTouchEventDragDocumentMode(false)
       if (dragPreviewFrameRef.current !== null) {
         window.cancelAnimationFrame(dragPreviewFrameRef.current)
       }
@@ -3540,6 +3541,13 @@ export default function CalendarPage() {
     pointerDragRef.current = null
   }
 
+  function setTouchEventDragDocumentMode(enabled: boolean) {
+    document.documentElement.classList.toggle('calendar-event-touch-dragging', enabled)
+    if (enabled) {
+      window.getSelection?.()?.removeAllRanges()
+    }
+  }
+
   function setDragOverDateIfChanged(date: string | null) {
     if (dragOverDateRef.current === date) return
     dragOverDateRef.current = date
@@ -3693,6 +3701,7 @@ export default function CalendarPage() {
     const drag = dayListTouchDragRef.current
     if (drag?.timer) window.clearTimeout(drag.timer)
     dayListTouchDragRef.current = null
+    setTouchEventDragDocumentMode(false)
     hideDragPreview()
     clearDayListTouchDragListeners()
   }
@@ -3755,6 +3764,7 @@ export default function CalendarPage() {
     if (drag.active) {
       event.preventDefault()
       event.stopPropagation()
+      window.getSelection?.()?.removeAllRanges()
       moveDragPreview(event.clientX, event.clientY)
     }
     if (!drag.active) {
@@ -3767,6 +3777,7 @@ export default function CalendarPage() {
       if (distance < 12) return
       drag.dragging = true
       suppressEventClickRef.current = true
+      setTouchEventDragDocumentMode(true)
       setSelectedEventId(null)
       setDragActionMenu(null)
     }
@@ -4058,7 +4069,7 @@ export default function CalendarPage() {
                 className={`event-pill ${event.allDay ? 'all-day' : 'timed'} ${selectedEventId === event.id ? 'active' : ''}`}
                 style={{ '--event-color': eventCalendarColor(event) } as CSSProperties}
                 key={event.id}
-                draggable={activeMonth && !isTouchDevice && eventDragAllowed(event)}
+                draggable={activeMonth && !isTouchDevice && !shouldUseMobileEventListFlow() && eventDragAllowed(event)}
                 onDragStart={(dragEvent) => activeMonth && startNativeEventDrag(dragEvent, event)}
                 onDragEnd={clearEventDragState}
                 onTouchStart={() => {
@@ -4156,7 +4167,7 @@ export default function CalendarPage() {
                 className={`week-event ${event.allDay ? 'all-day' : 'timed'} ${event.done ? 'done' : ''} ${selectedEventId === event.id ? 'active' : ''}`}
                 style={{ '--event-color': eventCalendarColor(event) } as CSSProperties}
                 key={event.id}
-                draggable={activeWeek && !isTouchDevice && eventDragAllowed(event)}
+                draggable={activeWeek && !isTouchDevice && !shouldUseMobileEventListFlow() && eventDragAllowed(event)}
                 onDragStart={(dragEvent) => activeWeek && startNativeEventDrag(dragEvent, event)}
                 onDragEnd={clearEventDragState}
                 onTouchStart={() => {

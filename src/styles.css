@@ -398,6 +398,20 @@ textarea {
   background: transparent;
 }
 
+html.calendar-event-touch-dragging,
+html.calendar-event-touch-dragging body,
+html.calendar-event-touch-dragging .tt-calendar-surface,
+html.calendar-event-touch-dragging .tt-calendar-surface * {
+  -webkit-touch-callout: none !important;
+  -webkit-user-select: none !important;
+  user-select: none !important;
+  -webkit-tap-highlight-color: transparent !important;
+}
+
+html.calendar-event-touch-dragging ::selection {
+  background: transparent !important;
+}
+
 .tt-calendar-surface .weekday-grid {
   position: sticky;
   top: 0;
