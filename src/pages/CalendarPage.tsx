@@ -2484,6 +2484,7 @@ export default function CalendarPage() {
       alert('沒有新增事件的權限')
       return
     }
+    lockEventEditorTouch()
     const targetDate = copyDate || selectedDate || event.date
     const range = shiftedEventDateRange(event, targetDate)
     const hiddenDepartmentIds = event.hiddenDepartmentIds ?? []
