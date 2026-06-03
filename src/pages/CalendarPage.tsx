@@ -2263,18 +2263,19 @@ export default function CalendarPage() {
     setSelectedDate(nextMonth.startOf('month').format('YYYY-MM-DD'))
   }
 
-  function canSwipeCalendarWithTouch() {
+  function canSwipeCalendarWithTouch(event?: ReactTouchEvent<HTMLElement>) {
     const touchDrag = dayListTouchDragRef.current
+    const canSwipeWithSecondTouch = Boolean(touchDrag?.dragging && event && event.touches.length >= 2)
     return (viewMode === 'month' || viewMode === 'week') &&
       !showEventModal &&
       !selectedEventId &&
       !dragActionMenu &&
-      !touchDrag &&
+      (!touchDrag || canSwipeWithSecondTouch) &&
       !dayListDate
   }
 
   function handleCalendarTouchStart(event: ReactTouchEvent<HTMLElement>) {
-    if (!canSwipeCalendarWithTouch()) return
+    if (!canSwipeCalendarWithTouch(event)) return
     const touch = event.changedTouches[0] ?? event.touches[0]
     if (!touch) return
     setCalendarSwipeAnimating(false)
