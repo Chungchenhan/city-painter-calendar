@@ -8,6 +8,8 @@ interface AuthContextType {
   user: User | null
   role: 'admin' | 'employee' | 'loading' | 'unknown'
   employeeId: string | null
+  employeeDepartmentId: string
+  employeeDepartmentName: string
   displayName: string
   loading: boolean
 }
@@ -16,6 +18,8 @@ const AuthContext = createContext<AuthContextType>({
   user: null,
   role: 'loading',
   employeeId: null,
+  employeeDepartmentId: '',
+  employeeDepartmentName: '',
   displayName: '',
   loading: true
 })
@@ -26,6 +30,8 @@ type CachedAuthProfile = {
   uid: string
   role: AuthContextType['role']
   employeeId: string | null
+  employeeDepartmentId?: string
+  employeeDepartmentName?: string
   displayName: string
 }
 
@@ -63,6 +69,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
   const [role, setRole] = useState<AuthContextType['role']>('loading')
   const [employeeId, setEmployeeId] = useState<string | null>(null)
+  const [employeeDepartmentId, setEmployeeDepartmentId] = useState('')
+  const [employeeDepartmentName, setEmployeeDepartmentName] = useState('')
   const [displayName, setDisplayName] = useState('')
   const [loading, setLoading] = useState(true)
 
@@ -74,6 +82,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser(null)
         setRole('unknown')
         setEmployeeId(null)
+        setEmployeeDepartmentId('')
+        setEmployeeDepartmentName('')
         setDisplayName('')
         clearCachedAuthProfile()
         setLoading(false)
@@ -85,6 +95,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (cachedProfile) {
         setRole(cachedProfile.role)
         setEmployeeId(cachedProfile.employeeId)
+        setEmployeeDepartmentId(cachedProfile.employeeDepartmentId ?? '')
+        setEmployeeDepartmentName(cachedProfile.employeeDepartmentName ?? '')
         setDisplayName(cachedProfile.displayName)
         setLoading(false)
       }
@@ -96,6 +108,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           clearCachedAuthProfile()
           setRole('unknown')
           setEmployeeId(null)
+          setEmployeeDepartmentId('')
+          setEmployeeDepartmentName('')
           setDisplayName(nextUser.displayName ?? nextUser.email ?? '')
           setLoading(false)
           return
@@ -107,6 +121,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           clearCachedAuthProfile()
           setRole('unknown')
           setEmployeeId(null)
+          setEmployeeDepartmentId('')
+          setEmployeeDepartmentName('')
           setDisplayName('')
           await signOut(auth)
           setLoading(false)
@@ -118,28 +134,40 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         let nextDisplayName = roleData.displayName || nextUser.displayName || ''
 
         const empSnap = await getDoc(doc(db, 'employees', nextEmployeeId))
-        const empData = empSnap.exists() ? (empSnap.data() as { name?: string; nickname?: string; status?: string; resignDate?: string | null }) : null
+        const empData = empSnap.exists()
+          ? (empSnap.data() as { name?: string; nickname?: string; departmentId?: string; departmentName?: string; status?: string; resignDate?: string | null })
+          : null
         if (!empData || !employeeCanAccess(empData)) {
           clearCachedAuthProfile()
           setRole('unknown')
           setEmployeeId(null)
+          setEmployeeDepartmentId('')
+          setEmployeeDepartmentName('')
           setDisplayName('')
           await signOut(auth)
           setLoading(false)
           return
         }
         nextDisplayName = empData.nickname || empData.name || nextDisplayName
+        const nextDepartmentId = empData.departmentId ?? ''
+        const nextDepartmentName = empData.departmentName ?? ''
+        setEmployeeDepartmentId(nextDepartmentId)
+        setEmployeeDepartmentName(nextDepartmentName)
         setDisplayName(nextDisplayName)
         writeCachedAuthProfile({
           uid: nextUser.uid,
           role: roleData.role,
           employeeId: nextEmployeeId,
+          employeeDepartmentId: nextDepartmentId,
+          employeeDepartmentName: nextDepartmentName,
           displayName: nextDisplayName
         })
       } catch {
         if (!cachedProfile) {
           setRole('unknown')
           setEmployeeId(null)
+          setEmployeeDepartmentId('')
+          setEmployeeDepartmentName('')
           setDisplayName(nextUser.displayName ?? nextUser.email ?? '')
         }
       } finally {
@@ -154,19 +182,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!user || !employeeId) return
 
     return onSnapshot(doc(db, 'employees', employeeId), async (snapshot) => {
-      const employee = snapshot.exists() ? snapshot.data() as { status?: string; resignDate?: string | null } : null
-      if (employeeCanAccess(employee)) return
+      const employee = snapshot.exists()
+        ? snapshot.data() as { departmentId?: string; departmentName?: string; status?: string; resignDate?: string | null }
+        : null
+      if (employeeCanAccess(employee)) {
+        setEmployeeDepartmentId(employee?.departmentId ?? '')
+        setEmployeeDepartmentName(employee?.departmentName ?? '')
+        return
+      }
 
       clearCachedAuthProfile()
       setRole('unknown')
       setEmployeeId(null)
+      setEmployeeDepartmentId('')
+      setEmployeeDepartmentName('')
       setDisplayName('')
       await signOut(auth)
     })
   }, [employeeId, user])
 
   return (
-    <AuthContext.Provider value={{ user, role, employeeId, displayName, loading }}>
+    <AuthContext.Provider value={{ user, role, employeeId, employeeDepartmentId, employeeDepartmentName, displayName, loading }}>
       {children}
     </AuthContext.Provider>
   )

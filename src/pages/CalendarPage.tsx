@@ -679,7 +679,7 @@ function openInputPicker(input: HTMLInputElement) {
 
 export default function CalendarPage() {
   const queryClient = useQueryClient()
-  const { user, role, employeeId, displayName } = useAuth()
+  const { user, role, employeeId, employeeDepartmentId, employeeDepartmentName, displayName } = useAuth()
   const isAdmin = role === 'admin'
   const [month, setMonth] = useState(dayjs().startOf('month'))
   const [backgroundDataReady, setBackgroundDataReady] = useState(false)
@@ -811,7 +811,8 @@ export default function CalendarPage() {
   const canceledAttachmentUploadIdsRef = useRef<Set<string>>(new Set())
 
   const currentEmployee = employees.find((emp) => emp.id === employeeId)
-  const currentEmployeeDepartmentName = currentEmployee?.departmentName || departments.find((department) => department.id === currentEmployee?.departmentId)?.name || ''
+  const currentEmployeeDepartmentId = currentEmployee?.departmentId || employeeDepartmentId || departments.find((department) => department.name === (currentEmployee?.departmentName || employeeDepartmentName))?.id || ''
+  const currentEmployeeDepartmentName = currentEmployee?.departmentName || employeeDepartmentName || departments.find((department) => department.id === currentEmployeeDepartmentId)?.name || ''
   const canManageCalendarColors = currentEmployeeDepartmentName === '管理部'
   const canViewHrLeaveNote = isAdmin || currentEmployeeDepartmentName === '管理部'
   const currentShift = shifts.find((shift) => (
@@ -892,7 +893,7 @@ export default function CalendarPage() {
       if (!eventCalendars.some((calendar) => selectedCalendarIds.includes(calendar.id))) return false
       return true
     })
-  }, [currentEmployee?.departmentId, currentEmployee?.departmentName, employeeId, events, selectedCalendarIds, visibleCalendarMap, departments, employees, hrLeaveCalendar])
+  }, [currentEmployeeDepartmentId, currentEmployeeDepartmentName, employeeId, events, selectedCalendarIds, visibleCalendarMap, departments, employees, hrLeaveCalendar])
 
   const visibleEvents = useMemo(() => {
     const rangeStart = month.subtract(2, 'month').startOf('month').format('YYYY-MM-DD')
@@ -914,7 +915,7 @@ export default function CalendarPage() {
         return eventCalendars.some((calendar) => selectedCalendarIds.includes(calendar.id))
       })
       .sort((a, b) => `${b.date} ${b.startTime}`.localeCompare(`${a.date} ${a.startTime}`))
-  }, [currentEmployee?.departmentId, currentEmployee?.departmentName, employeeId, events, searchIndexEvents, selectedCalendarIds, visibleCalendarMap, departments, employees, hrLeaveCalendar])
+  }, [currentEmployeeDepartmentId, currentEmployeeDepartmentName, employeeId, events, searchIndexEvents, selectedCalendarIds, visibleCalendarMap, departments, employees, hrLeaveCalendar])
 
   const searchEvents = useMemo(() => {
     const keyword = searchQuery.trim().toLowerCase()
@@ -1212,6 +1213,30 @@ export default function CalendarPage() {
       document.removeEventListener('keydown', closeDayListWithEscape)
     }
   }, [dayListDate])
+
+  useEffect(() => {
+    if (!showCalendarDrawer) return
+
+    function closeCalendarDrawer(event: MouseEvent | TouchEvent) {
+      if (shouldKeepOverlayOpenForSystemGesture(event)) return
+      const target = event.target
+      if (target instanceof Element && target.closest('.tt-calendar-drawer, .tt-left-rail')) return
+      setShowCalendarDrawer(false)
+    }
+
+    function closeCalendarDrawerWithEscape(event: KeyboardEvent) {
+      if (event.key === 'Escape') setShowCalendarDrawer(false)
+    }
+
+    document.addEventListener('mousedown', closeCalendarDrawer)
+    document.addEventListener('touchstart', closeCalendarDrawer)
+    document.addEventListener('keydown', closeCalendarDrawerWithEscape)
+    return () => {
+      document.removeEventListener('mousedown', closeCalendarDrawer)
+      document.removeEventListener('touchstart', closeCalendarDrawer)
+      document.removeEventListener('keydown', closeCalendarDrawerWithEscape)
+    }
+  }, [showCalendarDrawer])
 
   useEffect(() => {
     if (!selectedEventId) return
@@ -1613,8 +1638,8 @@ export default function CalendarPage() {
     const hiddenEmployees = event.hiddenAssigneeIds ?? []
     if (hiddenEmployees.includes(employeeId)) return false
     const hiddenDepartments = event.hiddenDepartmentIds ?? []
-    const viewerDepartmentId = currentEmployee?.departmentId ?? ''
-    const viewerDepartmentName = currentEmployee?.departmentName ?? ''
+    const viewerDepartmentId = currentEmployeeDepartmentId
+    const viewerDepartmentName = currentEmployeeDepartmentName
     if (viewerDepartmentId && hiddenDepartments.includes(viewerDepartmentId)) return false
     if (viewerDepartmentName && hiddenDepartments.some((id) => departmentName(id) === viewerDepartmentName)) return false
     const assignees = event.assigneeIds ?? []
@@ -1649,8 +1674,8 @@ export default function CalendarPage() {
     if (!overrides.length || !employeeId) return false
     const hasTitle = (item?: NonNullable<CalendarEvent['titleOverrides']>[number]) => Boolean(item?.title.trim())
     if (hasTitle(overrides.find((item) => item.targetType === 'employee' && item.targetId === employeeId))) return true
-    const departmentId = currentEmployee?.departmentId ?? ''
-    const departmentNameValue = currentEmployee?.departmentName ?? ''
+    const departmentId = currentEmployeeDepartmentId
+    const departmentNameValue = currentEmployeeDepartmentName
     if (hasTitle(overrides.find((item) => (
       item.targetType === 'department' &&
       (item.targetId === departmentId || departmentName(item.targetId) === departmentNameValue)
@@ -1666,8 +1691,8 @@ export default function CalendarPage() {
   function eventVisibilityTargetAppliesToViewer(event: CalendarEvent) {
     if (!employeeId) return false
     if (event.visibleAssigneeIds?.includes(employeeId)) return true
-    const departmentId = currentEmployee?.departmentId ?? ''
-    const departmentNameValue = currentEmployee?.departmentName ?? ''
+    const departmentId = currentEmployeeDepartmentId
+    const departmentNameValue = currentEmployeeDepartmentName
     return Boolean(event.visibleDepartmentIds?.some((id) => (
       id === departmentId || departmentName(id) === departmentNameValue
     )))
@@ -1676,8 +1701,8 @@ export default function CalendarPage() {
   function eventOverrideExcludedForViewer(event: CalendarEvent) {
     if (!employeeId) return false
     if (event.hiddenAssigneeIds?.includes(employeeId)) return true
-    const departmentId = currentEmployee?.departmentId ?? ''
-    const departmentNameValue = currentEmployee?.departmentName ?? ''
+    const departmentId = currentEmployeeDepartmentId
+    const departmentNameValue = currentEmployeeDepartmentName
     return Boolean(event.hiddenDepartmentIds?.some((id) => (
       id === departmentId || departmentName(id) === departmentNameValue
     )))
@@ -1697,8 +1722,8 @@ export default function CalendarPage() {
       : null
     const userOverrideTitle = displayOverrideTitle(userOverride ?? undefined)
     if (userOverrideTitle) return userOverrideTitle
-    const departmentId = currentEmployee?.departmentId ?? ''
-    const departmentNameValue = currentEmployee?.departmentName ?? ''
+    const departmentId = currentEmployeeDepartmentId
+    const departmentNameValue = currentEmployeeDepartmentName
     const departmentOverride = overrides.find((item) => (
       item.targetType === 'department' &&
       (item.targetId === departmentId || departmentName(item.targetId) === departmentNameValue)
@@ -1900,7 +1925,7 @@ export default function CalendarPage() {
       })
       await queryClient.invalidateQueries({ queryKey: ['calendarActivityLogs'] })
     } catch (error) {
-      throw new Error(error instanceof Error ? error.message : '事件通知紀錄寫入失敗')
+      console.warn('[calendar] write activity log failed', error)
     }
   }
 
@@ -2024,14 +2049,14 @@ export default function CalendarPage() {
   const selectedAssigneeText = eventForm.assigneeIds.length > 0
     ? eventForm.assigneeIds.map(employeeName).join('、')
     : '選擇同仁'
-  const ownDepartmentId = currentEmployee?.departmentId || departments.find((department) => department.name === currentEmployee?.departmentName)?.id || ''
+  const ownDepartmentId = currentEmployeeDepartmentId || departments.find((department) => department.name === currentEmployeeDepartmentName)?.id || ''
   const managementDepartmentId = departments.find((department) => department.name === '管理部')?.id || (currentEmployeeDepartmentName === '管理部' ? ownDepartmentId : '')
   const eventFormDepartmentName = departmentName(eventForm.departmentId)
   const visibleOtherDepartmentIds = departments
     .filter((department) => department.id !== eventForm.departmentId && department.name !== eventFormDepartmentName)
     .map((department) => department.id)
   const allOtherDepartmentIds = departments
-    .filter((department) => department.id !== ownDepartmentId && department.name !== currentEmployee?.departmentName)
+    .filter((department) => department.id !== ownDepartmentId && department.name !== currentEmployeeDepartmentName)
     .map((department) => department.id)
   const allDepartmentsVisible = visibleOtherDepartmentIds.length > 0 && visibleOtherDepartmentIds.every((id) => eventForm.visibleDepartmentIds.includes(id))
   const hiddenTargetText = [
@@ -2422,10 +2447,10 @@ export default function CalendarPage() {
       calendar.id === lastSelectedCalendarId && selectedCalendarIds.includes(calendar.id)
     ))
     const defaultCalendar = clickedCalendar ?? writableCalendars.find((calendar) => (
-      Boolean(currentEmployee?.departmentId && calendar.departmentIds.includes(currentEmployee.departmentId)) ||
-      Boolean(currentEmployee?.departmentName && calendar.name === currentEmployee.departmentName)
+      Boolean(currentEmployeeDepartmentId && calendar.departmentIds.includes(currentEmployeeDepartmentId)) ||
+      Boolean(currentEmployeeDepartmentName && calendar.name === currentEmployeeDepartmentName)
     )) ?? writableCalendars[0]
-    const defaultDepartmentId = defaultCalendar?.departmentIds[0] ?? currentEmployee?.departmentId ?? departments.find((department) => department.name === currentEmployee?.departmentName)?.id ?? ''
+    const defaultDepartmentId = defaultCalendar?.departmentIds[0] ?? currentEmployeeDepartmentId ?? departments.find((department) => department.name === currentEmployeeDepartmentName)?.id ?? ''
     const defaultTitleIcon = departmentTitleIconDefaults[defaultDepartmentId]?.[0] ?? ''
     setEventForm({
       ...emptyEvent,
@@ -2919,8 +2944,9 @@ export default function CalendarPage() {
       setDepartmentTitleIconDefaults(cleanDepartmentDefaults)
       setDepartmentTitleIconDraft(cleanDepartmentDefaults)
       setShowTitleIconSettings(false)
-    } catch {
-      alert('標題 icon 設定儲存失敗')
+    } catch (error) {
+      console.warn('[calendar] save title icon settings failed', error)
+      alert(error instanceof Error ? `標題 icon 設定儲存失敗：${error.message}` : '標題 icon 設定儲存失敗')
     } finally {
       setSavingTitleIcons(false)
     }
@@ -3939,29 +3965,36 @@ export default function CalendarPage() {
     try {
       const nextDateRange = shiftedEventDateRange(sourceEvent, dragActionMenu.targetDate)
       if (action === 'move') {
-        await updateDoc(doc(db, 'calendarEvents', sourceEvent.id), {
-          ...nextDateRange,
-          updatedAt: new Date().toISOString()
-        })
-        await syncCalendarEventViews({
+        const updatedAt = new Date().toISOString()
+        const movedEvent = {
           ...sourceEvent,
           ...nextDateRange,
-          updatedAt: new Date().toISOString()
+          updatedAt
+        }
+        await updateDoc(doc(db, 'calendarEvents', sourceEvent.id), {
+          ...nextDateRange,
+          updatedAt
         })
-        await writeActivityLog({
-          action: 'move',
-          eventId: sourceEvent.id,
-          eventTitle: eventDisplayTitle(sourceEvent),
-          calendarId: eventDisplayCalendarId(sourceEvent),
-          departmentId: sourceEvent.departmentId,
-          assigneeIds: sourceEvent.assigneeIds,
-          date: dragActionMenu.targetDate,
-          changes: [{
-            field: 'date',
-            label: '日期',
-            before: eventEndDate(sourceEvent) === sourceEvent.date ? sourceEvent.date : `${sourceEvent.date} - ${eventEndDate(sourceEvent)}`,
-            after: nextDateRange.endDate === nextDateRange.date ? nextDateRange.date : `${nextDateRange.date} - ${nextDateRange.endDate}`
-          }]
+        const followUpResults = await Promise.allSettled([
+          syncCalendarEventViews(movedEvent),
+          writeActivityLog({
+            action: 'move',
+            eventId: sourceEvent.id,
+            eventTitle: eventDisplayTitle(sourceEvent),
+            calendarId: eventDisplayCalendarId(sourceEvent),
+            departmentId: sourceEvent.departmentId,
+            assigneeIds: sourceEvent.assigneeIds,
+            date: dragActionMenu.targetDate,
+            changes: [{
+              field: 'date',
+              label: '日期',
+              before: eventEndDate(sourceEvent) === sourceEvent.date ? sourceEvent.date : `${sourceEvent.date} - ${eventEndDate(sourceEvent)}`,
+              after: nextDateRange.endDate === nextDateRange.date ? nextDateRange.date : `${nextDateRange.date} - ${nextDateRange.endDate}`
+            }]
+          })
+        ])
+        followUpResults.forEach((result) => {
+          if (result.status === 'rejected') console.warn('[calendar] move follow-up sync failed', result.reason)
         })
         setSelectedEventId(null)
       }
