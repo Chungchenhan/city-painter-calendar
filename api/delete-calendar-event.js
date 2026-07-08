@@ -87,6 +87,7 @@ async function canDeleteEvent(db, decoded, event, eventId) {
 
   const employee = await loadEmployee(db, role?.employeeId)
   if (!employee?.id) return false
+  if (employee.departmentName === '管理部') return true
   if (employee.departmentName !== '管理部') {
     const departments = await db.collection('departments').get()
     const departmentMap = new Map(departments.docs.map((doc) => [doc.id, doc.data()?.name || '']))

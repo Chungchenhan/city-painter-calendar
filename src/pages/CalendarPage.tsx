@@ -1657,6 +1657,7 @@ export default function CalendarPage() {
   function canManageCalendarEvent(event: CalendarEvent) {
     if (isHrReadonlyEvent(event)) return false
     if (isAdmin || Boolean(user?.uid && event.createdBy === user.uid)) return true
+    if (currentEmployeeDepartmentName === '管理部') return true
     if (isManagementDepartmentEvent(event) && currentEmployeeDepartmentName !== '管理部') return false
     if (!employeeId || !eventAllowedForViewer(event)) return false
     return Boolean(event.assigneeIds?.includes(employeeId) || eventBelongsToCurrentEmployeeDepartment(event))
