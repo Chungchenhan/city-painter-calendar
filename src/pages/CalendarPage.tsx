@@ -1648,25 +1648,18 @@ export default function CalendarPage() {
     return true
   }
 
+  function eventBelongsToCurrentEmployeeDepartment(event: CalendarEvent) {
+    if (!employeeId || !event.departmentId) return false
+    if (event.departmentId === currentEmployeeDepartmentId) return true
+    return Boolean(currentEmployeeDepartmentName && departmentName(event.departmentId) === currentEmployeeDepartmentName)
+  }
+
   function canManageCalendarEvent(event: CalendarEvent) {
     if (isHrReadonlyEvent(event)) return false
-    if (isManagementDepartmentEvent(event) && currentEmployeeDepartmentName !== '管理部') return false
     if (isAdmin || Boolean(user?.uid && event.createdBy === user.uid)) return true
+    if (isManagementDepartmentEvent(event) && currentEmployeeDepartmentName !== '管理部') return false
     if (!employeeId || !eventAllowedForViewer(event)) return false
-    const hasCalendarScope = Boolean(event.departmentId || event.calendarId || event.calendarIds?.length)
-
-    const eventCalendarIds = eventDisplayCalendarIds(event)
-    const eventCalendars = eventCalendarIds
-      .map((id) => visibleCalendarMap.get(id))
-      .filter(Boolean) as DisplayCalendar[]
-
-    if (!eventCalendars.length) {
-      return !hasCalendarScope && Boolean(event.assigneeIds?.includes(employeeId))
-    }
-
-    return eventCalendars.some((calendar) => (
-      calendar.systemKind !== 'hrLeave' && visibleCalendarIds.includes(calendar.id)
-    ))
+    return Boolean(event.assigneeIds?.includes(employeeId) || eventBelongsToCurrentEmployeeDepartment(event))
   }
 
   function eventTitleOverrideAppliesToViewer(event: CalendarEvent) {
@@ -3506,7 +3499,7 @@ export default function CalendarPage() {
     })
     if (!response.ok) {
       const result = await response.json().catch(() => ({})) as { error?: string }
-      throw new Error(result.error || `HTTP ${response.status}`)
+      throw new Error(result.error || `事件刪除失敗（HTTP ${response.status}）`)
     }
   }
 
@@ -3553,7 +3546,7 @@ export default function CalendarPage() {
       syncAfterDelete()
     } catch (error) {
       console.warn('[calendar] delete event failed', error)
-      alert('事件刪除失敗')
+      alert(error instanceof Error ? error.message : '事件刪除失敗')
     }
   }
 

@@ -142,7 +142,7 @@ export default async function handler(req, res) {
   try {
     getAdminApp()
     const decoded = await verifyRequest(req)
-    if (!decoded?.uid) return res.status(401).json({ error: 'Unauthorized' })
+    if (!decoded?.uid) return res.status(401).json({ error: '登入已失效，請重新登入' })
 
     const db = admin.firestore()
     const body = await readBody(req)
@@ -150,14 +150,14 @@ export default async function handler(req, res) {
     const rootId = String(body?.rootId || eventId).trim()
     const sourceDate = String(body?.sourceDate || '').trim()
     const scope = ['single', 'future', 'all'].includes(body?.scope) ? body.scope : 'all'
-    if (!eventId || !rootId) return res.status(400).json({ error: 'Missing event id' })
+    if (!eventId || !rootId) return res.status(400).json({ error: '缺少事件 ID' })
 
     const rootSnap = await db.collection('calendarEvents').doc(rootId).get()
     const eventSnap = eventId !== rootId ? await db.collection('calendarEvents').doc(eventId).get() : rootSnap
     const event = eventSnap.exists ? { id: eventSnap.id, ...eventSnap.data() } : null
     const rootEvent = rootSnap.exists ? { id: rootSnap.id, ...rootSnap.data() } : event
-    if (!rootEvent) return res.status(404).json({ error: 'Event not found' })
-    if (!await canDeleteEvent(db, decoded, rootEvent, rootId)) return res.status(403).json({ error: 'Forbidden' })
+    if (!rootEvent) return res.status(404).json({ error: '找不到要刪除的事件' })
+    if (!await canDeleteEvent(db, decoded, rootEvent, rootId)) return res.status(403).json({ error: '沒有此事件的刪除權限' })
 
     const actionDate = sourceDate || recurrenceSourceDate(event || rootEvent)
     if (scope === 'single' && (eventId !== rootId || isRepeatingEvent(rootEvent))) {
@@ -181,6 +181,6 @@ export default async function handler(req, res) {
     return res.status(200).json({ ok: true, eventId: rootId, scope, sourceDate: actionDate })
   } catch (error) {
     console.error(error)
-    return res.status(500).json({ error: 'Internal server error' })
+    return res.status(500).json({ error: '事件刪除失敗，請稍後再試' })
   }
 }
