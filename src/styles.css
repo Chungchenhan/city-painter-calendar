@@ -1801,6 +1801,80 @@ html.calendar-event-touch-dragging ::selection {
   pointer-events: none;
 }
 
+.event-detail-line-delivery {
+  border-top: 1px solid #ededed;
+  border-bottom: 1px solid #ededed;
+  padding: 10px 0;
+}
+
+.event-detail-line-delivery > label {
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  cursor: pointer;
+}
+
+.event-detail-line-delivery input {
+  flex: 0 0 20px;
+  width: 20px;
+  min-height: 20px;
+  accent-color: #06c755;
+}
+
+.event-detail-line-delivery label > span {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.event-detail-line-delivery strong {
+  color: #252525;
+  font-size: 14px;
+}
+
+.event-detail-line-delivery small {
+  color: #777;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.event-detail-line-notice {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 7px 9px;
+  background: #f5f5f5;
+  color: #555;
+  font-size: 12px;
+}
+
+.event-detail-line-notice.success {
+  background: #effaf3;
+  color: #16723a;
+}
+
+.event-detail-line-notice.error {
+  background: #fff3f3;
+  color: #a52323;
+}
+
+.event-detail-line-notice button {
+  min-height: 44px;
+  flex: 0 0 auto;
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  padding: 0 10px;
+  background: #fff;
+  color: inherit;
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .event-detail-action-wrap > button {
   width: 36px;
   min-height: 36px;

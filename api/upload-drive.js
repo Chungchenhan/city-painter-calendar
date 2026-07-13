@@ -1,12 +1,15 @@
 import fs from 'node:fs'
-import { randomUUID } from 'node:crypto'
+import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
+import admin from 'firebase-admin'
 import { google } from 'googleapis'
 import formidable from 'formidable'
 import sharp from 'sharp'
 
 const DEFAULT_DRIVE_FOLDER_ID = '1aqx7A8VwTKBSltaEj0IFoOXQP4HUJWF4'
+const DEFAULT_PUBLIC_BASE_URL = 'https://sch.city-painter.com'
+const PROJECT_ID = 'city-painter-erp'
 
 export const config = {
   api: {
@@ -18,8 +21,64 @@ function getServiceAccountCredentials() {
   const rawJson = process.env.GOOGLE_SERVICE_ACCOUNT_JSON
   const base64Json = process.env.GOOGLE_SERVICE_ACCOUNT_JSON_BASE64
   const source = rawJson || (base64Json ? Buffer.from(base64Json, 'base64').toString('utf8') : '')
-  if (!source) throw new Error('Missing Google service account credentials')
-  return JSON.parse(source)
+  if (source) return JSON.parse(source)
+
+  const localCredentialsPath = path.join(os.homedir(), '.firebase', 'service-account.json')
+  if (fs.existsSync(localCredentialsPath)) {
+    return JSON.parse(fs.readFileSync(localCredentialsPath, 'utf8'))
+  }
+
+  throw new Error('Missing Google service account credentials')
+}
+
+function getAdminApp() {
+  if (admin.apps.length > 0) return admin.app()
+  return admin.initializeApp({
+    credential: admin.credential.cert(getServiceAccountCredentials()),
+    projectId: PROJECT_ID
+  })
+}
+
+async function verifyRequest(req) {
+  const authorization = String(req.headers.authorization || '')
+  const token = authorization.startsWith('Bearer ') ? authorization.slice(7) : ''
+  if (!token) return null
+  try {
+    getAdminApp()
+    return await admin.auth().verifyIdToken(token)
+  } catch {
+    return null
+  }
+}
+
+function lineImageSigningSecret() {
+  return process.env.LINE_IMAGE_SIGNING_SECRET || getServiceAccountCredentials().private_key
+}
+
+function lineImageSignature(fileId, variant) {
+  return createHmac('sha256', lineImageSigningSecret())
+    .update(`${fileId}:${variant}`)
+    .digest('hex')
+}
+
+function validLineImageSignature(fileId, variant, signature) {
+  const expected = Buffer.from(lineImageSignature(fileId, variant), 'hex')
+  let received
+  try {
+    received = Buffer.from(String(signature || ''), 'hex')
+  } catch {
+    return false
+  }
+  return expected.length === received.length && timingSafeEqual(expected, received)
+}
+
+function lineImageUrls(fileId) {
+  const baseUrl = (process.env.CALENDAR_PUBLIC_BASE_URL || DEFAULT_PUBLIC_BASE_URL).replace(/\/$/, '')
+  const url = (variant) => `${baseUrl}/api/upload-drive?fileId=${encodeURIComponent(fileId)}&variant=${variant}&signature=${lineImageSignature(fileId, variant)}`
+  return {
+    lineOriginalUrl: url('original'),
+    linePreviewUrl: url('preview')
+  }
 }
 
 function getDriveAuth() {
@@ -112,14 +171,96 @@ async function prepareUploadFile(file) {
   }
 }
 
+async function renderLineImage(req, res) {
+  const requestUrl = new URL(req.url || '/', 'http://localhost')
+  const fileId = typeof req.query?.fileId === 'string' ? req.query.fileId.trim() : String(requestUrl.searchParams.get('fileId') || '').trim()
+  const requestedVariant = typeof req.query?.variant === 'string' ? req.query.variant : requestUrl.searchParams.get('variant')
+  const variant = requestedVariant === 'preview' ? 'preview' : 'original'
+  const signature = typeof req.query?.signature === 'string' ? req.query.signature : requestUrl.searchParams.get('signature') || ''
+  if (!fileId || !validLineImageSignature(fileId, variant, signature)) {
+    res.status(403).json({ error: 'Invalid image signature' })
+    return
+  }
+
+  const drive = google.drive({ version: 'v3', auth: getDriveAuth() })
+  const metadata = await drive.files.get({ fileId, fields: 'mimeType', supportsAllDrives: true })
+  if (!metadata.data.mimeType?.startsWith('image/')) {
+    res.status(415).json({ error: 'Unsupported image type' })
+    return
+  }
+  const source = await drive.files.get({ fileId, alt: 'media', supportsAllDrives: true }, { responseType: 'arraybuffer' })
+  const input = Buffer.from(source.data)
+  let output = await sharp(input)
+    .rotate()
+    .resize({ width: variant === 'preview' ? 720 : 1920, height: variant === 'preview' ? 720 : 1920, fit: 'inside', withoutEnlargement: true })
+    .jpeg({ quality: variant === 'preview' ? 72 : 84, mozjpeg: true })
+    .toBuffer()
+
+  if (variant === 'preview' && output.length > 1024 * 1024) {
+    output = await sharp(input)
+      .rotate()
+      .resize({ width: 480, height: 480, fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality: 62, mozjpeg: true })
+      .toBuffer()
+  }
+
+  res.setHeader('Content-Type', 'image/jpeg')
+  res.setHeader('Content-Length', String(output.length))
+  res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
+  res.setHeader('X-Content-Type-Options', 'nosniff')
+  res.status(200).end(output)
+}
+
+async function forwardLineAction(req, body) {
+  const action = body.action === 'production-photo-status' ? 'production-photo-status' : 'send-production-photos'
+  const response = await fetch(process.env.ERP_LINE_API_URL || 'https://erp.city-painter.com/api/line', {
+    method: 'POST',
+    headers: {
+      Authorization: String(req.headers.authorization || ''),
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      action,
+      eventId: body.eventId,
+      attachmentIds: body.attachmentIds
+    })
+  })
+  const result = await response.json().catch(() => null)
+  return {
+    status: response.status,
+    body: result || { ok: false, error: { message: `LINE 服務回應錯誤（HTTP ${response.status}）` } }
+  }
+}
+
 export default async function handler(req, res) {
+  if (req.method === 'GET') {
+    try {
+      await renderLineImage(req, res)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Image conversion failed'
+      res.status(500).json({ error: message })
+    }
+    return
+  }
+
+  if (req.method === 'OPTIONS') {
+    res.status(204).end()
+    return
+  }
+
   if (!['POST', 'DELETE'].includes(req.method || '')) {
-    res.setHeader('Allow', 'POST, DELETE')
+    res.setHeader('Allow', 'GET, POST, DELETE, OPTIONS')
     res.status(405).json({ error: 'Method not allowed' })
     return
   }
 
   try {
+    const decoded = await verifyRequest(req)
+    if (!decoded?.uid) {
+      res.status(401).json({ error: '登入已失效，請重新登入' })
+      return
+    }
+
     if (req.method === 'DELETE') {
       const { fileId } = await parseJsonBody(req)
       if (!fileId || typeof fileId !== 'string') {
@@ -140,6 +281,17 @@ export default async function handler(req, res) {
       }
 
       res.status(200).json({ ok: true })
+      return
+    }
+
+    if (req.headers['content-type']?.includes('application/json')) {
+      const body = await parseJsonBody(req)
+      if (!['production-photo-status', 'send-production-photos'].includes(body.action)) {
+        res.status(400).json({ error: 'Unsupported action' })
+        return
+      }
+      const forwarded = await forwardLineAction(req, body)
+      res.status(forwarded.status).json(forwarded.body)
       return
     }
 
@@ -191,7 +343,8 @@ export default async function handler(req, res) {
         provider: 'google-drive',
         originalName: prepared.originalName,
         originalSize: prepared.originalSize,
-        optimized: prepared.optimized
+        optimized: prepared.optimized,
+        ...(prepared.optimized && created.data.id ? lineImageUrls(created.data.id) : {})
       })
 
       if (prepared.optimized) {

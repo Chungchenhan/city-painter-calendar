@@ -102,10 +102,15 @@ export interface CalendarEvent {
     originalName?: string
     originalSize?: number
     optimized?: boolean
+    lineOriginalUrl?: string
+    linePreviewUrl?: string
   }[]
   done: boolean
   source?: string
   sourceId?: string
+  sourceSalesNo?: string
+  sourceCustomerCode?: string
+  sourceCustomerName?: string
   sourceDate?: string
   createdBy?: string
   createdAt?: string

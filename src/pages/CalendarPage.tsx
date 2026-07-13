@@ -69,6 +69,22 @@ type AttachmentUpload = {
   attachment?: EventAttachment
   error?: string
 }
+type ProductionLineStatus = {
+  eligible: boolean
+  bound: boolean
+  customerCode: string
+  customerName: string
+  lineDisplayName: string
+  salesNo: string
+  reason: string
+}
+type ProductionLineDelivery = {
+  sent: boolean
+  skipped?: boolean
+  reused?: boolean
+  photoCount?: number
+  message: string
+}
 type DisplayCalendar = CalendarGroup & { systemKind?: 'department' | 'hrLeave' }
 type EventForm = {
   calendarId: string
@@ -755,6 +771,12 @@ export default function CalendarPage() {
   const [eventEditorTouchLocked, setEventEditorTouchLocked] = useState(false)
   const [saving, setSaving] = useState(false)
   const [detailAttachmentUploading, setDetailAttachmentUploading] = useState(false)
+  const [productionLineStatus, setProductionLineStatus] = useState<ProductionLineStatus | null>(null)
+  const [productionLineStatusLoading, setProductionLineStatusLoading] = useState(false)
+  const [sendDetailAttachmentsToLine, setSendDetailAttachmentsToLine] = useState(true)
+  const [productionLineNotice, setProductionLineNotice] = useState<{ variant: 'success' | 'error' | 'muted'; message: string } | null>(null)
+  const [productionLineRetry, setProductionLineRetry] = useState<{ eventId: string; attachmentIds: string[] } | null>(null)
+  const [productionLineRetrying, setProductionLineRetrying] = useState(false)
   const noteTextareaRef = useRef<HTMLTextAreaElement | null>(null)
   const detailAttachmentInputRef = useRef<HTMLInputElement | null>(null)
   const monthInputRef = useRef<HTMLInputElement | null>(null)
@@ -1426,6 +1448,54 @@ export default function CalendarPage() {
       null
   }, [selectedEventId, visibleEvents, visibleSearchEvents])
   const loading = calendarsLoading || eventsLoading
+
+  useEffect(() => {
+    let cancelled = false
+    setProductionLineNotice(null)
+    setProductionLineRetry(null)
+    if (!selectedEvent || selectedEvent.source !== 'erpSalesDelivery' || !user?.uid) {
+      setProductionLineStatus(null)
+      setProductionLineStatusLoading(false)
+      setSendDetailAttachmentsToLine(false)
+      return () => {
+        cancelled = true
+      }
+    }
+
+    setProductionLineStatusLoading(true)
+    void (async () => {
+      try {
+        const token = await user.getIdToken()
+        const response = await fetch('/api/upload-drive', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ action: 'production-photo-status', eventId: selectedEvent.id })
+        })
+        const result = await response.json().catch(() => null) as (ProductionLineStatus & { ok?: boolean, error?: { message?: string } }) | null
+        if (!response.ok || result?.ok !== true) throw new Error(result?.error?.message || 'LINE 綁定狀態讀取失敗')
+        if (cancelled) return
+        setProductionLineStatus(result)
+        setSendDetailAttachmentsToLine(result.bound)
+      } catch (error) {
+        if (cancelled) return
+        setProductionLineStatus(null)
+        setSendDetailAttachmentsToLine(false)
+        setProductionLineNotice({
+          variant: 'error',
+          message: error instanceof Error ? error.message : 'LINE 綁定狀態讀取失敗'
+        })
+      } finally {
+        if (!cancelled) setProductionLineStatusLoading(false)
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [selectedEvent?.id, selectedEvent?.source, user?.uid])
 
   useEffect(() => {
     const run = () => setBackgroundDataReady(true)
@@ -3261,12 +3331,15 @@ export default function CalendarPage() {
   }
 
   async function uploadEventAttachments(eventId: string, files: File[]) {
+    if (!user) throw new Error('登入已失效，請重新登入')
+    const token = await user.getIdToken()
     const formData = new FormData()
     formData.set('eventId', eventId)
     files.forEach((file) => formData.append('files', file))
 
     const response = await fetch('/api/upload-drive', {
       method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
       body: formData
     })
     const result = await response.json().catch(() => ({}))
@@ -3274,6 +3347,41 @@ export default function CalendarPage() {
       throw new Error(result.error || '附件上傳失敗')
     }
     return result.attachments as NonNullable<CalendarEvent['attachments']>
+  }
+
+  async function sendProductionPhotoAttachments(eventId: string, attachmentIds: string[]) {
+    if (!user) throw new Error('登入已失效，請重新登入')
+    const token = await user.getIdToken()
+    const response = await fetch('/api/upload-drive', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ action: 'send-production-photos', eventId, attachmentIds })
+    })
+    const result = await response.json().catch(() => null) as { ok?: boolean, result?: ProductionLineDelivery, error?: { message?: string } } | null
+    if (!response.ok || result?.ok !== true || !result.result) {
+      throw new Error(result?.error?.message || `LINE 照片傳送失敗（HTTP ${response.status}）`)
+    }
+    return result.result
+  }
+
+  async function retryProductionPhotoDelivery() {
+    if (!productionLineRetry || productionLineRetrying) return
+    setProductionLineRetrying(true)
+    try {
+      const result = await sendProductionPhotoAttachments(productionLineRetry.eventId, productionLineRetry.attachmentIds)
+      setProductionLineNotice({ variant: result.sent ? 'success' : 'muted', message: result.message })
+      if (result.sent || result.skipped) setProductionLineRetry(null)
+    } catch (error) {
+      setProductionLineNotice({
+        variant: 'error',
+        message: error instanceof Error ? error.message : 'LINE 照片重新傳送失敗'
+      })
+    } finally {
+      setProductionLineRetrying(false)
+    }
   }
 
   function resetAttachmentUploadState() {
@@ -3363,6 +3471,29 @@ export default function CalendarPage() {
         updatedAt
       })
       firestoreUpdated = true
+      const lineAttachmentIds = uploadedAttachments
+        .filter((attachment) => attachment.lineOriginalUrl && attachment.linePreviewUrl && attachment.path)
+        .map((attachment) => attachment.path)
+      if (
+        selectedEvent.source === 'erpSalesDelivery' &&
+        sendDetailAttachmentsToLine &&
+        productionLineStatus?.bound &&
+        lineAttachmentIds.length > 0
+      ) {
+        try {
+          const delivery = await sendProductionPhotoAttachments(selectedEvent.id, lineAttachmentIds)
+          setProductionLineNotice({ variant: delivery.sent ? 'success' : 'muted', message: delivery.message })
+          setProductionLineRetry(delivery.sent || delivery.skipped ? null : { eventId: selectedEvent.id, attachmentIds: lineAttachmentIds })
+        } catch (error) {
+          setProductionLineNotice({
+            variant: 'error',
+            message: error instanceof Error ? error.message : '照片已上傳，但 LINE 傳送失敗'
+          })
+          setProductionLineRetry({ eventId: selectedEvent.id, attachmentIds: lineAttachmentIds })
+        }
+      } else if (selectedEvent.source === 'erpSalesDelivery' && sendDetailAttachmentsToLine && lineAttachmentIds.length === 0) {
+        setProductionLineNotice({ variant: 'muted', message: '附件已上傳；只有照片會同步傳送 LINE。' })
+      }
       setDetailAttachmentUploading(false)
       void (async () => {
         try {
@@ -3466,11 +3597,16 @@ export default function CalendarPage() {
   async function deleteRemovedEventAttachments(files: EventAttachment[]) {
     const driveFiles = files.filter((file) => file.provider === 'google-drive' && file.path)
     if (!driveFiles.length) return 0
+    if (!user) return driveFiles.length
+    const token = await user.getIdToken()
 
     const results = await Promise.allSettled(driveFiles.map(async (file) => {
       const response = await fetch('/api/upload-drive', {
         method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
         body: JSON.stringify({ fileId: file.path })
       })
       if (!response.ok) {
@@ -4365,6 +4501,43 @@ export default function CalendarPage() {
               {!selectedEvent.allDay && <strong>{selectedEvent.endTime}</strong>}
             </div>
           </div>
+
+          {selectedEvent.source === 'erpSalesDelivery' && (
+            <div className="event-detail-line-delivery">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={sendDetailAttachmentsToLine}
+                  disabled={productionLineStatusLoading || !productionLineStatus?.bound || detailAttachmentUploading}
+                  onChange={(event) => setSendDetailAttachmentsToLine(event.target.checked)}
+                />
+                <span>
+                  <strong>上傳照片時同步傳送官方 LINE</strong>
+                  <small>
+                    {productionLineStatusLoading
+                      ? '正在確認客戶綁定...'
+                      : productionLineStatus?.bound
+                        ? `收件人：${productionLineStatus.customerCode} ${productionLineStatus.lineDisplayName || productionLineStatus.customerName}`
+                        : productionLineStatus?.reason === 'customer_not_bound'
+                          ? `${productionLineStatus.customerCode} ${productionLineStatus.customerName} 尚未綁定 LINE`
+                          : productionLineStatus?.reason === 'contact_inactive'
+                            ? '客戶已封鎖或取消加入官方帳號'
+                            : '目前無法取得客戶 LINE 綁定資料'}
+                  </small>
+                </span>
+              </label>
+              {productionLineNotice && (
+                <div className={`event-detail-line-notice ${productionLineNotice.variant}`}>
+                  <span>{productionLineNotice.message}</span>
+                  {productionLineRetry && (
+                    <button type="button" disabled={productionLineRetrying} onClick={retryProductionPhotoDelivery}>
+                      {productionLineRetrying ? '重送中...' : '重新傳送 LINE'}
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
           {assignees.length > 0 && (
             <div className="event-detail-row">
