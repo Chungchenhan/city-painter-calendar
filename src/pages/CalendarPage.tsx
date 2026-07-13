@@ -87,9 +87,9 @@ type ProductionLineDelivery = {
 }
 const MAX_DIRECT_ATTACHMENT_BYTES = 3.5 * 1024 * 1024
 
-function attachmentWebpName(name: string) {
+function attachmentTransferName(name: string) {
   const baseName = name.replace(/\.[^.]+$/, '') || 'image'
-  return `${baseName}.webp`
+  return `${baseName}.jpg`
 }
 
 async function prepareAttachmentUpload(file: File) {
@@ -112,9 +112,11 @@ async function prepareAttachmentUpload(file: File) {
       element.src = sourceUrl
     })
     const candidates = [
-      { size: 1920, quality: 0.78 },
-      { size: 1600, quality: 0.72 },
-      { size: 1280, quality: 0.68 }
+      { size: 1920, quality: 0.8 },
+      { size: 1600, quality: 0.74 },
+      { size: 1280, quality: 0.68 },
+      { size: 1024, quality: 0.62 },
+      { size: 800, quality: 0.56 }
     ]
 
     for (const candidate of candidates) {
@@ -125,10 +127,11 @@ async function prepareAttachmentUpload(file: File) {
       const context = canvas.getContext('2d')
       if (!context) throw new Error('瀏覽器無法處理此照片，請稍後再試。')
       context.drawImage(image, 0, 0, canvas.width, canvas.height)
-      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/webp', candidate.quality))
-      if (blob?.type === 'image/webp' && blob.size <= MAX_DIRECT_ATTACHMENT_BYTES) {
+      // iOS WebView 的 Canvas 不一定支援 WebP 編碼，JPEG 僅作為傳輸格式，後端仍只保留 WebP。
+      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', candidate.quality))
+      if (blob?.type === 'image/jpeg' && blob.size <= MAX_DIRECT_ATTACHMENT_BYTES) {
         return {
-          file: new File([blob], attachmentWebpName(file.name), { type: 'image/webp', lastModified: file.lastModified }),
+          file: new File([blob], attachmentTransferName(file.name), { type: 'image/jpeg', lastModified: file.lastModified }),
           ...metadata
         }
       }
