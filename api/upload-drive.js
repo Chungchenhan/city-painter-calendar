@@ -130,6 +130,11 @@ function normalizeFiles(fileField) {
   return Array.isArray(fileField) ? fileField : [fileField]
 }
 
+function fieldText(value) {
+  const normalized = Array.isArray(value) ? value[0] : value
+  return typeof normalized === 'string' ? normalized.trim() : ''
+}
+
 function isImage(file) {
   return Boolean(file.mimetype?.startsWith('image/')) && file.mimetype !== 'image/svg+xml'
 }
@@ -139,15 +144,18 @@ function webpName(filename) {
   return `${parsed.name || 'image'}.webp`
 }
 
-async function prepareUploadFile(file) {
+async function prepareUploadFile(file, metadata = {}) {
+  const originalName = fieldText(metadata.originalName) || file.originalFilename || file.newFilename
+  const parsedOriginalSize = Number(fieldText(metadata.originalSize))
+  const originalSize = Number.isFinite(parsedOriginalSize) && parsedOriginalSize > 0 ? parsedOriginalSize : file.size
   if (!isImage(file)) {
     return {
       filepath: file.filepath,
       name: file.originalFilename || file.newFilename,
       mimeType: file.mimetype || 'application/octet-stream',
       size: file.size,
-      originalName: file.originalFilename || file.newFilename,
-      originalSize: file.size,
+      originalName,
+      originalSize,
       optimized: false
     }
   }
@@ -162,13 +170,41 @@ async function prepareUploadFile(file) {
   const stat = await fs.promises.stat(outputPath)
   return {
     filepath: outputPath,
-    name: webpName(file.originalFilename || file.newFilename),
+    name: webpName(originalName),
     mimeType: 'image/webp',
     size: stat.size,
-    originalName: file.originalFilename || file.newFilename,
-    originalSize: file.size,
+    originalName,
+    originalSize,
     optimized: true
   }
+}
+
+async function createLineJpeg(input, variant) {
+  const variants = variant === 'preview'
+    ? [
+        { size: 720, quality: 72 },
+        { size: 560, quality: 66 },
+        { size: 420, quality: 60 }
+      ]
+    : [
+        { size: 1920, quality: 82 },
+        { size: 1600, quality: 76 },
+        { size: 1280, quality: 72 },
+        { size: 1024, quality: 68 }
+      ]
+  const maxBytes = variant === 'preview' ? 900 * 1024 : 4 * 1024 * 1024
+  let output = null
+
+  for (const option of variants) {
+    output = await sharp(input)
+      .rotate()
+      .resize({ width: option.size, height: option.size, fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality: option.quality, mozjpeg: true })
+      .toBuffer()
+    if (output.length <= maxBytes) return output
+  }
+
+  return output
 }
 
 async function renderLineImage(req, res) {
@@ -190,19 +226,7 @@ async function renderLineImage(req, res) {
   }
   const source = await drive.files.get({ fileId, alt: 'media', supportsAllDrives: true }, { responseType: 'arraybuffer' })
   const input = Buffer.from(source.data)
-  let output = await sharp(input)
-    .rotate()
-    .resize({ width: variant === 'preview' ? 720 : 1920, height: variant === 'preview' ? 720 : 1920, fit: 'inside', withoutEnlargement: true })
-    .jpeg({ quality: variant === 'preview' ? 72 : 84, mozjpeg: true })
-    .toBuffer()
-
-  if (variant === 'preview' && output.length > 1024 * 1024) {
-    output = await sharp(input)
-      .rotate()
-      .resize({ width: 480, height: 480, fit: 'inside', withoutEnlargement: true })
-      .jpeg({ quality: 62, mozjpeg: true })
-      .toBuffer()
-  }
+  const output = await createLineJpeg(input, variant)
 
   res.setHeader('Content-Type', 'image/jpeg')
   res.setHeader('Content-Length', String(output.length))
@@ -295,7 +319,7 @@ export default async function handler(req, res) {
       return
     }
 
-    const { files } = await parseUpload(req)
+    const { fields, files } = await parseUpload(req)
     const uploadFiles = normalizeFiles(files.files)
     if (!uploadFiles.length) {
       res.status(400).json({ error: 'No files uploaded' })
@@ -308,7 +332,10 @@ export default async function handler(req, res) {
 
     const attachments = []
     for (const file of uploadFiles) {
-      const prepared = await prepareUploadFile(file)
+      const prepared = await prepareUploadFile(file, {
+        originalName: fields.originalName,
+        originalSize: fields.originalSize
+      })
       const created = await drive.files.create({
         requestBody: {
           name: prepared.name,

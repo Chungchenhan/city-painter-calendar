@@ -85,6 +85,60 @@ type ProductionLineDelivery = {
   photoCount?: number
   message: string
 }
+const MAX_DIRECT_ATTACHMENT_BYTES = 3.5 * 1024 * 1024
+
+function attachmentWebpName(name: string) {
+  const baseName = name.replace(/\.[^.]+$/, '') || 'image'
+  return `${baseName}.webp`
+}
+
+async function prepareAttachmentUpload(file: File) {
+  const metadata = { originalName: file.name, originalSize: file.size }
+  const imageLike = file.type.startsWith('image/') || /\.(?:avif|heic|heif|jpe?g|png|webp)$/i.test(file.name)
+  if (!imageLike || file.type === 'image/svg+xml') {
+    if (file.size > MAX_DIRECT_ATTACHMENT_BYTES) throw new Error('附件超過 3.5 MB，請縮小檔案後再試。')
+    return { file, ...metadata }
+  }
+  if (file.size <= MAX_DIRECT_ATTACHMENT_BYTES) {
+    return { file, ...metadata }
+  }
+
+  const sourceUrl = URL.createObjectURL(file)
+  try {
+    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const element = new Image()
+      element.onload = () => resolve(element)
+      element.onerror = () => reject(new Error('此照片無法在手機端壓縮，請改用較小的 JPEG、PNG 或 WebP。'))
+      element.src = sourceUrl
+    })
+    const candidates = [
+      { size: 1920, quality: 0.78 },
+      { size: 1600, quality: 0.72 },
+      { size: 1280, quality: 0.68 }
+    ]
+
+    for (const candidate of candidates) {
+      const ratio = Math.min(1, candidate.size / Math.max(image.naturalWidth, image.naturalHeight))
+      const canvas = document.createElement('canvas')
+      canvas.width = Math.max(1, Math.round(image.naturalWidth * ratio))
+      canvas.height = Math.max(1, Math.round(image.naturalHeight * ratio))
+      const context = canvas.getContext('2d')
+      if (!context) throw new Error('瀏覽器無法處理此照片，請稍後再試。')
+      context.drawImage(image, 0, 0, canvas.width, canvas.height)
+      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/webp', candidate.quality))
+      if (blob?.type === 'image/webp' && blob.size <= MAX_DIRECT_ATTACHMENT_BYTES) {
+        return {
+          file: new File([blob], attachmentWebpName(file.name), { type: 'image/webp', lastModified: file.lastModified }),
+          ...metadata
+        }
+      }
+    }
+
+    throw new Error('照片壓縮後仍超過上傳限制，請縮小照片後再試。')
+  } finally {
+    URL.revokeObjectURL(sourceUrl)
+  }
+}
 type DisplayCalendar = CalendarGroup & { systemKind?: 'department' | 'hrLeave' }
 type EventForm = {
   calendarId: string
@@ -3333,20 +3387,35 @@ export default function CalendarPage() {
   async function uploadEventAttachments(eventId: string, files: File[]) {
     if (!user) throw new Error('登入已失效，請重新登入')
     const token = await user.getIdToken()
-    const formData = new FormData()
-    formData.set('eventId', eventId)
-    files.forEach((file) => formData.append('files', file))
+    const attachments: NonNullable<CalendarEvent['attachments']> = []
+    try {
+      for (const sourceFile of files) {
+        const prepared = await prepareAttachmentUpload(sourceFile)
+        const formData = new FormData()
+        formData.set('eventId', eventId)
+        formData.set('originalName', prepared.originalName)
+        formData.set('originalSize', String(prepared.originalSize))
+        formData.append('files', prepared.file)
 
-    const response = await fetch('/api/upload-drive', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
-      body: formData
-    })
-    const result = await response.json().catch(() => ({}))
-    if (!response.ok) {
-      throw new Error(result.error || '附件上傳失敗')
+        const response = await fetch('/api/upload-drive', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+          body: formData
+        })
+        const result = await response.json().catch(() => ({}))
+        if (!response.ok || !Array.isArray(result.attachments)) {
+          const fallback = response.status === 413
+            ? '照片檔案過大，壓縮後仍超過上傳限制。'
+            : `附件上傳失敗（HTTP ${response.status}）`
+          throw new Error(result.error || fallback)
+        }
+        attachments.push(...result.attachments)
+      }
+      return attachments
+    } catch (error) {
+      if (attachments.length) await deleteRemovedEventAttachments(attachments).catch(() => 0)
+      throw error
     }
-    return result.attachments as NonNullable<CalendarEvent['attachments']>
   }
 
   async function sendProductionPhotoAttachments(eventId: string, attachmentIds: string[]) {
