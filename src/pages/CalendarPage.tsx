@@ -4994,7 +4994,7 @@ export default function CalendarPage() {
         <div className="event-detail-header">
           <strong>事件詳情</strong>
           <div>
-            {canManageEvent && (
+            {canManageEvent && selectedEvent.source === 'erpSalesDelivery' && (
               <>
                 <button
                   type="button"
