@@ -150,7 +150,11 @@ async function isManagementEvent(db, event) {
 
 async function canViewEvent(db, actor, event) {
   if (!event) return false
-  if (actor.role === 'admin' || text(event.createdBy) === actor.uid) return true
+  if (
+    actor.role === 'admin'
+    || text(event.createdBy) === actor.uid
+    || text(actor.employee.departmentName) === '管理部'
+  ) return true
   const explicitlyVisible = stringList(event.visibleAssigneeIds).includes(actor.employeeId)
     || await eventTargetsActorDepartment(db, event, 'visibleDepartmentIds', actor)
   if (explicitlyVisible) return true

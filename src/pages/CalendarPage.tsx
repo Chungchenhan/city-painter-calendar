@@ -92,6 +92,7 @@ type ProductionLineDelivery = {
   photoCount?: number
   message: string
 }
+type ApiErrorPayload = string | { message?: string }
 type OrderFulfillmentResult = {
   orderStatus: string
   shippingMethod?: string
@@ -413,6 +414,11 @@ function attachmentPreviewUrl(attachment: EventAttachment) {
     return `https://drive.google.com/thumbnail?id=${encodeURIComponent(attachment.path)}&sz=w1000`
   }
   return attachment.url
+}
+
+function apiErrorMessage(error: ApiErrorPayload | undefined, fallback: string) {
+  if (typeof error === 'string') return error || fallback
+  return error?.message || fallback
 }
 
 function fulfillmentShippingMethod(event: CalendarEvent, status: ProductionLineStatus | null) {
@@ -3632,8 +3638,8 @@ export default function CalendarPage() {
       },
       body: JSON.stringify({ action: 'production-photo-status', eventId })
     })
-    const result = await response.json().catch(() => null) as (ProductionLineStatus & { ok?: boolean, error?: { message?: string } }) | null
-    if (!response.ok || result?.ok !== true) throw new Error(result?.error?.message || '訂單狀態讀取失敗')
+    const result = await response.json().catch(() => null) as (ProductionLineStatus & { ok?: boolean, error?: ApiErrorPayload }) | null
+    if (!response.ok || result?.ok !== true) throw new Error(apiErrorMessage(result?.error, '訂單狀態讀取失敗'))
     return result
   }
 
@@ -3661,9 +3667,9 @@ export default function CalendarPage() {
       },
       body: JSON.stringify({ action: 'send-production-photos', eventId, attachmentIds })
     })
-    const result = await response.json().catch(() => null) as { ok?: boolean, result?: ProductionLineDelivery, error?: { message?: string } } | null
+    const result = await response.json().catch(() => null) as { ok?: boolean, result?: ProductionLineDelivery, error?: ApiErrorPayload } | null
     if (!response.ok || result?.ok !== true || !result.result) {
-      throw new Error(result?.error?.message || `LINE 照片傳送失敗（HTTP ${response.status}）`)
+      throw new Error(apiErrorMessage(result?.error, `LINE 照片傳送失敗（HTTP ${response.status}）`))
     }
     return result.result
   }
@@ -3684,10 +3690,10 @@ export default function CalendarPage() {
     const result = await response.json().catch(() => null) as {
       ok?: boolean
       result?: Partial<OrderFulfillmentResult> & { warning?: string; sent?: boolean; skipped?: boolean }
-      error?: { message?: string }
+      error?: ApiErrorPayload
     } | null
     if (!response.ok || result?.ok !== true || !result.result?.orderStatus) {
-      throw new Error(result?.error?.message || `訂單完成處理失敗（HTTP ${response.status}）`)
+      throw new Error(apiErrorMessage(result?.error, `訂單完成處理失敗（HTTP ${response.status}）`))
     }
     const message = result.result.message || '訂單狀態與附件已更新。'
     const sent = result.result.lineSent ?? result.result.sent
