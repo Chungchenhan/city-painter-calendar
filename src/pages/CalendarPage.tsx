@@ -4989,7 +4989,8 @@ export default function CalendarPage() {
                               checked={(departmentTitleIconDraft[department.id] ?? []).includes(item.icon.trim())}
                               onChange={() => toggleDepartmentTitleIconDraft(department.id, item.icon.trim())}
                             />
-                            <span>{item.icon.trim()}</span>
+                            <span className="department-title-icon-check" aria-hidden="true" />
+                            <span className="department-title-icon-symbol">{item.icon.trim()}</span>
                             <small>{item.label.trim()}</small>
                           </label>
                         ))}

@@ -14,28 +14,32 @@ const REMEMBER_KEY = 'cityPainterCalendarRememberLogin'
 
 type RememberedLogin = {
   empNo: string
-  password: string
   remember: boolean
 }
 
 function readRememberedLogin(): RememberedLogin {
   try {
     const raw = window.localStorage.getItem(REMEMBER_KEY)
-    const parsed = raw ? JSON.parse(raw) as Partial<RememberedLogin> : null
-    return {
+    const parsed = raw
+      ? JSON.parse(raw) as (Partial<RememberedLogin> & { password?: unknown }) | null
+      : null
+    const remembered = {
       empNo: formatEmployeeLoginInput(parsed?.empNo),
-      password: parsed?.password ?? '',
       remember: parsed?.remember ?? true,
     }
+    if (parsed && Object.prototype.hasOwnProperty.call(parsed, 'password')) {
+      window.localStorage.setItem(REMEMBER_KEY, JSON.stringify(remembered))
+    }
+    return remembered
   } catch {
-    return { empNo: '', password: '', remember: true }
+    return { empNo: '', remember: true }
   }
 }
 
 function writeRememberedLogin(value: RememberedLogin) {
   try {
     if (value.remember) {
-      window.localStorage.setItem(REMEMBER_KEY, JSON.stringify(value))
+      window.localStorage.setItem(REMEMBER_KEY, JSON.stringify({ empNo: value.empNo, remember: true }))
     } else {
       window.localStorage.removeItem(REMEMBER_KEY)
     }
@@ -48,7 +52,7 @@ export default function LoginPage() {
   const { user, loading } = useAuth()
   const remembered = readRememberedLogin()
   const [empNo, setEmpNo] = useState(remembered.empNo)
-  const [password, setPassword] = useState(remembered.password)
+  const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [remember, setRemember] = useState(remembered.remember)
   const [error, setError] = useState('')
@@ -71,7 +75,7 @@ export default function LoginPage() {
     setError('')
     try {
       await signInWithEmailAndPassword(auth, employeeLoginEmail(normalizedEmpNo), password)
-      writeRememberedLogin({ empNo: normalizedEmpNo, password, remember })
+      writeRememberedLogin({ empNo: normalizedEmpNo, remember })
     } catch {
       setError('員工編號或密碼錯誤，請確認後再試')
     } finally {
@@ -116,7 +120,7 @@ export default function LoginPage() {
               checked={remember}
               onChange={(event) => setRemember(event.target.checked)}
             />
-            <span>記憶帳號密碼</span>
+            <span>記憶帳號</span>
           </label>
           <button type="button" className="login-btn" onClick={login} disabled={submitting}>
             {submitting ? '登入中...' : '登入'}

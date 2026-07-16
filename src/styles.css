@@ -1477,6 +1477,7 @@ html.calendar-event-touch-dragging ::selection {
   font-size: 12px;
   font-weight: 800;
   overflow: hidden;
+  position: relative;
 }
 
 .department-title-icon-options label:has(input:checked) {
@@ -1486,17 +1487,51 @@ html.calendar-event-touch-dragging ::selection {
 }
 
 .department-title-icon-options input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.department-title-icon-check {
   flex: 0 0 22px;
   width: 22px;
   height: 22px;
-  min-height: 22px;
-  max-height: 22px;
-  margin: 0;
-  accent-color: #1d9bf0;
+  display: inline-grid;
+  place-items: center;
   align-self: center !important;
+  border: 2px solid #9aa0a6;
+  border-radius: 6px;
+  background: #fff;
+  color: #fff;
+  font-size: 16px;
+  font-weight: 900;
+  line-height: 1;
 }
 
-.department-title-icon-options label span {
+.department-title-icon-check::before {
+  content: "";
+  width: 6px;
+  height: 11px;
+  border: solid currentColor;
+  border-width: 0 2px 2px 0;
+  opacity: 0;
+  transform: rotate(45deg) translate(-1px, -1px);
+}
+
+.department-title-icon-options input:checked + .department-title-icon-check {
+  border-color: #1d9bf0;
+  background: #1d9bf0;
+}
+
+.department-title-icon-options input:checked + .department-title-icon-check::before {
+  opacity: 1;
+}
+
+.department-title-icon-symbol {
   flex: 0 0 22px;
   min-width: 0;
   width: 22px;
