@@ -11,6 +11,7 @@ interface AuthContextType {
   employeeDepartmentId: string
   employeeDepartmentName: string
   displayName: string
+  canOpenSalesForm: boolean
   loading: boolean
 }
 
@@ -21,6 +22,7 @@ const AuthContext = createContext<AuthContextType>({
   employeeDepartmentId: '',
   employeeDepartmentName: '',
   displayName: '',
+  canOpenSalesForm: false,
   loading: true
 })
 
@@ -65,6 +67,32 @@ function employeeCanAccess(data: { status?: string; resignDate?: string | null }
   return Boolean(data && data.status !== 'inactive' && !data.resignDate)
 }
 
+function erpAccessCanAccess(
+  data: Record<string, unknown> | null,
+  uid: string,
+  employeeId: string,
+  employeeNo = '',
+): boolean {
+  if (!data) return false
+  return data.enabled === true
+    && data.uid === uid
+    && data.employeeId === employeeId
+    && (!employeeNo || data.employeeNo === employeeNo)
+    && Number(data.schemaVersion) >= 2
+}
+
+function canOpenSalesFormFromAccess(data: Record<string, unknown> | null): boolean {
+  if (!data || data.enabled !== true) return false
+  const matrix = data.permissionMatrix
+  if (!matrix || typeof matrix !== 'object') return false
+  return ['sales-main', 'dashboard-sales-main'].some((featureKey) => {
+    const actions = (matrix as Record<string, unknown>)[featureKey]
+    if (!actions || typeof actions !== 'object') return false
+    const permission = actions as Record<string, unknown>
+    return permission.browse === true && (permission.update === true || permission.delete === true)
+  })
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
   const [role, setRole] = useState<AuthContextType['role']>('loading')
@@ -72,11 +100,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [employeeDepartmentId, setEmployeeDepartmentId] = useState('')
   const [employeeDepartmentName, setEmployeeDepartmentName] = useState('')
   const [displayName, setDisplayName] = useState('')
+  const [canOpenSalesForm, setCanOpenSalesForm] = useState(false)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (nextUser) => {
       setLoading(true)
+      setCanOpenSalesForm(false)
 
       if (!nextUser) {
         setUser(null)
@@ -133,11 +163,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setEmployeeId(nextEmployeeId)
         let nextDisplayName = roleData.displayName || nextUser.displayName || ''
 
-        const empSnap = await getDoc(doc(db, 'employees', nextEmployeeId))
+        const [empSnap, accessSnap] = await Promise.all([
+          getDoc(doc(db, 'employees', nextEmployeeId)),
+          getDoc(doc(db, 'erp_access', nextUser.uid)),
+        ])
         const empData = empSnap.exists()
-          ? (empSnap.data() as { name?: string; nickname?: string; departmentId?: string; departmentName?: string; status?: string; resignDate?: string | null })
+          ? (empSnap.data() as { empNo?: string; name?: string; nickname?: string; departmentId?: string; departmentName?: string; status?: string; resignDate?: string | null })
           : null
-        if (!empData || !employeeCanAccess(empData)) {
+        const accessData = accessSnap.exists() ? accessSnap.data() as Record<string, unknown> : null
+        if (
+          !empData
+          || !employeeCanAccess(empData)
+          || !erpAccessCanAccess(accessData, nextUser.uid, nextEmployeeId, empData.empNo)
+        ) {
           clearCachedAuthProfile()
           setRole('unknown')
           setEmployeeId(null)
@@ -179,6 +217,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   useEffect(() => {
+    setCanOpenSalesForm(false)
+    if (!user || !employeeId) return
+    return onSnapshot(doc(db, 'erp_access', user.uid), async (snapshot) => {
+      const accessData = snapshot.exists() ? snapshot.data() as Record<string, unknown> : null
+      if (!erpAccessCanAccess(accessData, user.uid, employeeId)) {
+        clearCachedAuthProfile()
+        setCanOpenSalesForm(false)
+        await signOut(auth)
+        return
+      }
+      setCanOpenSalesForm(canOpenSalesFormFromAccess(accessData))
+    }, () => {
+      setCanOpenSalesForm(false)
+    })
+  }, [employeeId, user])
+
+  useEffect(() => {
     if (!user || !employeeId) return
 
     return onSnapshot(doc(db, 'employees', employeeId), async (snapshot) => {
@@ -202,7 +257,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [employeeId, user])
 
   return (
-    <AuthContext.Provider value={{ user, role, employeeId, employeeDepartmentId, employeeDepartmentName, displayName, loading }}>
+    <AuthContext.Provider value={{ user, role, employeeId, employeeDepartmentId, employeeDepartmentName, displayName, canOpenSalesForm, loading }}>
       {children}
     </AuthContext.Provider>
   )

@@ -17,6 +17,7 @@
 - 行事曆專用資料：
   - `calendarCalendars`
   - `calendarEvents`
+  - `calendarEvents/{eventId}/comments`
 
 ## TimeTree 匯入紀錄
 - 已從 TimeTree 匯入 `2021-01-01` 之後的都市彩繪工作事件；若未來要補更早日期，再沿用同一套匯入方式往前追加。
@@ -42,6 +43,18 @@
 - `userRoles.role === "admin"`：可建立、編輯、刪除行事曆與工作。
 - `employee`：只能查看自己被授權的行事曆與工作。
 - 行事曆可用 `departmentIds` 與 `employeeIds` 控制可見範圍。
+
+## 資訊安全與 App Check（強制）
+
+- Firestore／Storage App Check 已強制執行。`src/lib/firebase.ts` 必須初始化 App Check；未經使用者明確同意不得關閉或降級。
+- 本機 App Check debug token 僅放 `.env.local`，並先登記於 Firebase Console；變更後必須完整重啟固定 `5175` dev server，且不得同時保留讀取舊環境變數的重複行程。
+- 新增或修改前端 `/api/*` 呼叫時，必須同時送出 Firebase ID token 與最新 `X-Firebase-AppCheck` token；token 取得失敗不得靜默改成無驗證請求。
+- 寫入、刪除、密碼、推播設定與附件上傳 API 每次都要驗證 Firebase ID token、`userRoles/{uid}`、員工在職狀態、行事曆可見範圍與必要角色／action；不可只驗證已登入或相信前端傳入的 UID、employeeId、calendarId。
+- 附件公開 GET 僅限 LINE 等無法帶 Auth header 的必要情境，且必須使用 HMAC 簽名網址並驗證 `fileId`、variant 與 signature；Google Drive fileId 或網址難猜不能當作授權。
+- 上傳需限制檔案大小、允許類型與解析結果，檔名不得直接用於本機路徑；暫存檔無論成功或失敗都要清理，錯誤訊息不得洩漏 service account、Drive token 或伺服器路徑。
+- `firebase-admin` 目前固定為精確版本 `13.10.0`，不得改回 `^`、`~` 或直接升 v14。升級前必須先把所有 `api/*.js` 遷移為 modular imports，並逐端點實測 Auth、App Check、Firestore、推播與 Drive 上傳。
+- 曾發生 v14 搭配舊式 default import，使所有 API token 被誤判為「登入已失效」；遇到全站 API 同時 401 時，先檢查 lockfile 實際版本與 Admin SDK 初始化，不得先叫使用者重設密碼。
+- 資安或上傳修改完成前，至少測試：合法員工成功、一般員工越權被拒、缺少／無效 App Check 被拒、錯誤簽名被拒，以及實際上傳成功後刪除測試檔案。
 
 ## UI
 - 介面風格比照 TimeTree：左側行事曆清單、主月曆、右側當日工作清單。

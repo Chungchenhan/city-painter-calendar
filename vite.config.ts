@@ -23,6 +23,10 @@ function localApiPlugin(): Plugin {
     name: 'local-api',
     configureServer(server) {
       loadLocalServerEnv()
+      // 本機驗收需使用尚未部署的 ERP API，避免誤走正式站舊版邏輯。
+      if (!process.env.ERP_LINE_API_URL) {
+        process.env.ERP_LINE_API_URL = 'http://127.0.0.1:5173/api/line'
+      }
       const localApiHandlers: Record<string, string> = {
         '/api/upload-drive': './api/upload-drive.js',
         '/api/notify-calendar': './api/notify-calendar.js',

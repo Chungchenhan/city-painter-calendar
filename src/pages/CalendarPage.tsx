@@ -1,16 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { CSSProperties, ChangeEvent, DragEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode, TouchEvent as ReactTouchEvent } from 'react'
+import type { CSSProperties, ChangeEvent, ClipboardEvent as ReactClipboardEvent, DragEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode, TouchEvent as ReactTouchEvent } from 'react'
 import dayjs from 'dayjs'
-import { addDoc, arrayUnion, collection, deleteDoc, doc, getDoc, getDocs, query, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore'
+import { addDoc, arrayUnion, collection, deleteDoc, deleteField, doc, getDoc, getDocs, limitToLast, onSnapshot, orderBy, query, serverTimestamp, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore'
 import { signOut } from 'firebase/auth'
 import { useQueryClient } from '@tanstack/react-query'
-import { auth, db } from '../lib/firebase'
+import { auth, db, getAppCheckHeaders } from '../lib/firebase'
 import { readLocalQueryCache, updateLocalQueryCache, writeLocalQueryCache } from '../lib/localQueryCache'
 import { ensurePushSubscription, isPushSupported } from '../lib/pushNotifications'
 import { useAuth } from '../contexts/AuthContext'
 import { useCalendarActivityLogs, useCalendarEvents, useCalendarGroups, useCalendarSearchEvents } from '../hooks/useCalendarData'
 import { useDepartments, useEmployees, useShifts } from '../hooks/useHrData'
-import type { CalendarActivityLog, CalendarEvent, CalendarGroup, Employee, UserNotificationSettings } from '../types'
+import type { CalendarActivityLog, CalendarEvent, CalendarEventComment, CalendarGroup, Employee, UserNotificationSettings } from '../types'
 
 const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六']
 const DEFAULT_MONTH_DAY_EVENT_ROW_LIMIT = 6
@@ -69,14 +69,21 @@ type AttachmentUpload = {
   attachment?: EventAttachment
   error?: string
 }
+type PendingCommentFile = {
+  id: string
+  file: File
+}
 type ProductionLineStatus = {
   eligible: boolean
   bound: boolean
+  canCompleteOrder?: boolean
   customerCode: string
   customerName: string
   lineDisplayName: string
   salesNo: string
   reason: string
+  shippingMethod?: string
+  orderStatus?: string
 }
 type ProductionLineDelivery = {
   sent: boolean
@@ -84,6 +91,19 @@ type ProductionLineDelivery = {
   reused?: boolean
   photoCount?: number
   message: string
+}
+type OrderFulfillmentResult = {
+  orderStatus: string
+  shippingMethod?: string
+  message: string
+  lineSent?: boolean
+  lineSkipped?: boolean
+  lineWarning?: string
+}
+type ProductionLineRetry = {
+  eventId: string
+  attachmentIds: string[]
+  mode: 'production' | 'fulfillment'
 }
 const MAX_DIRECT_ATTACHMENT_BYTES = 3.5 * 1024 * 1024
 
@@ -395,6 +415,48 @@ function attachmentPreviewUrl(attachment: EventAttachment) {
   return attachment.url
 }
 
+function fulfillmentShippingMethod(event: CalendarEvent, status: ProductionLineStatus | null) {
+  const legacyNoteMethod = event.note.match(/(?:送貨|取件)方式[：:]\s*(外送|施工)/)?.[1] || ''
+  return (status?.shippingMethod || event.sourceShippingMethod || legacyNoteMethod).trim()
+}
+
+function isErpOrderFulfillmentEvent(event: CalendarEvent, status: ProductionLineStatus | null) {
+  if (event.source !== 'erpSalesDelivery' || !event.sourceId) return false
+  const shippingMethod = fulfillmentShippingMethod(event, status)
+  return shippingMethod === '外送' || shippingMethod === '施工'
+}
+
+function erpSalesFormUrl(salesId: string) {
+  const origin = import.meta.env.DEV ? 'http://100.77.87.95:5173' : 'https://erp.city-painter.com'
+  return `${origin}/sales/main/${encodeURIComponent(salesId)}/edit`
+}
+
+function eventDetailNoteContent(event: CalendarEvent, canOpenSalesForm: boolean, status: ProductionLineStatus | null): ReactNode {
+  const salesNo = event.sourceSalesNo?.trim() || status?.salesNo?.trim() || ''
+  if (
+    !canOpenSalesForm
+    || event.source !== 'erpSalesDelivery'
+    || !event.sourceId
+    || !/^\d+$/.test(salesNo)
+    || !event.note.includes(salesNo)
+  ) return event.note
+
+  return event.note.split(salesNo).flatMap((part, index, parts) => [
+    part,
+    ...(index < parts.length - 1 ? [(
+      <a
+        className="event-detail-sales-link"
+        href={erpSalesFormUrl(event.sourceId as string)}
+        target="_blank"
+        rel="noreferrer"
+        key={`${salesNo}-${index}`}
+      >
+        {salesNo}
+      </a>
+    )] : [])
+  ])
+}
+
 async function setLocalBadge(count: number) {
   const nav = navigator as Navigator & {
     setAppBadge?: (contents?: number) => Promise<void>
@@ -487,6 +549,49 @@ function formatChineseDate(date: string) {
 function formatDateLabel(date: string) {
   const value = dayjs(date)
   return value.isValid() ? value.format('YYYY年M月D日') : ''
+}
+
+function firestoreDateIso(value: unknown, fallback = '') {
+  if (typeof value === 'string') return value
+  const timestamp = value as { toDate?: () => Date } | null
+  if (timestamp && typeof timestamp.toDate === 'function') {
+    const date = timestamp.toDate()
+    if (!Number.isNaN(date.getTime())) return date.toISOString()
+  }
+  return fallback
+}
+
+function commentDateLabel(createdAt: string) {
+  const value = dayjs(createdAt)
+  if (!value.isValid()) return '日期不明'
+  return `${value.format('YYYY年M月D日')}（${WEEKDAYS[value.day()]}）`
+}
+
+function commentTimeLabel(createdAt: string) {
+  const value = dayjs(createdAt)
+  return value.isValid() ? value.format('M月D日 HH:mm') : '時間不明'
+}
+
+function clipboardImageName(file: File, index: number) {
+  const extensionByType: Record<string, string> = {
+    'image/avif': 'avif',
+    'image/gif': 'gif',
+    'image/jpeg': 'jpg',
+    'image/png': 'png',
+    'image/webp': 'webp'
+  }
+  const extension = extensionByType[file.type] || file.name.match(/\.([a-z0-9]+)$/i)?.[1] || 'png'
+  return `剪貼簿圖片-${dayjs().format('YYYYMMDD-HHmmss')}-${index + 1}.${extension}`
+}
+
+let fallbackClientIdCounter = 0
+
+function createClientId() {
+  if (typeof globalThis.crypto?.randomUUID === 'function') return globalThis.crypto.randomUUID()
+  const randomValues = new Uint32Array(4)
+  globalThis.crypto?.getRandomValues?.(randomValues)
+  fallbackClientIdCounter += 1
+  return `${Date.now().toString(36)}-${fallbackClientIdCounter.toString(36)}-${Array.from(randomValues).map((value) => value.toString(36)).join('')}`
 }
 
 function monthlyWeekdayLabel(date: string) {
@@ -752,7 +857,7 @@ function openInputPicker(input: HTMLInputElement) {
 
 export default function CalendarPage() {
   const queryClient = useQueryClient()
-  const { user, role, employeeId, employeeDepartmentId, employeeDepartmentName, displayName } = useAuth()
+  const { user, role, employeeId, employeeDepartmentId, employeeDepartmentName, displayName, canOpenSalesForm } = useAuth()
   const isAdmin = role === 'admin'
   const [month, setMonth] = useState(dayjs().startOf('month'))
   const [backgroundDataReady, setBackgroundDataReady] = useState(false)
@@ -828,14 +933,26 @@ export default function CalendarPage() {
   const [eventEditorTouchLocked, setEventEditorTouchLocked] = useState(false)
   const [saving, setSaving] = useState(false)
   const [detailAttachmentUploading, setDetailAttachmentUploading] = useState(false)
+  const [eventComments, setEventComments] = useState<CalendarEventComment[]>([])
+  const [eventCommentsLoading, setEventCommentsLoading] = useState(false)
+  const [eventCommentsError, setEventCommentsError] = useState('')
+  const [eventCommentsReloadKey, setEventCommentsReloadKey] = useState(0)
+  const [commentDraft, setCommentDraft] = useState('')
+  const [commentFiles, setCommentFiles] = useState<PendingCommentFile[]>([])
+  const [commentSending, setCommentSending] = useState(false)
+  const [deletingCommentId, setDeletingCommentId] = useState<string | null>(null)
   const [productionLineStatus, setProductionLineStatus] = useState<ProductionLineStatus | null>(null)
   const [productionLineStatusLoading, setProductionLineStatusLoading] = useState(false)
+  const [productionLineStatusError, setProductionLineStatusError] = useState('')
   const [sendDetailAttachmentsToLine, setSendDetailAttachmentsToLine] = useState(true)
   const [productionLineNotice, setProductionLineNotice] = useState<{ variant: 'success' | 'error' | 'muted'; message: string } | null>(null)
-  const [productionLineRetry, setProductionLineRetry] = useState<{ eventId: string; attachmentIds: string[] } | null>(null)
+  const [productionLineRetry, setProductionLineRetry] = useState<ProductionLineRetry | null>(null)
   const [productionLineRetrying, setProductionLineRetrying] = useState(false)
   const noteTextareaRef = useRef<HTMLTextAreaElement | null>(null)
   const detailAttachmentInputRef = useRef<HTMLInputElement | null>(null)
+  const commentAttachmentInputRef = useRef<HTMLInputElement | null>(null)
+  const commentThreadEndRef = useRef<HTMLDivElement | null>(null)
+  const activeCommentThreadIdRef = useRef('')
   const monthInputRef = useRef<HTMLInputElement | null>(null)
   const monthGridRef = useRef<HTMLDivElement | null>(null)
   const calendarSurfaceRef = useRef<HTMLElement | null>(null)
@@ -1504,11 +1621,72 @@ export default function CalendarPage() {
       visibleSearchEvents.find((event) => event.id === selectedEventId) ??
       null
   }, [selectedEventId, visibleEvents, visibleSearchEvents])
+  const commentThreadId = selectedEvent ? recurrenceRootId(selectedEvent) : ''
+  const groupedEventComments = useMemo(() => {
+    const groups: { key: string, label: string, comments: CalendarEventComment[] }[] = []
+    eventComments.forEach((comment) => {
+      const value = dayjs(comment.createdAt)
+      const key = value.isValid() ? value.format('YYYY-MM-DD') : 'unknown'
+      const current = groups[groups.length - 1]
+      if (current?.key === key) {
+        current.comments.push(comment)
+        return
+      }
+      groups.push({ key, label: commentDateLabel(comment.createdAt), comments: [comment] })
+    })
+    return groups
+  }, [eventComments])
   const loading = calendarsLoading || eventsLoading
+
+  useEffect(() => {
+    activeCommentThreadIdRef.current = commentThreadId
+    setCommentDraft('')
+    setCommentFiles([])
+    setDeletingCommentId(null)
+  }, [commentThreadId])
+
+  useEffect(() => {
+    setEventComments([])
+    setEventCommentsError('')
+    if (!commentThreadId) {
+      setEventCommentsLoading(false)
+      return
+    }
+
+    setEventCommentsLoading(true)
+    const commentsQuery = query(
+      collection(db, 'calendarEvents', commentThreadId, 'comments'),
+      orderBy('createdAt', 'asc'),
+      limitToLast(100)
+    )
+    return onSnapshot(commentsQuery, (snapshot) => {
+      const rows = snapshot.docs.map((snapshotDoc) => {
+        const data = snapshotDoc.data({ serverTimestamps: 'estimate' })
+        return {
+          id: snapshotDoc.id,
+          authorUid: typeof data.authorUid === 'string' ? data.authorUid : '',
+          authorEmployeeId: typeof data.authorEmployeeId === 'string' ? data.authorEmployeeId : '',
+          authorName: typeof data.authorName === 'string' ? data.authorName : '未命名使用者',
+          text: typeof data.text === 'string' ? data.text : '',
+          attachments: Array.isArray(data.attachments) ? data.attachments as EventAttachment[] : [],
+          createdAt: firestoreDateIso(data.createdAt)
+        } satisfies CalendarEventComment
+      }).sort((a, b) => `${a.createdAt}-${a.id}`.localeCompare(`${b.createdAt}-${b.id}`))
+      setEventComments(rows)
+      setEventCommentsError('')
+      setEventCommentsLoading(false)
+    }, (error) => {
+      console.warn('[calendar] event comments listener failed', error)
+      setEventComments([])
+      setEventCommentsError('留言載入失敗，請稍後重試')
+      setEventCommentsLoading(false)
+    })
+  }, [commentThreadId, eventCommentsReloadKey])
 
   useEffect(() => {
     let cancelled = false
     setProductionLineNotice(null)
+    setProductionLineStatusError('')
     setProductionLineRetry(null)
     if (!selectedEvent || selectedEvent.source !== 'erpSalesDelivery' || !user?.uid) {
       setProductionLineStatus(null)
@@ -1519,20 +1697,31 @@ export default function CalendarPage() {
       }
     }
 
+    const storedRetry = selectedEvent.productionLineRetry
+    if (
+      storedRetry
+      && (storedRetry.mode === 'production' || storedRetry.mode === 'fulfillment')
+      && (storedRetry.status === 'pending' || storedRetry.status === 'failed')
+      && Array.isArray(storedRetry.attachmentIds)
+      && storedRetry.attachmentIds.length > 0
+    ) {
+      setProductionLineRetry({
+        eventId: selectedEvent.id,
+        mode: storedRetry.mode,
+        attachmentIds: storedRetry.attachmentIds.filter((id) => typeof id === 'string' && id)
+      })
+      setProductionLineNotice({
+        variant: 'error',
+        message: storedRetry.message || (storedRetry.mode === 'fulfillment'
+          ? '照片已保留，訂單完成尚待重試。'
+          : '照片已保留，LINE 傳送尚待重試。')
+      })
+    }
+
     setProductionLineStatusLoading(true)
     void (async () => {
       try {
-        const token = await user.getIdToken()
-        const response = await fetch('/api/upload-drive', {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({ action: 'production-photo-status', eventId: selectedEvent.id })
-        })
-        const result = await response.json().catch(() => null) as (ProductionLineStatus & { ok?: boolean, error?: { message?: string } }) | null
-        if (!response.ok || result?.ok !== true) throw new Error(result?.error?.message || 'LINE 綁定狀態讀取失敗')
+        const result = await fetchProductionLineStatus(selectedEvent.id)
         if (cancelled) return
         setProductionLineStatus(result)
         setSendDetailAttachmentsToLine(result.bound)
@@ -1540,10 +1729,7 @@ export default function CalendarPage() {
         if (cancelled) return
         setProductionLineStatus(null)
         setSendDetailAttachmentsToLine(false)
-        setProductionLineNotice({
-          variant: 'error',
-          message: error instanceof Error ? error.message : 'LINE 綁定狀態讀取失敗'
-        })
+        setProductionLineStatusError(error instanceof Error ? error.message : 'LINE 綁定狀態讀取失敗')
       } finally {
         if (!cancelled) setProductionLineStatusLoading(false)
       }
@@ -1969,6 +2155,11 @@ export default function CalendarPage() {
 
   function currentActorName() {
     return employeeId ? employeeName(employeeId) : (displayName || user?.displayName || user?.email || '未命名使用者')
+  }
+
+  function eventCommentAuthorName(comment: CalendarEventComment) {
+    const employee = employees.find((item) => item.id === comment.authorEmployeeId)
+    return employee?.nickname || employee?.name || comment.authorName || '未命名使用者'
   }
 
   function valueLabel(field: string, value: unknown) {
@@ -2661,7 +2852,7 @@ export default function CalendarPage() {
       repeat: 'none',
       repeatCustom: emptyEvent.repeatCustom,
       todos: (event.todos ?? []).map((todo) => ({
-        id: crypto.randomUUID(),
+        id: createClientId(),
         text: todo.text,
         done: false
       })),
@@ -2758,7 +2949,7 @@ export default function CalendarPage() {
   function addTodoItem() {
     setEventForm((form) => ({
       ...form,
-      todos: [...form.todos, { id: crypto.randomUUID(), text: '', done: false }]
+      todos: [...form.todos, { id: createClientId(), text: '', done: false }]
     }))
   }
 
@@ -3081,7 +3272,7 @@ export default function CalendarPage() {
       url: event.url ?? '',
       note: event.note ?? '',
       todos: (event.todos ?? []).map((todo) => ({
-        id: crypto.randomUUID(),
+        id: createClientId(),
         text: todo.text,
         done: false
       }))
@@ -3387,9 +3578,14 @@ export default function CalendarPage() {
     }
   }
 
-  async function uploadEventAttachments(eventId: string, files: File[]) {
+  async function uploadEventAttachments(
+    eventId: string,
+    files: File[],
+    context: { uploadKind?: 'comment', commentId?: string } = {}
+  ) {
     if (!user) throw new Error('登入已失效，請重新登入')
     const token = await user.getIdToken()
+    const appCheckHeaders = await getAppCheckHeaders()
     const attachments: NonNullable<CalendarEvent['attachments']> = []
     try {
       for (const sourceFile of files) {
@@ -3398,11 +3594,13 @@ export default function CalendarPage() {
         formData.set('eventId', eventId)
         formData.set('originalName', prepared.originalName)
         formData.set('originalSize', String(prepared.originalSize))
+        if (context.uploadKind) formData.set('uploadKind', context.uploadKind)
+        if (context.commentId) formData.set('commentId', context.commentId)
         formData.append('files', prepared.file)
 
         const response = await fetch('/api/upload-drive', {
           method: 'POST',
-          headers: { Authorization: `Bearer ${token}` },
+          headers: { Authorization: `Bearer ${token}`, ...appCheckHeaders },
           body: formData
         })
         const result = await response.json().catch(() => ({}))
@@ -3416,19 +3614,50 @@ export default function CalendarPage() {
       }
       return attachments
     } catch (error) {
-      if (attachments.length) await deleteRemovedEventAttachments(attachments).catch(() => 0)
+      if (attachments.length) await deleteRemovedEventAttachments(attachments, eventId).catch(() => 0)
       throw error
     }
+  }
+
+  async function fetchProductionLineStatus(eventId: string) {
+    if (!user) throw new Error('登入已失效，請重新登入')
+    const token = await user.getIdToken()
+    const appCheckHeaders = await getAppCheckHeaders()
+    const response = await fetch('/api/upload-drive', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        ...appCheckHeaders
+      },
+      body: JSON.stringify({ action: 'production-photo-status', eventId })
+    })
+    const result = await response.json().catch(() => null) as (ProductionLineStatus & { ok?: boolean, error?: { message?: string } }) | null
+    if (!response.ok || result?.ok !== true) throw new Error(result?.error?.message || '訂單狀態讀取失敗')
+    return result
+  }
+
+  async function preflightOrderFulfillment(event: CalendarEvent) {
+    const status = await fetchProductionLineStatus(event.id)
+    setProductionLineStatus(status)
+    setProductionLineStatusError('')
+    setSendDetailAttachmentsToLine(status.bound)
+    const shippingMethod = fulfillmentShippingMethod(event, status)
+    if (shippingMethod !== '外送' && shippingMethod !== '施工') return { status, fulfillment: false }
+    if (status.canCompleteOrder !== true) throw new Error('您沒有完成銷貨單的修改或特殊操作權限')
+    return { status, fulfillment: true }
   }
 
   async function sendProductionPhotoAttachments(eventId: string, attachmentIds: string[]) {
     if (!user) throw new Error('登入已失效，請重新登入')
     const token = await user.getIdToken()
+    const appCheckHeaders = await getAppCheckHeaders()
     const response = await fetch('/api/upload-drive', {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        ...appCheckHeaders
       },
       body: JSON.stringify({ action: 'send-production-photos', eventId, attachmentIds })
     })
@@ -3439,18 +3668,119 @@ export default function CalendarPage() {
     return result.result
   }
 
+  async function completeOrderFulfillment(eventId: string, attachmentIds: string[]) {
+    if (!user) throw new Error('登入已失效，請重新登入')
+    const token = await user.getIdToken()
+    const appCheckHeaders = await getAppCheckHeaders()
+    const response = await fetch('/api/upload-drive', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        ...appCheckHeaders
+      },
+      body: JSON.stringify({ action: 'complete-order-fulfillment', eventId, attachmentIds })
+    })
+    const result = await response.json().catch(() => null) as {
+      ok?: boolean
+      result?: Partial<OrderFulfillmentResult> & { warning?: string; sent?: boolean; skipped?: boolean }
+      error?: { message?: string }
+    } | null
+    if (!response.ok || result?.ok !== true || !result.result?.orderStatus) {
+      throw new Error(result?.error?.message || `訂單完成處理失敗（HTTP ${response.status}）`)
+    }
+    const message = result.result.message || '訂單狀態與附件已更新。'
+    const sent = result.result.lineSent ?? result.result.sent
+    const skipped = result.result.lineSkipped ?? result.result.skipped
+    const pendingWarning = sent === false && skipped === true && message.includes('正在傳送中')
+      ? `${message} 請稍後再按「重新傳送 LINE」。`
+      : undefined
+    return {
+      orderStatus: result.result.orderStatus,
+      shippingMethod: result.result.shippingMethod,
+      message,
+      lineSent: sent,
+      lineSkipped: skipped,
+      lineWarning: result.result.lineWarning || result.result.warning || pendingWarning
+    } satisfies OrderFulfillmentResult
+  }
+
+  async function applyFulfillmentResult(eventId: string, result: OrderFulfillmentResult) {
+    const sourceEvent = events.find((event) => event.id === eventId)
+      ?? (selectedEvent?.id === eventId ? selectedEvent : null)
+    const updatedAt = new Date().toISOString()
+    await updateDoc(doc(db, 'calendarEvents', eventId), {
+      orderStatus: result.orderStatus,
+      ...(result.shippingMethod ? { sourceShippingMethod: result.shippingMethod } : {}),
+      updatedAt
+    })
+    if (sourceEvent) {
+      const nextEvent: CalendarEvent = {
+        ...sourceEvent,
+        orderStatus: result.orderStatus,
+        sourceShippingMethod: result.shippingMethod || sourceEvent.sourceShippingMethod,
+        updatedAt
+      }
+      optimisticallyPatchCalendarEvents([nextEvent])
+      await syncCalendarEventViews(nextEvent).catch(() => undefined)
+    }
+    setProductionLineStatus((current) => current ? {
+      ...current,
+      orderStatus: result.orderStatus,
+      shippingMethod: result.shippingMethod || current.shippingMethod
+    } : current)
+  }
+
+  async function persistProductionLineRetry(
+    retry: ProductionLineRetry,
+    status: 'pending' | 'failed',
+    message?: string
+  ) {
+    const metadata: NonNullable<CalendarEvent['productionLineRetry']> = {
+      mode: retry.mode,
+      attachmentIds: retry.attachmentIds,
+      status,
+      ...(message ? { message } : {}),
+      updatedAt: new Date().toISOString()
+    }
+    setProductionLineRetry(retry)
+    await updateDoc(doc(db, 'calendarEvents', retry.eventId), { productionLineRetry: metadata })
+  }
+
+  async function clearProductionLineRetry(eventId: string) {
+    await updateDoc(doc(db, 'calendarEvents', eventId), { productionLineRetry: deleteField() })
+    setProductionLineRetry((current) => current?.eventId === eventId ? null : current)
+  }
+
   async function retryProductionPhotoDelivery() {
     if (!productionLineRetry || productionLineRetrying) return
     setProductionLineRetrying(true)
     try {
-      const result = await sendProductionPhotoAttachments(productionLineRetry.eventId, productionLineRetry.attachmentIds)
-      setProductionLineNotice({ variant: result.sent ? 'success' : 'muted', message: result.message })
-      if (result.sent || result.skipped) setProductionLineRetry(null)
+      if (productionLineRetry.mode === 'fulfillment') {
+        const result = await completeOrderFulfillment(productionLineRetry.eventId, productionLineRetry.attachmentIds)
+        await applyFulfillmentResult(productionLineRetry.eventId, result)
+        const warning = result.lineWarning
+        setProductionLineNotice({
+          variant: warning ? 'error' : result.lineSent ? 'success' : 'muted',
+          message: warning || result.message
+        })
+        if (warning) {
+          await persistProductionLineRetry(productionLineRetry, 'failed', warning)
+        } else {
+          await clearProductionLineRetry(productionLineRetry.eventId)
+        }
+      } else {
+        const result = await sendProductionPhotoAttachments(productionLineRetry.eventId, productionLineRetry.attachmentIds)
+        setProductionLineNotice({ variant: result.sent ? 'success' : 'muted', message: result.message })
+        if (result.sent || result.skipped) await clearProductionLineRetry(productionLineRetry.eventId)
+      }
     } catch (error) {
+      const message = error instanceof Error ? error.message : 'LINE 照片重新傳送失敗'
       setProductionLineNotice({
         variant: 'error',
-        message: error instanceof Error ? error.message : 'LINE 照片重新傳送失敗'
+        message
       })
+      await persistProductionLineRetry(productionLineRetry, 'failed', message).catch(() => undefined)
     } finally {
       setProductionLineRetrying(false)
     }
@@ -3466,7 +3796,7 @@ export default function CalendarPage() {
       items.forEach((item) => {
         canceledAttachmentUploadIdsRef.current.add(item.id)
         if (item.attachment) {
-          void deleteRemovedEventAttachments([item.attachment])
+          void deleteRemovedEventAttachments([item.attachment], editingEventId ?? 'draft-event')
         }
       })
       return []
@@ -3484,7 +3814,7 @@ export default function CalendarPage() {
     if (!files.length) return
 
     const uploadItems = files.map((file) => ({
-      id: crypto.randomUUID(),
+      id: createClientId(),
       name: file.name,
       size: file.size,
       status: 'uploading' as const
@@ -3498,7 +3828,7 @@ export default function CalendarPage() {
           const [attachment] = await uploadEventAttachments(editingEventId ?? 'draft-event', [file])
           if (!attachment) throw new Error('附件上傳失敗')
           if (canceledAttachmentUploadIdsRef.current.has(item.id)) {
-            if (attachment) await deleteRemovedEventAttachments([attachment]).catch(() => 0)
+            if (attachment) await deleteRemovedEventAttachments([attachment], editingEventId ?? 'draft-event').catch(() => 0)
             canceledAttachmentUploadIdsRef.current.delete(item.id)
             return
           }
@@ -3529,39 +3859,116 @@ export default function CalendarPage() {
       alert('沒有此事件的附件上傳權限')
       return
     }
+    let fulfillmentEvent = isErpOrderFulfillmentEvent(selectedEvent, productionLineStatus)
+    let latestProductionLineStatus = productionLineStatus
+    if (fulfillmentEvent && files.some((file) => !file.type.startsWith('image/') || file.type === 'image/svg+xml')) {
+      alert('外送／施工完成只能上傳照片')
+      return
+    }
 
     let uploadedAttachments: NonNullable<CalendarEvent['attachments']> = []
     let firestoreUpdated = false
+    let completedOrderStatus = ''
+    let completedShippingMethod = ''
+    let lineAttachmentIds: string[] = []
     setDetailAttachmentUploading(true)
     try {
+      if (selectedEvent.source === 'erpSalesDelivery') {
+        const preflight = await preflightOrderFulfillment(selectedEvent)
+        latestProductionLineStatus = preflight.status
+        fulfillmentEvent = preflight.fulfillment
+        if (fulfillmentEvent && files.some((file) => !file.type.startsWith('image/') || file.type === 'image/svg+xml')) {
+          throw new Error('外送／施工完成只能上傳照片')
+        }
+      }
       uploadedAttachments = await uploadEventAttachments(selectedEvent.id, files)
       if (!uploadedAttachments.length) throw new Error('附件上傳失敗')
       const nextAttachments = [...(selectedEvent.attachments ?? []), ...uploadedAttachments]
       const updatedAt = new Date().toISOString()
+      lineAttachmentIds = uploadedAttachments
+        .filter((attachment) => attachment.lineOriginalUrl && attachment.linePreviewUrl && attachment.path)
+        .map((attachment) => attachment.path)
+      const pendingRetry: ProductionLineRetry | null = lineAttachmentIds.length > 0 && (
+        fulfillmentEvent || (
+          selectedEvent.source === 'erpSalesDelivery'
+          && sendDetailAttachmentsToLine
+          && latestProductionLineStatus?.bound
+        )
+      ) ? {
+          eventId: selectedEvent.id,
+          attachmentIds: lineAttachmentIds,
+          mode: fulfillmentEvent ? 'fulfillment' : 'production'
+        } : null
+      const pendingRetryMetadata: CalendarEvent['productionLineRetry'] = pendingRetry ? {
+        mode: pendingRetry.mode,
+        attachmentIds: pendingRetry.attachmentIds,
+        status: 'pending',
+        message: pendingRetry.mode === 'fulfillment'
+          ? '照片已保留，訂單完成尚待確認。'
+          : '照片已保留，LINE 傳送尚待確認。',
+        updatedAt
+      } : undefined
       await updateDoc(doc(db, 'calendarEvents', selectedEvent.id), {
         attachments: arrayUnion(...uploadedAttachments),
+        ...(pendingRetryMetadata ? { productionLineRetry: pendingRetryMetadata } : {}),
         updatedAt
       })
       firestoreUpdated = true
-      const lineAttachmentIds = uploadedAttachments
-        .filter((attachment) => attachment.lineOriginalUrl && attachment.linePreviewUrl && attachment.path)
-        .map((attachment) => attachment.path)
-      if (
+      if (pendingRetry) setProductionLineRetry(pendingRetry)
+      if (fulfillmentEvent) {
+        if (lineAttachmentIds.length !== uploadedAttachments.length) {
+          throw new Error('外送／施工照片處理不完整，請稍後重試')
+        }
+        const result = await completeOrderFulfillment(selectedEvent.id, lineAttachmentIds)
+        completedOrderStatus = result.orderStatus
+        completedShippingMethod = result.shippingMethod || selectedEvent.sourceShippingMethod || ''
+        const nextEvent: CalendarEvent = {
+          ...selectedEvent,
+          attachments: nextAttachments,
+          orderStatus: result.orderStatus,
+          sourceShippingMethod: result.shippingMethod || selectedEvent.sourceShippingMethod,
+          updatedAt
+        }
+        optimisticallyPatchCalendarEvents([nextEvent])
+        setProductionLineStatus((current) => current ? {
+          ...current,
+          orderStatus: result.orderStatus,
+          shippingMethod: result.shippingMethod || current.shippingMethod
+        } : current)
+        setProductionLineNotice({
+          variant: result.lineWarning ? 'error' : result.lineSent ? 'success' : 'muted',
+          message: result.lineWarning || result.message
+        })
+        if (result.lineWarning) {
+          await persistProductionLineRetry({
+            eventId: selectedEvent.id,
+            attachmentIds: lineAttachmentIds,
+            mode: 'fulfillment'
+          }, 'failed', result.lineWarning)
+        } else {
+          await clearProductionLineRetry(selectedEvent.id)
+        }
+      } else if (
         selectedEvent.source === 'erpSalesDelivery' &&
         sendDetailAttachmentsToLine &&
-        productionLineStatus?.bound &&
+        latestProductionLineStatus?.bound &&
         lineAttachmentIds.length > 0
       ) {
         try {
           const delivery = await sendProductionPhotoAttachments(selectedEvent.id, lineAttachmentIds)
           setProductionLineNotice({ variant: delivery.sent ? 'success' : 'muted', message: delivery.message })
-          setProductionLineRetry(delivery.sent || delivery.skipped ? null : { eventId: selectedEvent.id, attachmentIds: lineAttachmentIds })
+          if (delivery.sent || delivery.skipped) {
+            await clearProductionLineRetry(selectedEvent.id)
+          } else {
+            await persistProductionLineRetry({ eventId: selectedEvent.id, attachmentIds: lineAttachmentIds, mode: 'production' }, 'failed', delivery.message)
+          }
         } catch (error) {
+          const message = error instanceof Error ? error.message : '照片已上傳，但 LINE 傳送失敗'
           setProductionLineNotice({
             variant: 'error',
-            message: error instanceof Error ? error.message : '照片已上傳，但 LINE 傳送失敗'
+            message
           })
-          setProductionLineRetry({ eventId: selectedEvent.id, attachmentIds: lineAttachmentIds })
+          await persistProductionLineRetry({ eventId: selectedEvent.id, attachmentIds: lineAttachmentIds, mode: 'production' }, 'failed', message).catch(() => undefined)
         }
       } else if (selectedEvent.source === 'erpSalesDelivery' && sendDetailAttachmentsToLine && lineAttachmentIds.length === 0) {
         setProductionLineNotice({ variant: 'muted', message: '附件已上傳；只有照片會同步傳送 LINE。' })
@@ -3572,6 +3979,8 @@ export default function CalendarPage() {
           await syncCalendarEventViews({
             ...selectedEvent,
             attachments: nextAttachments,
+            ...(completedOrderStatus ? { orderStatus: completedOrderStatus } : {}),
+            ...(completedShippingMethod ? { sourceShippingMethod: completedShippingMethod } : {}),
             updatedAt
           })
           await refreshCalendarData()
@@ -3581,11 +3990,122 @@ export default function CalendarPage() {
       })()
     } catch (error) {
       if (!firestoreUpdated && uploadedAttachments.length) {
-        await deleteRemovedEventAttachments(uploadedAttachments).catch(() => 0)
+        await deleteRemovedEventAttachments(uploadedAttachments, selectedEvent.id).catch(() => 0)
       }
       const message = error instanceof Error ? error.message : '附件上傳失敗，請稍後再試'
-      alert(message)
+      if (fulfillmentEvent && firestoreUpdated && lineAttachmentIds.length > 0) {
+        setProductionLineNotice({ variant: 'error', message: `照片已保留，但訂單完成失敗：${message}` })
+        await persistProductionLineRetry({
+          eventId: selectedEvent.id,
+          attachmentIds: lineAttachmentIds,
+          mode: 'fulfillment'
+        }, 'failed', `照片已保留，但訂單完成失敗：${message}`).catch(() => undefined)
+      } else {
+        alert(message)
+      }
       setDetailAttachmentUploading(false)
+    }
+  }
+
+  function addCommentFiles(files: File[]) {
+    const validFiles = files.filter((file) => file.size > 0)
+    if (!validFiles.length) return
+    const available = Math.max(0, 10 - commentFiles.length)
+    if (available === 0) {
+      alert('每則留言最多可附加 10 個檔案')
+      return
+    }
+    if (validFiles.length > available) alert(`每則留言最多可附加 10 個檔案，這次加入前 ${available} 個`)
+    setCommentFiles((items) => [
+      ...items,
+      ...validFiles.slice(0, Math.max(0, 10 - items.length)).map((file) => ({ id: createClientId(), file }))
+    ])
+  }
+
+  function handleCommentAttachmentChange(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? [])
+    event.target.value = ''
+    addCommentFiles(files)
+  }
+
+  function handleCommentPaste(event: ReactClipboardEvent<HTMLTextAreaElement>) {
+    const pastedImages = Array.from(event.clipboardData.items)
+      .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => Boolean(file))
+      .map((file, index) => new File([file], clipboardImageName(file, index), {
+        type: file.type || 'image/png',
+        lastModified: Date.now()
+      }))
+    if (!pastedImages.length) return
+    if (!event.clipboardData.getData('text/plain')) event.preventDefault()
+    addCommentFiles(pastedImages)
+  }
+
+  function removeCommentFile(id: string) {
+    if (commentSending) return
+    setCommentFiles((items) => items.filter((item) => item.id !== id))
+  }
+
+  async function sendEventComment() {
+    const threadId = commentThreadId
+    const text = commentDraft.trim()
+    if (!threadId || !user || !employeeId || commentSending) return
+    if (!text && !commentFiles.length) return
+    if (text.length > 5000) {
+      alert('留言文字最多 5000 字')
+      return
+    }
+
+    const pendingFiles = commentFiles.map((item) => item.file)
+    const commentRef = doc(collection(db, 'calendarEvents', threadId, 'comments'))
+    let uploadedAttachments: EventAttachment[] = []
+    setCommentSending(true)
+    try {
+      if (pendingFiles.length) {
+        uploadedAttachments = await uploadEventAttachments(threadId, pendingFiles, {
+          uploadKind: 'comment',
+          commentId: commentRef.id
+        })
+      }
+      await setDoc(commentRef, {
+        authorUid: user.uid,
+        authorEmployeeId: employeeId,
+        authorName: currentActorName(),
+        text,
+        attachments: uploadedAttachments,
+        createdAt: serverTimestamp()
+      })
+      if (activeCommentThreadIdRef.current === threadId) {
+        setCommentDraft('')
+        setCommentFiles([])
+        window.setTimeout(() => commentThreadEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }), 80)
+      }
+    } catch (error) {
+      if (uploadedAttachments.length) await deleteRemovedEventAttachments(uploadedAttachments, threadId).catch(() => 0)
+      const message = error instanceof Error ? error.message : '留言送出失敗，請稍後再試'
+      alert(message)
+    } finally {
+      setCommentSending(false)
+    }
+  }
+
+  async function deleteEventComment(comment: CalendarEventComment) {
+    const threadId = commentThreadId
+    if (!threadId || !user || deletingCommentId) return
+    if (!isAdmin && comment.authorUid !== user.uid) return
+    if (!window.confirm('確定要刪除這則留言嗎？')) return
+
+    setDeletingCommentId(comment.id)
+    try {
+      await deleteDoc(doc(db, 'calendarEvents', threadId, 'comments', comment.id))
+      const deleteFailures = await deleteRemovedEventAttachments(comment.attachments, threadId)
+      if (deleteFailures > 0) alert('留言已刪除，但部分雲端附件清除失敗')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '留言刪除失敗，請稍後再試'
+      alert(message)
+    } finally {
+      setDeletingCommentId(null)
     }
   }
 
@@ -3635,7 +4155,7 @@ export default function CalendarPage() {
       }
 
       if (removedFiles.length) {
-        deleteFailures = await deleteRemovedEventAttachments(removedFiles)
+        deleteFailures = await deleteRemovedEventAttachments(removedFiles, eventId)
       }
 
       if (hasUploadFailure) {
@@ -3662,24 +4182,26 @@ export default function CalendarPage() {
     canceledAttachmentUploadIdsRef.current.add(upload.id)
     setAttachmentUploads((items) => items.filter((item) => item.id !== upload.id))
     if (upload.attachment) {
-      void deleteRemovedEventAttachments([upload.attachment])
+      void deleteRemovedEventAttachments([upload.attachment], editingEventId ?? 'draft-event')
     }
   }
 
-  async function deleteRemovedEventAttachments(files: EventAttachment[]) {
+  async function deleteRemovedEventAttachments(files: EventAttachment[], eventId = '') {
     const driveFiles = files.filter((file) => file.provider === 'google-drive' && file.path)
     if (!driveFiles.length) return 0
     if (!user) return driveFiles.length
     const token = await user.getIdToken()
+    const appCheckHeaders = await getAppCheckHeaders()
 
     const results = await Promise.allSettled(driveFiles.map(async (file) => {
       const response = await fetch('/api/upload-drive', {
         method: 'DELETE',
         headers: {
           Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          ...appCheckHeaders
         },
-        body: JSON.stringify({ fileId: file.path })
+        body: JSON.stringify({ fileId: file.path, eventId })
       })
       if (!response.ok) {
         const result = await response.json().catch(() => ({}))
@@ -4103,7 +4625,7 @@ export default function CalendarPage() {
     const touch = event.changedTouches[0] ?? event.touches[0]
     if (!touch) return
     const target = event.target
-    if (target instanceof Element && target.closest('button, input, select, textarea, a')) {
+    if (target instanceof Element && target.closest('button, input, select, textarea, a, .event-comment-composer')) {
       eventDetailSwipeRef.current = null
       return
     }
@@ -4455,10 +4977,11 @@ export default function CalendarPage() {
     const eventRepeatLabel = repeatLabel(selectedEvent.repeat, selectedEvent.date, selectedEvent.repeatCustom)
     const locationText = selectedEvent.location?.trim()
     const canManageEvent = canManageCalendarEvent(selectedEvent)
+    const orderFulfillmentEvent = isErpOrderFulfillmentEvent(selectedEvent, productionLineStatus)
     const visibilityTitleRows = eventDetailVisibilityTitleRows(selectedEvent)
     return (
       <aside
-        className={`event-detail-panel${eventDetailSwipeOffset > 0 ? ' swiping' : ''}`}
+        className={`event-detail-panel${eventDetailSwipeOffset > 0 ? ' swiping' : ''}${canManageEvent ? ' has-management-footer' : ''}`}
         style={{
           '--event-color': eventCalendarColor(selectedEvent),
           '--event-detail-swipe-offset': `${eventDetailSwipeOffset}px`
@@ -4478,16 +5001,17 @@ export default function CalendarPage() {
                   className="event-detail-upload-btn"
                   onClick={() => detailAttachmentInputRef.current?.click()}
                   disabled={detailAttachmentUploading}
-                  aria-label="上傳檔案或照片"
+                  aria-label={orderFulfillmentEvent ? '上傳外送或施工完成照片' : '上傳檔案或照片'}
                 >
                   <span>＋</span>
-                  <b>{detailAttachmentUploading ? '上傳中' : '上傳'}</b>
+                  <b>{detailAttachmentUploading ? '上傳中' : orderFulfillmentEvent ? '外送／施工' : '上傳'}</b>
                 </button>
                 <input
                   ref={detailAttachmentInputRef}
                   className="event-detail-upload-input"
                   type="file"
                   multiple
+                  accept={orderFulfillmentEvent ? 'image/*' : undefined}
                   onChange={handleDetailAttachmentFileChange}
                 />
               </>
@@ -4576,7 +5100,25 @@ export default function CalendarPage() {
 
           {selectedEvent.source === 'erpSalesDelivery' && (
             <div className="event-detail-line-delivery">
-              <label>
+              {orderFulfillmentEvent ? (
+                <div className="event-detail-fulfillment-status">
+                  <strong>{fulfillmentShippingMethod(selectedEvent, productionLineStatus)} · {productionLineStatus?.orderStatus || selectedEvent.orderStatus || '狀態讀取中'}</strong>
+                  <small className={productionLineStatusError ? 'error' : undefined}>
+                    {productionLineStatusError
+                      ? `官方 LINE：${productionLineStatusError}`
+                      : productionLineStatusLoading
+                        ? '官方 LINE：正在確認綁定狀態...'
+                        : productionLineStatus?.bound
+                          ? `官方 LINE：已綁定（${productionLineStatus.customerCode} ${productionLineStatus.lineDisplayName || productionLineStatus.customerName}）`
+                          : productionLineStatus?.reason === 'customer_not_bound'
+                            ? `官方 LINE：尚未綁定（${productionLineStatus.customerCode} ${productionLineStatus.customerName}）`
+                            : productionLineStatus?.reason === 'contact_inactive'
+                              ? '官方 LINE：已封鎖或取消加入'
+                              : '官方 LINE：目前無法取得綁定資料'}
+                  </small>
+                  <small>上傳照片後會同步完成訂單、客戶附件與 LINE 通知。</small>
+                </div>
+              ) : <label>
                 <input
                   type="checkbox"
                   checked={sendDetailAttachmentsToLine}
@@ -4585,8 +5127,8 @@ export default function CalendarPage() {
                 />
                 <span>
                   <strong>上傳照片時同步傳送官方 LINE</strong>
-                  <small>
-                    {productionLineStatusLoading
+                  <small className={productionLineStatusError ? 'error' : undefined}>
+                    {productionLineStatusError || (productionLineStatusLoading
                       ? '正在確認客戶綁定...'
                       : productionLineStatus?.bound
                         ? `收件人：${productionLineStatus.customerCode} ${productionLineStatus.lineDisplayName || productionLineStatus.customerName}`
@@ -4594,16 +5136,20 @@ export default function CalendarPage() {
                           ? `${productionLineStatus.customerCode} ${productionLineStatus.customerName} 尚未綁定 LINE`
                           : productionLineStatus?.reason === 'contact_inactive'
                             ? '客戶已封鎖或取消加入官方帳號'
-                            : '目前無法取得客戶 LINE 綁定資料'}
+                            : '目前無法取得客戶 LINE 綁定資料')}
                   </small>
                 </span>
-              </label>
+              </label>}
               {productionLineNotice && (
                 <div className={`event-detail-line-notice ${productionLineNotice.variant}`}>
                   <span>{productionLineNotice.message}</span>
                   {productionLineRetry && (
                     <button type="button" disabled={productionLineRetrying} onClick={retryProductionPhotoDelivery}>
-                      {productionLineRetrying ? '重送中...' : '重新傳送 LINE'}
+                      {productionLineRetrying
+                        ? '重試中...'
+                        : productionLineRetry.mode === 'fulfillment'
+                          ? '重試訂單完成'
+                          : '重新傳送 LINE'}
                     </button>
                   )}
                 </div>
@@ -4687,7 +5233,7 @@ export default function CalendarPage() {
           {selectedEvent.note && (!isHrLeaveRequestEvent(selectedEvent) || canViewHrLeaveNote) && (
             <div className="event-detail-note">
               <strong>備註</strong>
-              <p>{selectedEvent.note}</p>
+              <p>{eventDetailNoteContent(selectedEvent, canOpenSalesForm, productionLineStatus)}</p>
             </div>
           )}
           {selectedEvent.todos && selectedEvent.todos.length > 0 && (
@@ -4706,6 +5252,159 @@ export default function CalendarPage() {
               ))}
             </div>
           )}
+
+          <section className="event-comment-thread" aria-label="事件留言板">
+            <div className="event-comment-thread-title">
+              <strong>留言板</strong>
+              {eventComments.length >= 100 && <small>顯示最近 100 則</small>}
+            </div>
+            {eventCommentsLoading && (
+              <div className="event-comment-skeleton" aria-label="留言載入中">
+                <span />
+                <span />
+              </div>
+            )}
+            {!eventCommentsLoading && eventCommentsError && (
+              <div className="event-comment-error" role="alert">
+                <span>{eventCommentsError}</span>
+                <button type="button" onClick={() => setEventCommentsReloadKey((key) => key + 1)}>重試</button>
+              </div>
+            )}
+            {!eventCommentsLoading && !eventCommentsError && eventComments.length === 0 && (
+              <div className="event-comment-empty">還沒有留言，輸入第一則訊息吧</div>
+            )}
+            {!eventCommentsLoading && !eventCommentsError && groupedEventComments.map((group) => (
+              <div className="event-comment-date-group" key={group.key}>
+                <div className="event-comment-date-label">{group.label}</div>
+                {group.comments.map((comment) => {
+                  const isOwnComment = comment.authorUid === user?.uid
+                  const canDeleteComment = isAdmin || isOwnComment
+                  return (
+                    <article className={`event-comment${isOwnComment ? ' own' : ''}`} key={comment.id}>
+                      <div className="event-comment-content">
+                        <div className="event-comment-meta">
+                          <span>
+                            <strong>{eventCommentAuthorName(comment)}</strong>
+                            <time dateTime={comment.createdAt}>{commentTimeLabel(comment.createdAt)}</time>
+                          </span>
+                          {canDeleteComment && (
+                            <button
+                              type="button"
+                              onClick={() => deleteEventComment(comment)}
+                              disabled={deletingCommentId === comment.id}
+                              aria-label={`刪除 ${eventCommentAuthorName(comment)} 的留言`}
+                            >
+                              {deletingCommentId === comment.id ? '刪除中' : '刪除'}
+                            </button>
+                          )}
+                        </div>
+                        <div className="event-comment-bubble">
+                          {comment.text && <p>{comment.text}</p>}
+                          {comment.attachments.length > 0 && (
+                            <div className="event-comment-attachments">
+                              {comment.attachments.map((attachment) => {
+                                const previewUrl = attachmentPreviewUrl(attachment)
+                                return previewUrl ? (
+                                  <a
+                                    className="event-comment-image"
+                                    href={attachment.url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    key={attachment.path || attachment.url}
+                                  >
+                                    <img src={previewUrl} alt={attachment.originalName || attachment.name} loading="lazy" referrerPolicy="no-referrer" />
+                                  </a>
+                                ) : (
+                                  <a
+                                    className="event-comment-file"
+                                    href={attachment.url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    key={attachment.path || attachment.url}
+                                  >
+                                    <span aria-hidden="true">▧</span>
+                                    <div>
+                                      <b>{attachment.originalName || attachment.name}</b>
+                                      {attachment.size && <small>{Math.ceil(attachment.size / 1024)} KB</small>}
+                                    </div>
+                                  </a>
+                                )
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </article>
+                  )
+                })}
+              </div>
+            ))}
+            <div ref={commentThreadEndRef} />
+          </section>
+        </div>
+
+        <div className="event-comment-composer">
+          {commentFiles.length > 0 && (
+            <div className="event-comment-pending-files" aria-label="準備上傳的檔案">
+              {commentFiles.map((item) => (
+                <span key={item.id}>
+                  <b>{item.file.type.startsWith('image/') ? '照片' : '檔案'}</b>
+                  <span>{item.file.name}</span>
+                  <button type="button" onClick={() => removeCommentFile(item.id)} disabled={commentSending} aria-label={`移除 ${item.file.name}`}>×</button>
+                </span>
+              ))}
+            </div>
+          )}
+          <div className="event-comment-composer-main">
+            <button
+              type="button"
+              className="event-comment-upload"
+              onClick={() => commentAttachmentInputRef.current?.click()}
+              disabled={commentSending}
+              aria-label="上傳照片或檔案"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v4.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V14" />
+              </svg>
+            </button>
+            <input
+              ref={commentAttachmentInputRef}
+              className="event-comment-file-input"
+              type="file"
+              multiple
+              onChange={handleCommentAttachmentChange}
+            />
+            <textarea
+              value={commentDraft}
+              maxLength={5000}
+              rows={1}
+              placeholder="可貼上照片 ; Ctrl+Enter送出"
+              disabled={commentSending}
+              onChange={(event) => setCommentDraft(event.target.value)}
+              onPaste={handleCommentPaste}
+              onKeyDown={(event) => {
+                if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+                  event.preventDefault()
+                  void sendEventComment()
+                }
+              }}
+            />
+            <button
+              type="button"
+              className="event-comment-send"
+              onClick={sendEventComment}
+              disabled={commentSending || (!commentDraft.trim() && commentFiles.length === 0)}
+              aria-label={commentSending ? '留言送出中' : '送出留言'}
+            >
+              {commentSending ? (
+                <span className="event-comment-spinner" />
+              ) : (
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path d="m4 12 15-8-4.5 16-3.2-6.1L4 12Zm7.3 1.9L19 4" />
+                </svg>
+              )}
+            </button>
+          </div>
         </div>
 
         {canManageEvent && (

@@ -1,5 +1,5 @@
 import { initializeApp } from 'firebase/app'
-import { initializeAppCheck, ReCaptchaEnterpriseProvider, type AppCheck } from 'firebase/app-check'
+import { getToken, initializeAppCheck, ReCaptchaEnterpriseProvider, type AppCheck } from 'firebase/app-check'
 import { getAuth } from 'firebase/auth'
 import { getFirestore, initializeFirestore, persistentLocalCache, persistentMultipleTabManager } from 'firebase/firestore'
 
@@ -24,6 +24,13 @@ export const appCheck: AppCheck | null = appCheckSiteKey
       isTokenAutoRefreshEnabled: true,
     })
   : null
+
+export async function getAppCheckHeaders() {
+  if (!appCheck) throw new Error('網站安全驗證尚未啟用。')
+  const result = await getToken(appCheck, false)
+  if (!result.token) throw new Error('無法取得網站安全驗證。')
+  return { 'X-Firebase-AppCheck': result.token }
+}
 
 export const auth = getAuth(app)
 export const db = (() => {

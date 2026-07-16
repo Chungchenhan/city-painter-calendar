@@ -111,10 +111,29 @@ export interface CalendarEvent {
   sourceSalesNo?: string
   sourceCustomerCode?: string
   sourceCustomerName?: string
+  sourceShippingMethod?: string
+  orderStatus?: string
+  productionLineRetry?: {
+    mode: 'production' | 'fulfillment'
+    attachmentIds: string[]
+    status: 'pending' | 'failed'
+    message?: string
+    updatedAt?: string
+  }
   sourceDate?: string
   createdBy?: string
   createdAt?: string
   updatedAt?: string
+}
+
+export interface CalendarEventComment {
+  id: string
+  authorUid: string
+  authorEmployeeId: string
+  authorName: string
+  text: string
+  attachments: NonNullable<CalendarEvent['attachments']>
+  createdAt: string
 }
 
 export interface CalendarActivityLog {

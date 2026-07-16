@@ -51,6 +51,150 @@ async function verifyRequest(req) {
   }
 }
 
+function requestError(message, status = 400) {
+  return Object.assign(new Error(message), { status })
+}
+
+function text(value) {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function stringList(value) {
+  return Array.isArray(value) ? value.map(text).filter(Boolean) : []
+}
+
+async function verifyAppCheck(req) {
+  const token = text(req.headers['x-firebase-appcheck'])
+  if (!token) throw requestError('缺少網站安全驗證', 401)
+  try {
+    await admin.appCheck().verifyToken(token)
+  } catch {
+    throw requestError('網站安全驗證失敗', 401)
+  }
+}
+
+async function authenticateEmployee(req) {
+  getAdminApp()
+  await verifyAppCheck(req)
+  const decoded = await verifyRequest(req)
+  if (!decoded?.uid) throw requestError('登入已失效，請重新登入', 401)
+
+  const db = admin.firestore()
+  const roleSnapshot = await db.collection('userRoles').doc(decoded.uid).get()
+  const role = roleSnapshot.exists ? roleSnapshot.data() || {} : {}
+  const employeeId = text(role.employeeId)
+  if (!employeeId) throw requestError('此帳號不是有效員工帳號', 403)
+  const employeeSnapshot = await db.collection('employees').doc(employeeId).get()
+  const employee = employeeSnapshot.exists ? employeeSnapshot.data() || {} : null
+  if (!employee || employee.status === 'inactive' || text(employee.resignDate)) {
+    throw requestError('此員工帳號已停用', 403)
+  }
+  const erpAccessSnapshot = await db.collection('erp_access').doc(decoded.uid).get()
+  const erpAccess = erpAccessSnapshot.exists ? erpAccessSnapshot.data() || {} : null
+  if (
+    !erpAccess
+    || erpAccess.enabled !== true
+    || text(erpAccess.uid) !== decoded.uid
+    || text(erpAccess.employeeId) !== employeeId
+    || text(erpAccess.employeeNo) !== text(employee.empNo)
+    || Number(erpAccess.schemaVersion) < 2
+  ) {
+    throw requestError('ERP 存取權限已失效，請重新登入', 403)
+  }
+  return {
+    uid: decoded.uid,
+    decoded,
+    role: text(role.role),
+    employeeId,
+    employee: { id: employeeId, ...employee },
+    erpAccess,
+  }
+}
+
+async function departmentName(db, departmentId) {
+  const id = text(departmentId)
+  if (!id) return ''
+  const snapshot = await db.collection('departments').doc(id).get()
+  return snapshot.exists ? text(snapshot.data()?.name) : ''
+}
+
+function eventDepartmentIds(event) {
+  return Array.from(new Set([
+    text(event?.departmentId),
+    ...stringList(event?.calendarIds).map((id) => id.startsWith('department:') ? id.slice('department:'.length) : ''),
+    text(event?.calendarId).startsWith('department:') ? text(event.calendarId).slice('department:'.length) : '',
+  ].filter(Boolean)))
+}
+
+async function actorDepartmentMatches(db, actor, departmentId) {
+  const id = text(departmentId)
+  if (!id) return false
+  if (id === text(actor.employee.departmentId)) return true
+  const actorDepartmentName = text(actor.employee.departmentName)
+  return Boolean(actorDepartmentName && await departmentName(db, id) === actorDepartmentName)
+}
+
+async function eventTargetsActorDepartment(db, event, field, actor) {
+  for (const departmentId of stringList(event?.[field])) {
+    if (await actorDepartmentMatches(db, actor, departmentId)) return true
+  }
+  return false
+}
+
+async function isManagementEvent(db, event) {
+  for (const departmentId of eventDepartmentIds(event)) {
+    if (await departmentName(db, departmentId) === '管理部') return true
+  }
+  return false
+}
+
+async function canViewEvent(db, actor, event) {
+  if (!event) return false
+  if (actor.role === 'admin' || text(event.createdBy) === actor.uid) return true
+  const explicitlyVisible = stringList(event.visibleAssigneeIds).includes(actor.employeeId)
+    || await eventTargetsActorDepartment(db, event, 'visibleDepartmentIds', actor)
+  if (explicitlyVisible) return true
+  if (stringList(event.hiddenAssigneeIds).includes(actor.employeeId)) return false
+  if (await eventTargetsActorDepartment(db, event, 'hiddenDepartmentIds', actor)) return false
+  if (await isManagementEvent(db, event) && text(actor.employee.departmentName) !== '管理部') return false
+  if (stringList(event.assigneeIds).includes(actor.employeeId)) return true
+  for (const departmentId of eventDepartmentIds(event)) {
+    if (await actorDepartmentMatches(db, actor, departmentId)) return true
+  }
+  return eventDepartmentIds(event).length === 0 && stringList(event.assigneeIds).length === 0
+}
+
+async function canManageEvent(db, actor, event, eventId) {
+  if (!event || text(event.source) === 'hrLeaveRequest' || text(eventId).startsWith('hrLeaveRequest_')) return false
+  if (actor.role === 'admin' || text(event.createdBy) === actor.uid || text(actor.employee.departmentName) === '管理部') return true
+  if (!await canViewEvent(db, actor, event)) return false
+  if (stringList(event.assigneeIds).includes(actor.employeeId)) return true
+  for (const departmentId of eventDepartmentIds(event)) {
+    if (await actorDepartmentMatches(db, actor, departmentId)) return true
+  }
+  return false
+}
+
+async function loadEvent(db, eventId) {
+  const id = text(eventId)
+  if (!id || id === 'draft-event') return null
+  const snapshot = await db.collection('calendarEvents').doc(id).get()
+  return snapshot.exists ? { id: snapshot.id, ...snapshot.data() } : null
+}
+
+function attachmentBelongsToEvent(event, fileId) {
+  return Array.isArray(event?.attachments) && event.attachments.some((attachment) => text(attachment?.path) === fileId)
+}
+
+function canCompleteSalesOrder(actor) {
+  if (actor.erpAccess?.enabled !== true) return false
+  const matrix = actor.erpAccess.permissionMatrix
+  if (!matrix || typeof matrix !== 'object') return false
+  return ['sales-main', 'dashboard-sales-main'].some((featureKey) => (
+    matrix[featureKey]?.update === true || matrix[featureKey]?.special === true
+  ))
+}
+
 function lineImageSigningSecret() {
   return process.env.LINE_IMAGE_SIGNING_SECRET || getServiceAccountCredentials().private_key
 }
@@ -235,13 +379,15 @@ async function renderLineImage(req, res) {
   res.status(200).end(output)
 }
 
-async function forwardLineAction(req, body) {
-  const action = body.action === 'production-photo-status' ? 'production-photo-status' : 'send-production-photos'
+async function forwardLineAction(req, body, actor) {
+  const action = String(body.action || '')
+  const appCheckToken = String(req.headers['x-firebase-appcheck'] || '')
   const response = await fetch(process.env.ERP_LINE_API_URL || 'https://erp.city-painter.com/api/line', {
     method: 'POST',
     headers: {
       Authorization: String(req.headers.authorization || ''),
-      'Content-Type': 'application/json'
+      'Content-Type': 'application/json',
+      ...(appCheckToken ? { 'X-Firebase-AppCheck': appCheckToken } : {})
     },
     body: JSON.stringify({
       action,
@@ -252,7 +398,74 @@ async function forwardLineAction(req, body) {
   const result = await response.json().catch(() => null)
   return {
     status: response.status,
-    body: result || { ok: false, error: { message: `LINE 服務回應錯誤（HTTP ${response.status}）` } }
+    body: result
+      ? {
+          ...result,
+          ...(action === 'production-photo-status' ? { canCompleteOrder: canCompleteSalesOrder(actor) } : {})
+        }
+      : { ok: false, error: { message: `LINE 服務回應錯誤（HTTP ${response.status}）` } }
+  }
+}
+
+async function authorizeUpload(db, actor, fields) {
+  const eventId = fieldText(fields.eventId)
+  const uploadKind = fieldText(fields.uploadKind)
+  const commentId = fieldText(fields.commentId)
+  if (!eventId || eventId.includes('/') || eventId.length > 200) {
+    throw requestError('附件事件識別碼不正確', 400)
+  }
+  if (eventId === 'draft-event') {
+    if (uploadKind === 'comment') throw requestError('留言事件不存在', 404)
+    return { eventId, uploadKind: 'draft', commentId: '' }
+  }
+
+  const event = await loadEvent(db, eventId)
+  if (!event) throw requestError('找不到附件對應的行事曆事件', 404)
+  if (uploadKind === 'comment') {
+    if (!commentId || commentId.includes('/') || commentId.length > 200) throw requestError('留言識別碼不正確', 400)
+    if (!await canViewEvent(db, actor, event)) throw requestError('沒有此事件的附件上傳權限', 403)
+    return { eventId, uploadKind: 'comment', commentId }
+  }
+  if (!await canManageEvent(db, actor, event, eventId)) throw requestError('沒有此事件的附件上傳權限', 403)
+  return { eventId, uploadKind: 'event', commentId: '' }
+}
+
+async function authorizeDelete(db, actor, fileId, requestedEventId, appProperties) {
+  if (actor.role === 'admin') return
+  const uploadKind = text(appProperties.calendarUploadKind)
+  const uploaderUid = text(appProperties.calendarUploaderUid)
+  const storedEventId = text(appProperties.calendarEventId)
+  if (uploadKind === 'comment' || uploadKind === 'draft') {
+    if (uploaderUid === actor.uid) return
+    throw requestError('沒有此附件的刪除權限', 403)
+  }
+  if (uploadKind === 'event' && storedEventId) {
+    const event = await loadEvent(db, storedEventId)
+    if (event && await canManageEvent(db, actor, event, storedEventId)) return
+    throw requestError('沒有此附件的刪除權限', 403)
+  }
+
+  const eventId = text(requestedEventId)
+  const event = await loadEvent(db, eventId)
+  if (
+    event
+    && attachmentBelongsToEvent(event, fileId)
+    && await canManageEvent(db, actor, event, eventId)
+  ) return
+  throw requestError('舊附件缺少所有權資料，僅管理員可刪除', 403)
+}
+
+async function authorizeLineAction(db, actor, body) {
+  const eventId = text(body.eventId)
+  const event = await loadEvent(db, eventId)
+  if (!event || text(event.source) !== 'erpSalesDelivery') throw requestError('找不到對應的銷貨單事件', 404)
+  if (body.action === 'production-photo-status') {
+    if (!await canViewEvent(db, actor, event)) throw requestError('沒有查看此銷貨單事件的權限', 403)
+    return
+  }
+  if (!await canManageEvent(db, actor, event, eventId)) throw requestError('沒有操作此銷貨單事件的權限', 403)
+  if (body.action === 'complete-order-fulfillment' && !canCompleteSalesOrder(actor)) {
+    throw requestError('沒有完成銷貨單的修改或特殊操作權限', 403)
   }
 }
 
@@ -279,15 +492,12 @@ export default async function handler(req, res) {
   }
 
   try {
-    const decoded = await verifyRequest(req)
-    if (!decoded?.uid) {
-      res.status(401).json({ error: '登入已失效，請重新登入' })
-      return
-    }
+    const actor = await authenticateEmployee(req)
+    const db = admin.firestore()
 
     if (req.method === 'DELETE') {
-      const { fileId } = await parseJsonBody(req)
-      if (!fileId || typeof fileId !== 'string') {
+      const { fileId, eventId } = await parseJsonBody(req)
+      if (!fileId || typeof fileId !== 'string' || !/^[A-Za-z0-9_-]{10,200}$/.test(fileId)) {
         res.status(400).json({ error: 'Missing fileId' })
         return
       }
@@ -295,6 +505,13 @@ export default async function handler(req, res) {
       const auth = getDriveAuth()
       const drive = google.drive({ version: 'v3', auth })
       try {
+        const metadata = await drive.files.get({
+          fileId,
+          fields: 'id,appProperties',
+          supportsAllDrives: true
+        })
+        const appProperties = metadata.data.appProperties || {}
+        await authorizeDelete(db, actor, fileId, eventId, appProperties)
         await drive.files.delete({ fileId })
       } catch (error) {
         if (error && typeof error === 'object' && 'code' in error && error.code === 404) {
@@ -310,11 +527,12 @@ export default async function handler(req, res) {
 
     if (req.headers['content-type']?.includes('application/json')) {
       const body = await parseJsonBody(req)
-      if (!['production-photo-status', 'send-production-photos'].includes(body.action)) {
+      if (!['production-photo-status', 'send-production-photos', 'complete-order-fulfillment'].includes(body.action)) {
         res.status(400).json({ error: 'Unsupported action' })
         return
       }
-      const forwarded = await forwardLineAction(req, body)
+      await authorizeLineAction(db, actor, body)
+      const forwarded = await forwardLineAction(req, body, actor)
       res.status(forwarded.status).json(forwarded.body)
       return
     }
@@ -329,6 +547,7 @@ export default async function handler(req, res) {
     const auth = getDriveAuth()
     const drive = google.drive({ version: 'v3', auth })
     const folderId = process.env.GOOGLE_DRIVE_CALENDAR_FOLDER_ID || DEFAULT_DRIVE_FOLDER_ID
+    const uploadContext = await authorizeUpload(db, actor, fields)
 
     const attachments = []
     for (const file of uploadFiles) {
@@ -340,7 +559,13 @@ export default async function handler(req, res) {
         requestBody: {
           name: prepared.name,
           mimeType: prepared.mimeType,
-          parents: [folderId]
+          parents: [folderId],
+          appProperties: {
+            calendarUploadKind: uploadContext.uploadKind,
+            calendarUploaderUid: actor.uid,
+            calendarEventId: uploadContext.eventId,
+            ...(uploadContext.commentId ? { calendarCommentId: uploadContext.commentId } : {})
+          }
         },
         media: {
           mimeType: prepared.mimeType,
@@ -381,7 +606,9 @@ export default async function handler(req, res) {
 
     res.status(200).json({ attachments })
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Upload failed'
-    res.status(500).json({ error: message })
+    const status = Number(error?.status) || 500
+    if (status >= 500) console.error('Calendar attachment API failed', error)
+    const message = status >= 500 ? '附件服務處理失敗，請稍後再試' : error instanceof Error ? error.message : '附件服務處理失敗'
+    res.status(status).json({ error: message })
   }
 }
