@@ -174,7 +174,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (
           !empData
           || !employeeCanAccess(empData)
-          || !erpAccessCanAccess(accessData, nextUser.uid, nextEmployeeId, empData.empNo)
         ) {
           clearCachedAuthProfile()
           setRole('unknown')
@@ -192,6 +191,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setEmployeeDepartmentId(nextDepartmentId)
         setEmployeeDepartmentName(nextDepartmentName)
         setDisplayName(nextDisplayName)
+        setCanOpenSalesForm(
+          erpAccessCanAccess(accessData, nextUser.uid, nextEmployeeId, empData.empNo)
+          && canOpenSalesFormFromAccess(accessData),
+        )
         writeCachedAuthProfile({
           uid: nextUser.uid,
           role: roleData.role,
@@ -222,9 +225,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return onSnapshot(doc(db, 'erp_access', user.uid), async (snapshot) => {
       const accessData = snapshot.exists() ? snapshot.data() as Record<string, unknown> : null
       if (!erpAccessCanAccess(accessData, user.uid, employeeId)) {
-        clearCachedAuthProfile()
         setCanOpenSalesForm(false)
-        await signOut(auth)
         return
       }
       setCanOpenSalesForm(canOpenSalesFormFromAccess(accessData))
