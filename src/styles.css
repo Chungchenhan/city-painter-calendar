@@ -163,6 +163,10 @@ textarea {
   padding: 0;
 }
 
+.tt-erp-scan-link {
+  display: none;
+}
+
 .topbar-svg-icon {
   width: 19px;
   height: 19px;
@@ -4469,7 +4473,7 @@ p {
     position: static;
     z-index: 15;
     display: grid;
-    grid-template-columns: 30px minmax(0, 1fr);
+    grid-template-columns: 30px minmax(0, 1fr) 76px;
     align-items: center;
     gap: 4px;
     flex-direction: row;
@@ -4479,6 +4483,26 @@ p {
     border-bottom: 1px solid #ececec;
     background: #fff;
     padding: 5px 6px 7px;
+  }
+
+  .tt-left-rail .tt-erp-scan-link {
+    width: 76px;
+    min-width: 76px;
+    height: 38px;
+    min-height: 38px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid #dfe3e0;
+    border-radius: 8px;
+    padding: 0 10px;
+    background: #fff;
+    color: #087f5b;
+    font-size: 14px;
+    font-weight: 700;
+    line-height: 1;
+    text-decoration: none;
+    white-space: nowrap;
   }
 
   .rail-button,

@@ -19,6 +19,7 @@ const DEPARTMENT_CALENDAR_PREFIX = 'department:'
 const HR_LEAVE_CALENDAR_NAME = 'HR 請假'
 const HR_HOLIDAY_COLOR = '#dc2626'
 const HR_PUNCH_CORRECTION_LEAVE_TYPE = '補打卡'
+const ERP_ORDER_SCAN_URL = 'https://erp.city-painter.com/sales/order-scan'
 const ALL_DEPARTMENTS_EXCEPT_OWN = 'allDepartmentsExceptOwn'
 const ALL_EMPLOYEES_EXCEPT_SELF = 'allEmployeesExceptSelf'
 const ACTIVITY_NOTIFICATION_SEEN_KEY = 'cityPainterCalendarActivitySeenAt'
@@ -5925,6 +5926,15 @@ export default function CalendarPage() {
               )
             })}
           </div>
+          <a
+            className="tt-erp-scan-link"
+            href={ERP_ORDER_SCAN_URL}
+            target="_blank"
+            rel="noreferrer"
+            aria-label="掃描 ERP 銷貨單 QR Code"
+          >
+            掃描
+          </a>
         </aside>
 
         {showCalendarDrawer && (
