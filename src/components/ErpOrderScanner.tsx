@@ -367,9 +367,6 @@ export default function ErpOrderScanner({ onClose }: { onClose: () => void }) {
           <button type="button" className="erp-order-scanner-action primary" onClick={() => void (cameraActive ? stopCamera() : startCamera())} disabled={busy}>
             {cameraStarting ? '相機啟動中...' : cameraActive ? '停止相機' : liveCameraSupported ? '開啟相機掃描' : '拍照掃描 QR Code'}
           </button>
-          {liveCameraSupported && (
-            <button type="button" className="erp-order-scanner-action" onClick={() => cameraCaptureInputRef.current?.click()} disabled={busy}>拍照／相簿辨識</button>
-          )}
           <input
             ref={cameraCaptureInputRef}
             className="erp-order-scanner-capture-input"
