@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, ChangeEvent, ClipboardEvent as ReactClipboardEvent, DragEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode, TouchEvent as ReactTouchEvent } from 'react'
 import dayjs from 'dayjs'
 import { addDoc, arrayUnion, collection, deleteDoc, deleteField, doc, getDoc, getDocs, limitToLast, onSnapshot, orderBy, query, serverTimestamp, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore'
@@ -19,9 +19,6 @@ const DEPARTMENT_CALENDAR_PREFIX = 'department:'
 const HR_LEAVE_CALENDAR_NAME = 'HR 請假'
 const HR_HOLIDAY_COLOR = '#dc2626'
 const HR_PUNCH_CORRECTION_LEAVE_TYPE = '補打卡'
-const ERP_ACCESS_CONTROL_URL = 'https://erp.city-painter.com/api/access-control'
-const ERP_ORDER_SCAN_PATH = '/sales/order-scan'
-const ERP_SCAN_TICKET_MARGIN_MS = 15 * 1000
 const LOCAL_CALENDAR_HOSTS = new Set([
   'localhost',
   '127.0.0.1',
@@ -52,12 +49,6 @@ type TitleIconOption = {
   label: string
 }
 
-type PreparedErpScanTicket = {
-  uid: string
-  redirectUrl: string
-  expiresAt: number
-}
-
 const DEFAULT_TITLE_ICON_OPTIONS: TitleIconOption[] = [
   { icon: '👷', label: '施工' },
   { icon: '📐', label: '丈量' },
@@ -72,6 +63,13 @@ const DEFAULT_TITLE_ICON_OPTIONS: TitleIconOption[] = [
   { icon: '🎨', label: '設計' },
   { icon: '🚀', label: '外包' }
 ]
+
+const loadErpOrderScanner = () => import('../components/ErpOrderScanner')
+const ErpOrderScanner = lazy(loadErpOrderScanner)
+
+function preloadErpOrderScannerModule() {
+  return loadErpOrderScanner().then((module) => module.preloadErpOrderScanner())
+}
 type ViewMode = 'month' | 'week'
 type EventEditorIcon = 'person' | 'department' | 'calendar' | 'bell' | 'repeat' | 'link' | 'location' | 'paperclip' | 'note' | 'check'
 type RecurrenceEditScope = 'single' | 'future' | 'all'
@@ -883,11 +881,6 @@ function erpOrigin() {
   return 'https://erp.city-painter.com'
 }
 
-function erpAccessControlUrl() {
-  if (!import.meta.env.DEV) return ERP_ACCESS_CONTROL_URL
-  return `${erpOrigin()}/api/access-control`
-}
-
 export default function CalendarPage() {
   const queryClient = useQueryClient()
   const { user, role, employeeId, employeeDepartmentId, employeeDepartmentName, displayName, canOpenSalesForm } = useAuth()
@@ -917,9 +910,7 @@ export default function CalendarPage() {
   const [passwordError, setPasswordError] = useState('')
   const [passwordSuccess, setPasswordSuccess] = useState('')
   const [savingPassword, setSavingPassword] = useState(false)
-  const [openingErpScan, setOpeningErpScan] = useState(false)
-  const preparedErpScanTicketRef = useRef<PreparedErpScanTicket | null>(null)
-  const preparingErpScanTicketRef = useRef<Promise<PreparedErpScanTicket> | null>(null)
+  const [showErpOrderScanner, setShowErpOrderScanner] = useState(false)
   const [showTitleIconSettings, setShowTitleIconSettings] = useState(false)
   const [showTitleIconPicker, setShowTitleIconPicker] = useState(false)
   const [titleOverrideIconPickerIndex, setTitleOverrideIconPickerIndex] = useState<number | null>(null)
@@ -3105,114 +3096,24 @@ export default function CalendarPage() {
     setShowPasswordModal(true)
   }
 
-  const prepareErpScanTicket = useCallback(async (): Promise<PreparedErpScanTicket> => {
-    const currentUser = auth.currentUser
-    if (!currentUser) {
-      throw new Error('登入已失效，請重新登入')
-    }
-
-    const cached = preparedErpScanTicketRef.current
-    if (
-      cached
-      && cached.uid === currentUser.uid
-      && cached.expiresAt > Date.now() + ERP_SCAN_TICKET_MARGIN_MS
-    ) {
-      return cached
-    }
-    if (preparingErpScanTicketRef.current) {
-      return preparingErpScanTicketRef.current
-    }
-
-    const preparing = (async () => {
-      const [token, appCheckHeaders] = await Promise.all([
-        currentUser.getIdToken(),
-        getAppCheckHeaders()
-      ])
-      const response = await fetch(erpAccessControlUrl(), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-          ...appCheckHeaders
-        },
-        body: JSON.stringify({
-          action: 'create-calendar-scan-ticket',
-          targetPath: ERP_ORDER_SCAN_PATH
-        })
-      })
-      const result = await response.json().catch(() => null) as {
-        redirectUrl?: string
-        expiresInSeconds?: number
-        message?: string
-        error?: string
-      } | null
-      if (!response.ok || !result?.redirectUrl) {
-        throw new Error(result?.message || result?.error || '掃描頁面開啟失敗，請稍後再試')
-      }
-      if (auth.currentUser?.uid !== currentUser.uid) {
-        throw new Error('登入身分已變更，請再試一次')
-      }
-
-      const prepared = {
-        uid: currentUser.uid,
-        redirectUrl: result.redirectUrl,
-        expiresAt: Date.now() + Math.max(1, Number(result.expiresInSeconds) || 0) * 1000
-      }
-      preparedErpScanTicketRef.current = prepared
-      return prepared
-    })()
-    preparingErpScanTicketRef.current = preparing
-    try {
-      return await preparing
-    } finally {
-      if (preparingErpScanTicketRef.current === preparing) {
-        preparingErpScanTicketRef.current = null
-      }
-    }
-  }, [])
-
   useEffect(() => {
-    preparedErpScanTicketRef.current = null
-    preparingErpScanTicketRef.current = null
     if (!user || !canOpenSalesForm) return
+    const timer = window.setTimeout(() => {
+      void preloadErpOrderScannerModule().catch(() => undefined)
+    }, 250)
+    return () => window.clearTimeout(timer)
+  }, [canOpenSalesForm, user])
 
-    const prepareWhenVisible = () => {
-      if (document.visibilityState !== 'visible') return
-      void prepareErpScanTicket().catch(() => undefined)
+  function openErpOrderScan() {
+    if (!auth.currentUser) {
+      alert('登入已失效，請重新登入')
+      return
     }
-    const timer = window.setTimeout(prepareWhenVisible, 200)
-    document.addEventListener('visibilitychange', prepareWhenVisible)
-    window.addEventListener('focus', prepareWhenVisible)
-    window.addEventListener('pageshow', prepareWhenVisible)
-    return () => {
-      window.clearTimeout(timer)
-      document.removeEventListener('visibilitychange', prepareWhenVisible)
-      window.removeEventListener('focus', prepareWhenVisible)
-      window.removeEventListener('pageshow', prepareWhenVisible)
+    if (!canOpenSalesForm) {
+      alert('您沒有修改銷售作業的權限')
+      return
     }
-  }, [canOpenSalesForm, prepareErpScanTicket, user])
-
-  async function openErpOrderScan() {
-    if (openingErpScan) return
-
-    const currentUser = auth.currentUser
-    const cached = preparedErpScanTicketRef.current
-    const canOpenImmediately = Boolean(
-      currentUser
-      && cached
-      && cached.uid === currentUser.uid
-      && cached.expiresAt > Date.now() + ERP_SCAN_TICKET_MARGIN_MS
-    )
-    if (!canOpenImmediately) setOpeningErpScan(true)
-
-    try {
-      const prepared = await prepareErpScanTicket()
-      preparedErpScanTicketRef.current = null
-      window.location.assign(prepared.redirectUrl)
-    } catch (error) {
-      alert(error instanceof Error ? error.message : '掃描頁面開啟失敗，請稍後再試')
-      setOpeningErpScan(false)
-    }
+    setShowErpOrderScanner(true)
   }
 
   async function savePasswordChange() {
@@ -6069,14 +5970,14 @@ export default function CalendarPage() {
             type="button"
             className="tt-erp-scan-link"
             aria-label="掃描 ERP 銷貨單 QR Code"
-            aria-busy={openingErpScan}
-            disabled={openingErpScan}
-            onFocus={() => void prepareErpScanTicket().catch(() => undefined)}
-            onPointerDown={() => void prepareErpScanTicket().catch(() => undefined)}
-            onPointerEnter={() => void prepareErpScanTicket().catch(() => undefined)}
-            onClick={() => void openErpOrderScan()}
+            aria-expanded={showErpOrderScanner}
+            disabled={!canOpenSalesForm}
+            onFocus={() => void preloadErpOrderScannerModule().catch(() => undefined)}
+            onPointerDown={() => void preloadErpOrderScannerModule().catch(() => undefined)}
+            onPointerEnter={() => void preloadErpOrderScannerModule().catch(() => undefined)}
+            onClick={openErpOrderScan}
           >
-            {openingErpScan ? '開啟中' : '掃描'}
+            掃描
           </button>
         </aside>
 
@@ -6788,6 +6689,12 @@ export default function CalendarPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {showErpOrderScanner && (
+        <Suspense fallback={<div className="loading-page">掃描器載入中...</div>}>
+          <ErpOrderScanner onClose={() => setShowErpOrderScanner(false)} />
+        </Suspense>
       )}
 
       {showRepeatCustomModal && (

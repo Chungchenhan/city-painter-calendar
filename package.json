@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@tanstack/react-query": "^5.100.10",
+    "@zxing/browser": "^0.2.1",
     "dayjs": "^1.11.20",
     "firebase": "^12.16.0",
     "firebase-admin": "13.10.0",
