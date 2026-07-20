@@ -89,25 +89,12 @@ async function authenticateEmployee(req) {
   if (!employee || employee.status === 'inactive' || text(employee.resignDate)) {
     throw requestError('此員工帳號已停用', 403)
   }
-  const erpAccessSnapshot = await db.collection('erp_access').doc(decoded.uid).get()
-  const erpAccess = erpAccessSnapshot.exists ? erpAccessSnapshot.data() || {} : null
-  if (
-    !erpAccess
-    || erpAccess.enabled !== true
-    || text(erpAccess.uid) !== decoded.uid
-    || text(erpAccess.employeeId) !== employeeId
-    || text(erpAccess.employeeNo) !== text(employee.empNo)
-    || Number(erpAccess.schemaVersion) < 2
-  ) {
-    throw requestError('ERP 存取權限已失效，請重新登入', 403)
-  }
   return {
     uid: decoded.uid,
     decoded,
     role: text(role.role),
     employeeId,
     employee: { id: employeeId, ...employee },
-    erpAccess,
   }
 }
 
@@ -188,15 +175,6 @@ async function loadEvent(db, eventId) {
 
 function attachmentBelongsToEvent(event, fileId) {
   return Array.isArray(event?.attachments) && event.attachments.some((attachment) => text(attachment?.path) === fileId)
-}
-
-function canCompleteSalesOrder(actor) {
-  if (actor.erpAccess?.enabled !== true) return false
-  const matrix = actor.erpAccess.permissionMatrix
-  if (!matrix || typeof matrix !== 'object') return false
-  return ['sales-main', 'dashboard-sales-main'].some((featureKey) => (
-    matrix[featureKey]?.update === true || matrix[featureKey]?.special === true
-  ))
 }
 
 function lineImageSigningSecret() {
@@ -383,7 +361,7 @@ async function renderLineImage(req, res) {
   res.status(200).end(output)
 }
 
-async function forwardLineAction(req, body, actor) {
+async function forwardLineAction(req, body, authorization) {
   const action = String(body.action || '')
   const appCheckToken = String(req.headers['x-firebase-appcheck'] || '')
   const response = await fetch(process.env.ERP_LINE_API_URL || 'https://erp.city-painter.com/api/line', {
@@ -405,7 +383,7 @@ async function forwardLineAction(req, body, actor) {
     body: result
       ? {
           ...result,
-          ...(action === 'production-photo-status' ? { canCompleteOrder: canCompleteSalesOrder(actor) } : {})
+          ...(action === 'production-photo-status' ? { canCompleteOrder: authorization.canManageEvent } : {})
         }
       : { ok: false, error: { message: `LINE 服務回應錯誤（HTTP ${response.status}）` } }
   }
@@ -465,12 +443,10 @@ async function authorizeLineAction(db, actor, body) {
   if (!event || text(event.source) !== 'erpSalesDelivery') throw requestError('找不到對應的銷貨單事件', 404)
   if (body.action === 'production-photo-status') {
     if (!await canViewEvent(db, actor, event)) throw requestError('沒有查看此銷貨單事件的權限', 403)
-    return
+    return { canManageEvent: await canManageEvent(db, actor, event, eventId) }
   }
   if (!await canManageEvent(db, actor, event, eventId)) throw requestError('沒有操作此銷貨單事件的權限', 403)
-  if (body.action === 'complete-order-fulfillment' && !canCompleteSalesOrder(actor)) {
-    throw requestError('沒有完成銷貨單的修改或特殊操作權限', 403)
-  }
+  return { canManageEvent: true }
 }
 
 export default async function handler(req, res) {
@@ -535,8 +511,8 @@ export default async function handler(req, res) {
         res.status(400).json({ error: 'Unsupported action' })
         return
       }
-      await authorizeLineAction(db, actor, body)
-      const forwarded = await forwardLineAction(req, body, actor)
+      const lineAuthorization = await authorizeLineAction(db, actor, body)
+      const forwarded = await forwardLineAction(req, body, lineAuthorization)
       res.status(forwarded.status).json(forwarded.body)
       return
     }

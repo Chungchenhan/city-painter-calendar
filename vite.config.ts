@@ -101,7 +101,11 @@ export default defineConfig({
     VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg', 'apple-touch-icon.png', 'icons.svg', 'push-handler.js'],
+      devOptions: {
+        enabled: true
+      },
       manifest: {
+        id: '/',
         name: '行事曆',
         short_name: '行事曆',
         description: '都市彩繪有限公司部門工作行事曆',
@@ -148,6 +152,8 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',
     port: 5175,
+    strictPort: true,
+    allowedHosts: ['macbook-air.tail7313ae.ts.net'],
     hmr: { overlay: false }
   }
 })

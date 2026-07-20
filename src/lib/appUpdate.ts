@@ -44,7 +44,10 @@ async function checkAppVersion() {
 }
 
 export function setupAppUpdateChecks() {
-  if (import.meta.env.DEV) return
+  if (import.meta.env.DEV) {
+    registerSW({ immediate: true })
+    return
+  }
 
   ensureLocalQueryCacheSchema()
 

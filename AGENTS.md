@@ -7,6 +7,7 @@
 
 ## 本地預覽
 - 固定網址：`http://localhost:5175/`
+- Tailscale HTTPS：`https://macbook-air.tail7313ae.ts.net:5175/`
 - 啟動指令：`npm run dev`
 - 此專案固定使用 port `5175`，不得與其他專案共用。
 
