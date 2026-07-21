@@ -1,5 +1,5 @@
 import { StrictMode } from 'react'
-import { createRoot } from 'react-dom/client'
+import { createRoot, type Root } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createBrowserRouter, Navigate, RouterProvider } from 'react-router-dom'
 import { AuthProvider } from './contexts/AuthContext'
@@ -12,6 +12,10 @@ import { setupVisualViewportVars } from './lib/visualViewport'
 import './styles.css'
 
 const queryClient = new QueryClient()
+
+type CalendarRootElement = HTMLElement & {
+  cityPainterCalendarRoot?: Root
+}
 
 if (import.meta.env.DEV && window.location.hostname === '127.0.0.1') {
   window.location.replace(`http://localhost:${window.location.port}${window.location.pathname}${window.location.search}${window.location.hash}`)
@@ -54,7 +58,11 @@ const router = createBrowserRouter([
   }
 ])
 
-createRoot(document.getElementById('root')!).render(
+const rootElement = document.getElementById('root') as CalendarRootElement
+const appRoot = rootElement.cityPainterCalendarRoot ?? createRoot(rootElement)
+rootElement.cityPainterCalendarRoot = appRoot
+
+appRoot.render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <AuthProvider>

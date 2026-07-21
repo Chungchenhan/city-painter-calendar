@@ -22,6 +22,10 @@
   <string>$(MARKETING_VERSION)</string>
   <key>CFBundleVersion</key>
   <string>$(CURRENT_PROJECT_VERSION)</string>
+  <key>NSCameraUsageDescription</key>
+  <string>用於拍攝並辨識銷貨單 QR Code。</string>
+  <key>NSPhotoLibraryUsageDescription</key>
+  <string>用於選取並辨識含有銷貨單 QR Code 的照片。</string>
   <key>UILaunchScreen</key>
   <dict/>
   <key>UIApplicationSceneManifest</key>

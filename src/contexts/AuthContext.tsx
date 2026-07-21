@@ -163,14 +163,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setEmployeeId(nextEmployeeId)
         let nextDisplayName = roleData.displayName || nextUser.displayName || ''
 
-        const [empSnap, accessSnap] = await Promise.all([
-          getDoc(doc(db, 'employees', nextEmployeeId)),
-          getDoc(doc(db, 'erp_access', nextUser.uid)),
-        ])
+        const empSnap = await getDoc(doc(db, 'employees', nextEmployeeId))
         const empData = empSnap.exists()
           ? (empSnap.data() as { empNo?: string; name?: string; nickname?: string; departmentId?: string; departmentName?: string; status?: string; resignDate?: string | null })
           : null
-        const accessData = accessSnap.exists() ? accessSnap.data() as Record<string, unknown> : null
         if (
           !empData
           || !employeeCanAccess(empData)
@@ -191,10 +187,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setEmployeeDepartmentId(nextDepartmentId)
         setEmployeeDepartmentName(nextDepartmentName)
         setDisplayName(nextDisplayName)
-        setCanOpenSalesForm(
-          erpAccessCanAccess(accessData, nextUser.uid, nextEmployeeId, empData.empNo)
-          && canOpenSalesFormFromAccess(accessData),
-        )
+        try {
+          const accessSnap = await getDoc(doc(db, 'erp_access', nextUser.uid))
+          const accessData = accessSnap.exists() ? accessSnap.data() as Record<string, unknown> : null
+          setCanOpenSalesForm(
+            erpAccessCanAccess(accessData, nextUser.uid, nextEmployeeId, empData.empNo)
+            && canOpenSalesFormFromAccess(accessData),
+          )
+        } catch {
+          setCanOpenSalesForm(false)
+        }
         writeCachedAuthProfile({
           uid: nextUser.uid,
           role: roleData.role,
