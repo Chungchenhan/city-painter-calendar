@@ -6,12 +6,14 @@ import { signOut } from 'firebase/auth'
 import { useQueryClient } from '@tanstack/react-query'
 import { auth, db, getAppCheckHeaders } from '../lib/firebase'
 import { employeeNicknameTitle } from '../lib/employeeDirectory'
+import { fulfillmentPaymentNotice, type FulfillmentCashPaymentResult } from '../lib/fulfillmentPaymentResult'
+import { composeEditableEventTitle } from '../lib/calendarEventTitle'
 import { readLocalQueryCache, updateLocalQueryCache, writeLocalQueryCache } from '../lib/localQueryCache'
 import { ensurePushSubscription, isPushSupported } from '../lib/pushNotifications'
 import { useAuth } from '../contexts/AuthContext'
 import { useCalendarActivityLogs, useCalendarEvents, useCalendarGroups, useCalendarSearchEvents } from '../hooks/useCalendarData'
 import { useDepartments, useEmployees, useShifts } from '../hooks/useHrData'
-import type { CalendarActivityLog, CalendarEvent, CalendarEventComment, CalendarGroup, Employee, UserNotificationSettings } from '../types'
+import type { CalendarActivityLog, CalendarEvent, CalendarEventComment, CalendarGroup, Employee, FulfillmentPaymentPrompt, UserNotificationSettings } from '../types'
 
 const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六']
 const DEFAULT_MONTH_DAY_EVENT_ROW_LIMIT = 6
@@ -98,6 +100,10 @@ type ProductionLineStatus = {
   reason: string
   shippingMethod?: string
   orderStatus?: string
+  paymentState?: 'monthly' | 'paid' | 'unpaid' | 'voided'
+  currentOrderUnpaidAmount?: number
+  outstandingTotal?: number
+  paymentPrompt?: FulfillmentPaymentPrompt
 }
 type ProductionLineDelivery = {
   sent: boolean
@@ -114,6 +120,11 @@ type OrderFulfillmentResult = {
   lineSent?: boolean
   lineSkipped?: boolean
   lineWarning?: string
+  paymentPrompt?: FulfillmentPaymentPrompt
+}
+type FulfillmentPaymentModal = FulfillmentPaymentPrompt & {
+  eventId: string
+  idempotencyKey: string
 }
 type ProductionLineRetry = {
   eventId: string
@@ -435,6 +446,30 @@ function apiErrorMessage(error: ApiErrorPayload | undefined, fallback: string) {
   return error?.message || fallback
 }
 
+function finitePaymentAmount(value: unknown) {
+  const amount = Number(String(value ?? '').replaceAll(',', '').trim())
+  return Number.isFinite(amount) ? Math.max(amount, 0) : 0
+}
+
+function normalizeFulfillmentPaymentPrompt(value: unknown): FulfillmentPaymentPrompt | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const source = value as Record<string, unknown>
+  const outstandingTotal = finitePaymentAmount(source.outstandingTotal ?? source.totalOutstanding)
+  const currentOrderUnpaidAmount = finitePaymentAmount(
+    source.currentOrderUnpaidAmount ?? source.currentSalesUnpaidAmount ?? source.defaultAmount ?? outstandingTotal
+  )
+  if (source.required !== true || outstandingTotal <= 0) return undefined
+  return {
+    required: true,
+    customerId: typeof source.customerId === 'string' ? source.customerId : undefined,
+    customerCode: typeof source.customerCode === 'string' ? source.customerCode : undefined,
+    customerName: typeof source.customerName === 'string' ? source.customerName : undefined,
+    outstandingTotal,
+    currentOrderUnpaidAmount: currentOrderUnpaidAmount > 0 ? currentOrderUnpaidAmount : outstandingTotal,
+    unpaidOrderCount: finitePaymentAmount(source.unpaidOrderCount) || undefined
+  }
+}
+
 function fulfillmentShippingMethod(event: CalendarEvent, status: ProductionLineStatus | null) {
   const legacyNoteMethod = event.note.match(/(?:送貨|取件)方式[：:]\s*(外送|施工)/)?.[1] || ''
   return (status?.shippingMethod || event.sourceShippingMethod || legacyNoteMethod).trim()
@@ -450,17 +485,47 @@ function erpSalesFormUrl(salesId: string) {
   return `${erpOrigin()}/sales/main/${encodeURIComponent(salesId)}/edit`
 }
 
-function eventDetailNoteContent(event: CalendarEvent, canOpenSalesForm: boolean, status: ProductionLineStatus | null): ReactNode {
+function eventDetailNoteContent(
+  event: CalendarEvent,
+  canOpenSalesForm: boolean,
+  status: ProductionLineStatus | null,
+  canViewPaymentStatus: boolean,
+  statusLoading: boolean,
+  statusError: string,
+): ReactNode {
+  const note = event.source === 'erpSalesDelivery'
+    ? (() => {
+        const lines = event.note
+          .split('\n')
+          .filter((line) => !/^(?:送貨方式|地址|收貨時間|交易條件|付款狀態)[：:]/.test(line.trim()))
+        let paymentStatus = ''
+        if (canViewPaymentStatus) {
+          if (statusLoading) paymentStatus = '查詢中'
+          else if (statusError || !status?.paymentState) paymentStatus = '無法取得'
+          else if (status.paymentState === 'monthly') paymentStatus = '月結'
+          else if (status.paymentState === 'voided') paymentStatus = '作廢'
+          else paymentStatus = [
+            `本單未付 $${finitePaymentAmount(status.currentOrderUnpaidAmount).toLocaleString()}`,
+            `累計未付 $${finitePaymentAmount(status.outstandingTotal).toLocaleString()}`,
+          ].join('、')
+        }
+        if (paymentStatus) {
+          const salesNoIndex = lines.findIndex((line) => /^銷售單號[：:]/.test(line.trim()))
+          lines.splice(salesNoIndex >= 0 ? salesNoIndex + 1 : lines.length, 0, `付款狀態：${paymentStatus}`)
+        }
+        return lines.join('\n')
+      })()
+    : event.note
   const salesNo = event.sourceSalesNo?.trim() || status?.salesNo?.trim() || ''
   if (
     !canOpenSalesForm
     || event.source !== 'erpSalesDelivery'
     || !event.sourceId
     || !/^\d+$/.test(salesNo)
-    || !event.note.includes(salesNo)
-  ) return event.note
+    || !note.includes(salesNo)
+  ) return note
 
-  return event.note.split(salesNo).flatMap((part, index, parts) => [
+  return note.split(salesNo).flatMap((part, index, parts) => [
     part,
     ...(index < parts.length - 1 ? [(
       <a
@@ -976,6 +1041,10 @@ export default function CalendarPage() {
   const [productionLineNotice, setProductionLineNotice] = useState<{ variant: 'success' | 'error' | 'muted'; message: string } | null>(null)
   const [productionLineRetry, setProductionLineRetry] = useState<ProductionLineRetry | null>(null)
   const [productionLineRetrying, setProductionLineRetrying] = useState(false)
+  const [fulfillmentPaymentModal, setFulfillmentPaymentModal] = useState<FulfillmentPaymentModal | null>(null)
+  const [fulfillmentPaymentAmount, setFulfillmentPaymentAmount] = useState('')
+  const [fulfillmentPaymentSaving, setFulfillmentPaymentSaving] = useState(false)
+  const [fulfillmentPaymentError, setFulfillmentPaymentError] = useState('')
   const noteTextareaRef = useRef<HTMLTextAreaElement | null>(null)
   const detailAttachmentInputRef = useRef<HTMLInputElement | null>(null)
   const commentAttachmentInputRef = useRef<HTMLInputElement | null>(null)
@@ -1468,13 +1537,13 @@ export default function CalendarPage() {
     function closeEventDetail(event: MouseEvent | TouchEvent) {
       if (shouldKeepOverlayOpenForSystemGesture(event)) return
       const target = event.target
-      if (target instanceof Element && target.closest('.event-detail-panel, .event-pill, .event-line, .week-event')) return
+      if (target instanceof Element && target.closest('.event-detail-panel, .event-pill, .event-line, .week-event, .fulfillment-payment-overlay')) return
       setSelectedEventId(null)
       setShowEventActionMenu(false)
     }
 
     function closeEventDetailWithEscape(event: KeyboardEvent) {
-      if (event.key === 'Escape') setSelectedEventId(null)
+      if (event.key === 'Escape' && !fulfillmentPaymentModal) setSelectedEventId(null)
     }
 
     document.addEventListener('mousedown', closeEventDetail)
@@ -1485,7 +1554,7 @@ export default function CalendarPage() {
       document.removeEventListener('touchstart', closeEventDetail)
       document.removeEventListener('keydown', closeEventDetailWithEscape)
     }
-  }, [selectedEventId])
+  }, [selectedEventId, fulfillmentPaymentModal])
 
   useEffect(() => {
     if (!showEventActionMenu) return
@@ -1713,6 +1782,10 @@ export default function CalendarPage() {
 
   useEffect(() => {
     let cancelled = false
+    setFulfillmentPaymentModal(null)
+    setFulfillmentPaymentAmount('')
+    setFulfillmentPaymentSaving(false)
+    setFulfillmentPaymentError('')
     setProductionLineNotice(null)
     setProductionLineStatusError('')
     setProductionLineRetry(null)
@@ -3678,18 +3751,10 @@ export default function CalendarPage() {
     })
     const result = await response.json().catch(() => null) as (ProductionLineStatus & { ok?: boolean, error?: ApiErrorPayload }) | null
     if (!response.ok || result?.ok !== true) throw new Error(apiErrorMessage(result?.error, '訂單狀態讀取失敗'))
-    return result
-  }
-
-  async function preflightOrderFulfillment(event: CalendarEvent) {
-    const status = await fetchProductionLineStatus(event.id)
-    setProductionLineStatus(status)
-    setProductionLineStatusError('')
-    setSendDetailAttachmentsToLine(status.bound)
-    const shippingMethod = fulfillmentShippingMethod(event, status)
-    if (shippingMethod !== '外送' && shippingMethod !== '施工') return { status, fulfillment: false }
-    if (status.canCompleteOrder !== true) throw new Error('您沒有完成銷貨單的修改或特殊操作權限')
-    return { status, fulfillment: true }
+    return {
+      ...result,
+      paymentPrompt: normalizeFulfillmentPaymentPrompt(result.paymentPrompt)
+    }
   }
 
   async function sendProductionPhotoAttachments(eventId: string, attachmentIds: string[]) {
@@ -3739,14 +3804,90 @@ export default function CalendarPage() {
     const pendingWarning = sent === false && skipped === true && message.includes('正在傳送中')
       ? `${message} 請稍後再按「重新傳送 LINE」。`
       : undefined
+    const paymentPrompt = normalizeFulfillmentPaymentPrompt(result.result.paymentPrompt)
     return {
       orderStatus: result.result.orderStatus,
       shippingMethod: result.result.shippingMethod,
       message,
       lineSent: sent,
       lineSkipped: skipped,
-      lineWarning: result.result.lineWarning || result.result.warning || pendingWarning
+      lineWarning: result.result.lineWarning || result.result.warning || pendingWarning,
+      paymentPrompt
     } satisfies OrderFulfillmentResult
+  }
+
+  function openFulfillmentPaymentPrompt(eventId: string, prompt: FulfillmentPaymentPrompt | undefined) {
+    if (!prompt?.required || fulfillmentPaymentModal?.eventId === eventId) return
+    setFulfillmentPaymentModal({
+      ...prompt,
+      eventId,
+      idempotencyKey: globalThis.crypto?.randomUUID?.() || createClientId()
+    })
+    setFulfillmentPaymentAmount(String(prompt.outstandingTotal))
+    setFulfillmentPaymentError('')
+  }
+
+  function dismissFulfillmentPaymentPrompt() {
+    if (fulfillmentPaymentSaving) return
+    setFulfillmentPaymentModal(null)
+    setFulfillmentPaymentAmount('')
+    setFulfillmentPaymentError('')
+  }
+
+  async function recordFulfillmentCashPayment() {
+    if (!user || !fulfillmentPaymentModal || fulfillmentPaymentSaving) return
+    const amount = finitePaymentAmount(fulfillmentPaymentAmount)
+    if (amount <= 0) {
+      setFulfillmentPaymentError('收款金額必須大於 0')
+      return
+    }
+    setFulfillmentPaymentSaving(true)
+    setFulfillmentPaymentError('')
+    try {
+      const token = await user.getIdToken()
+      const appCheckHeaders = await getAppCheckHeaders()
+      const response = await fetch('/api/upload-drive', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          ...appCheckHeaders
+        },
+        body: JSON.stringify({
+          action: 'record-fulfillment-cash-payment',
+          eventId: fulfillmentPaymentModal.eventId,
+          amount,
+          idempotencyKey: fulfillmentPaymentModal.idempotencyKey
+        })
+      })
+      const payload = await response.json().catch(() => null) as {
+        ok?: boolean
+        result?: FulfillmentCashPaymentResult
+        error?: ApiErrorPayload
+      } | null
+      if (!response.ok || payload?.ok !== true || !payload.result) {
+        throw new Error(apiErrorMessage(payload?.error, `收款沖帳失敗（HTTP ${response.status}）`))
+      }
+      const currentOrderUnpaidAmount = payload.result.currentOrderUnpaidAmount
+      const outstandingTotal = payload.result.outstandingTotal
+      setProductionLineStatus((current) => current ? {
+        ...current,
+        paymentState: payload.result?.paymentState || current.paymentState,
+        currentOrderUnpaidAmount: typeof currentOrderUnpaidAmount === 'number'
+          ? finitePaymentAmount(currentOrderUnpaidAmount)
+          : current.currentOrderUnpaidAmount,
+        outstandingTotal: typeof outstandingTotal === 'number'
+          ? finitePaymentAmount(outstandingTotal)
+          : current.outstandingTotal,
+      } : current)
+      setProductionLineNotice(fulfillmentPaymentNotice(payload.result))
+      setFulfillmentPaymentModal(null)
+      setFulfillmentPaymentAmount('')
+    } catch (error) {
+      setFulfillmentPaymentError(error instanceof Error ? error.message : '收款沖帳失敗，請稍後重試')
+    } finally {
+      setFulfillmentPaymentSaving(false)
+    }
   }
 
   async function applyFulfillmentResult(eventId: string, result: OrderFulfillmentResult) {
@@ -3918,14 +4059,21 @@ export default function CalendarPage() {
     setDetailAttachmentUploading(true)
     try {
       if (selectedEvent.source === 'erpSalesDelivery') {
-        const preflight = await preflightOrderFulfillment(selectedEvent)
-        latestProductionLineStatus = preflight.status
-        fulfillmentEvent = preflight.fulfillment
+        if (!latestProductionLineStatus) throw new Error('訂單與未付款資料仍在載入，請稍後再試')
+        const shippingMethod = fulfillmentShippingMethod(selectedEvent, latestProductionLineStatus)
+        fulfillmentEvent = shippingMethod === '外送' || shippingMethod === '施工'
+        if (fulfillmentEvent && latestProductionLineStatus.canCompleteOrder !== true) {
+          throw new Error('您沒有完成銷貨單的修改或特殊操作權限')
+        }
         if (fulfillmentEvent && files.some((file) => !file.type.startsWith('image/') || file.type === 'image/svg+xml')) {
           throw new Error('外送／施工完成只能上傳照片')
         }
       }
-      uploadedAttachments = await uploadEventAttachments(selectedEvent.id, files)
+      const uploadPromise = uploadEventAttachments(selectedEvent.id, files)
+      if (fulfillmentEvent) {
+        openFulfillmentPaymentPrompt(selectedEvent.id, latestProductionLineStatus?.paymentPrompt)
+      }
+      uploadedAttachments = await uploadPromise
       if (!uploadedAttachments.length) throw new Error('附件上傳失敗')
       const nextAttachments = [...(selectedEvent.attachments ?? []), ...uploadedAttachments]
       const updatedAt = new Date().toISOString()
@@ -4035,6 +4183,11 @@ export default function CalendarPage() {
     } catch (error) {
       if (!firestoreUpdated && uploadedAttachments.length) {
         await deleteRemovedEventAttachments(uploadedAttachments, selectedEvent.id).catch(() => 0)
+      }
+      if (fulfillmentEvent && !firestoreUpdated) {
+        setFulfillmentPaymentModal((current) => current?.eventId === selectedEvent.id ? null : current)
+        setFulfillmentPaymentAmount('')
+        setFulfillmentPaymentError('')
       }
       const message = error instanceof Error ? error.message : '附件上傳失敗，請稍後再試'
       if (fulfillmentEvent && firestoreUpdated && lineAttachmentIds.length > 0) {
@@ -5044,7 +5197,7 @@ export default function CalendarPage() {
                   type="button"
                   className="event-detail-upload-btn"
                   onClick={() => detailAttachmentInputRef.current?.click()}
-                  disabled={detailAttachmentUploading}
+                  disabled={detailAttachmentUploading || productionLineStatusLoading || !productionLineStatus}
                   aria-label={orderFulfillmentEvent ? '上傳外送或施工完成照片' : '上傳檔案或照片'}
                 >
                   <span>＋</span>
@@ -5146,7 +5299,7 @@ export default function CalendarPage() {
             <div className="event-detail-line-delivery">
               {orderFulfillmentEvent ? (
                 <div className="event-detail-fulfillment-status">
-                  <strong>{fulfillmentShippingMethod(selectedEvent, productionLineStatus)} · {productionLineStatus?.orderStatus || selectedEvent.orderStatus || '狀態讀取中'}</strong>
+                  <strong>{productionLineStatus?.orderStatus || selectedEvent.orderStatus || '狀態讀取中'}</strong>
                   <small className={productionLineStatusError ? 'error' : undefined}>
                     {productionLineStatusError
                       ? `官方 LINE：${productionLineStatusError}`
@@ -5277,7 +5430,14 @@ export default function CalendarPage() {
           {selectedEvent.note && (!isHrLeaveRequestEvent(selectedEvent) || canViewHrLeaveNote) && (
             <div className="event-detail-note">
               <strong>備註</strong>
-              <p>{eventDetailNoteContent(selectedEvent, canOpenSalesForm, productionLineStatus)}</p>
+              <p>{eventDetailNoteContent(
+                selectedEvent,
+                canOpenSalesForm,
+                productionLineStatus,
+                canManageEvent,
+                productionLineStatusLoading,
+                productionLineStatusError,
+              )}</p>
             </div>
           )}
           {selectedEvent.todos && selectedEvent.todos.length > 0 && (
@@ -5565,6 +5725,67 @@ export default function CalendarPage() {
           <div className="modal-footer">
             <button type="button" onClick={dismissStartupNotificationPrompt}>稍後</button>
             <button type="button" className="primary-btn" onClick={enableStartupNotifications}>開啟通知</button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  function renderFulfillmentPaymentPrompt() {
+    if (!fulfillmentPaymentModal) return null
+    const customerLabel = [fulfillmentPaymentModal.customerCode, fulfillmentPaymentModal.customerName]
+      .filter(Boolean)
+      .join(' ')
+    return (
+      <div
+        className="modal-overlay fulfillment-payment-overlay"
+        onTouchStartCapture={rememberOverlaySystemGesture}
+      >
+        <div
+          className="modal fulfillment-payment-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="fulfillment-payment-title"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="modal-header">
+            <h2 id="fulfillment-payment-title">確認現金收款</h2>
+          </div>
+          <div className="modal-body fulfillment-payment-body">
+            {customerLabel && <p>{customerLabel}</p>}
+            <div className="fulfillment-payment-total">
+              <span>累計未付</span>
+              <strong>${fulfillmentPaymentModal.outstandingTotal.toLocaleString()}</strong>
+              <small>
+                本單未付 ${fulfillmentPaymentModal.currentOrderUnpaidAmount.toLocaleString()}
+                {fulfillmentPaymentModal.unpaidOrderCount ? `，共 ${fulfillmentPaymentModal.unpaidOrderCount} 筆未付款銷貨單` : ''}
+              </small>
+            </div>
+            <label className="fulfillment-payment-field">
+              <span>本次收款金額</span>
+              <input
+                type="text"
+                inputMode="decimal"
+                autoComplete="off"
+                value={fulfillmentPaymentAmount}
+                disabled={fulfillmentPaymentSaving}
+                onChange={(event) => {
+                  setFulfillmentPaymentAmount(event.target.value.replace(/[^0-9.,]/g, ''))
+                  setFulfillmentPaymentError('')
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') void recordFulfillmentCashPayment()
+                }}
+              />
+              <small>收款方式固定為現金；多筆會自動依序沖帳，多付的金額會列入溢收。</small>
+            </label>
+            {fulfillmentPaymentError && <div className="form-error">{fulfillmentPaymentError}</div>}
+          </div>
+          <div className="modal-footer fulfillment-payment-actions">
+            <button type="button" disabled={fulfillmentPaymentSaving} onClick={dismissFulfillmentPaymentPrompt}>尚未收款</button>
+            <button type="button" className="primary-btn" disabled={fulfillmentPaymentSaving} onClick={recordFulfillmentCashPayment}>
+              {fulfillmentPaymentSaving ? '收款處理中...' : '確認收款'}
+            </button>
           </div>
         </div>
       </div>
@@ -6118,6 +6339,7 @@ export default function CalendarPage() {
       {renderTitleIconSettingsModal()}
       {renderDayListPanel()}
       {renderEventDetailPanel()}
+      {renderFulfillmentPaymentPrompt()}
 
       {dragPreview && (
         <div
@@ -6257,7 +6479,7 @@ export default function CalendarPage() {
                   value={currentTitleText}
                   onChange={(event) => setEventForm((form) => ({
                     ...form,
-                    title: currentTitleIcon ? composeTitleWithIcon(currentTitleIcon, event.target.value, titleIconOptions) : event.target.value
+                    title: currentTitleIcon ? composeEditableEventTitle(currentTitleIcon, event.target.value) : event.target.value
                   }))}
                   onFocus={() => setShowTitleSuggestions(true)}
                   placeholder="新增標題"

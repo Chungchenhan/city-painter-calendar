@@ -136,6 +136,16 @@ export interface CalendarEventComment {
   createdAt: string
 }
 
+export interface FulfillmentPaymentPrompt {
+  required: boolean
+  customerId?: string
+  customerCode?: string
+  customerName?: string
+  outstandingTotal: number
+  currentOrderUnpaidAmount: number
+  unpaidOrderCount?: number
+}
+
 export interface CalendarActivityLog {
   id: string
   action: 'create' | 'update' | 'delete' | 'move' | 'copy'

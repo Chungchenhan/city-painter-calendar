@@ -361,9 +361,41 @@ async function renderLineImage(req, res) {
   res.status(200).end(output)
 }
 
+export function buildForwardedLineActionBody(body) {
+  const action = String(body.action || '')
+  return action === 'record-fulfillment-cash-payment'
+    ? {
+        action,
+        eventId: body.eventId,
+        amount: body.amount,
+        idempotencyKey: body.idempotencyKey
+      }
+    : {
+        action,
+        eventId: body.eventId,
+        attachmentIds: body.attachmentIds
+      }
+}
+
+export function buildForwardedLineActionResponse(action, result, authorization) {
+  return {
+    ...result,
+    ...(action === 'production-photo-status' ? {
+      canCompleteOrder: authorization.canManageEvent,
+      ...(authorization.canManageEvent ? {} : {
+        paymentPrompt: undefined,
+        paymentState: undefined,
+        currentOrderUnpaidAmount: undefined,
+        outstandingTotal: undefined
+      })
+    } : {})
+  }
+}
+
 async function forwardLineAction(req, body, authorization) {
   const action = String(body.action || '')
   const appCheckToken = String(req.headers['x-firebase-appcheck'] || '')
+  const forwardedBody = buildForwardedLineActionBody(body)
   const response = await fetch(process.env.ERP_LINE_API_URL || 'https://erp.city-painter.com/api/line', {
     method: 'POST',
     headers: {
@@ -371,20 +403,13 @@ async function forwardLineAction(req, body, authorization) {
       'Content-Type': 'application/json',
       ...(appCheckToken ? { 'X-Firebase-AppCheck': appCheckToken } : {})
     },
-    body: JSON.stringify({
-      action,
-      eventId: body.eventId,
-      attachmentIds: body.attachmentIds
-    })
+    body: JSON.stringify(forwardedBody)
   })
   const result = await response.json().catch(() => null)
   return {
     status: response.status,
     body: result
-      ? {
-          ...result,
-          ...(action === 'production-photo-status' ? { canCompleteOrder: authorization.canManageEvent } : {})
-        }
+      ? buildForwardedLineActionResponse(action, result, authorization)
       : { ok: false, error: { message: `LINE 服務回應錯誤（HTTP ${response.status}）` } }
   }
 }
@@ -507,7 +532,12 @@ export default async function handler(req, res) {
 
     if (req.headers['content-type']?.includes('application/json')) {
       const body = await parseJsonBody(req)
-      if (!['production-photo-status', 'send-production-photos', 'complete-order-fulfillment'].includes(body.action)) {
+      if (![
+        'production-photo-status',
+        'send-production-photos',
+        'complete-order-fulfillment',
+        'record-fulfillment-cash-payment'
+      ].includes(body.action)) {
         res.status(400).json({ error: 'Unsupported action' })
         return
       }

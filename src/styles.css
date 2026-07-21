@@ -1886,6 +1886,60 @@ html.calendar-event-touch-dragging ::selection {
   color: #b42318;
 }
 
+.fulfillment-payment-modal {
+  width: min(420px, 100%);
+}
+
+.fulfillment-payment-body > p {
+  color: #5f574b;
+  font-size: 14px;
+}
+
+.fulfillment-payment-total {
+  display: grid;
+  gap: 4px;
+  border-radius: 10px;
+  padding: 14px 16px;
+  background: #fff8df;
+}
+
+.fulfillment-payment-total span,
+.fulfillment-payment-total small,
+.fulfillment-payment-field small {
+  color: #746b5d;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.fulfillment-payment-total strong {
+  color: #2c271f;
+  font-size: 28px;
+}
+
+.fulfillment-payment-field {
+  display: grid;
+  gap: 7px;
+  color: #2c271f;
+  font-weight: 700;
+}
+
+.fulfillment-payment-field input {
+  width: 100%;
+  min-height: 48px;
+  border: 1px solid #d7cdbd;
+  border-radius: 8px;
+  padding: 0 12px;
+  background: #fff;
+  color: #211d17;
+  font-size: 22px;
+  font-weight: 800;
+  text-align: right;
+}
+
+.fulfillment-payment-actions button {
+  min-height: 44px;
+}
+
 .event-detail-fulfillment-status {
   min-height: 52px;
   display: grid;
