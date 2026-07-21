@@ -5,6 +5,7 @@ import { addDoc, arrayUnion, collection, deleteDoc, deleteField, doc, getDoc, ge
 import { signOut } from 'firebase/auth'
 import { useQueryClient } from '@tanstack/react-query'
 import { auth, db, getAppCheckHeaders } from '../lib/firebase'
+import { employeeNicknameTitle } from '../lib/employeeDirectory'
 import { readLocalQueryCache, updateLocalQueryCache, writeLocalQueryCache } from '../lib/localQueryCache'
 import { ensurePushSubscription, isPushSupported } from '../lib/pushNotifications'
 import { useAuth } from '../contexts/AuthContext'
@@ -2087,10 +2088,7 @@ export default function CalendarPage() {
     if (overrideTitle) return overrideTitle
     if (!isHrReadonlyEvent(event) || !event.assigneeIds?.length) return event.title
     const employee = employees.find((item) => item.id === event.assigneeIds[0])
-    const nickname = employee?.nickname?.trim()
-    const name = employee?.name?.trim()
-    if (!nickname || !name || !event.title.startsWith(name)) return event.title
-    return `${nickname}${event.title.slice(name.length)}`
+    return employeeNicknameTitle(event.title, employee)
   }
 
   function eventDetailVisibilityTitleRows(event: CalendarEvent) {
@@ -2176,8 +2174,7 @@ export default function CalendarPage() {
 
   function textDisplayTitle(title: string) {
     const employee = employees.find((item) => item.nickname?.trim() && item.name?.trim() && title.startsWith(item.name.trim()))
-    if (!employee?.nickname || !employee.name) return title
-    return `${employee.nickname.trim()}${title.slice(employee.name.trim().length)}`
+    return employeeNicknameTitle(title, employee)
   }
 
   function currentActorName() {

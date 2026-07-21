@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { collection, getDocs, orderBy, query } from 'firebase/firestore'
 import { db } from '../lib/firebase'
+import { employeeFromDirectory } from '../lib/employeeDirectory'
 import { readLocalQueryCache, writeLocalQueryCache } from '../lib/localQueryCache'
 import type { Department, Employee, Shift } from '../types'
 
@@ -18,14 +19,17 @@ function sortDepartments(rows: Department[]) {
 
 export function useEmployees() {
   return useQuery({
-    queryKey: ['employees'],
+    queryKey: ['employeeDirectory'],
     queryFn: async () => {
-      const snap = await getDocs(query(collection(db, 'employees'), orderBy('name')))
-      const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() })) as Employee[]
-      writeLocalQueryCache('employees', rows)
+      const snap = await getDocs(query(collection(db, 'employee_directory'), orderBy('name')))
+      const rows = snap.docs.map((d) => employeeFromDirectory(d.id, d.data()))
+      writeLocalQueryCache('employeeDirectory', rows)
       return rows
     },
-    placeholderData: () => readLocalQueryCache<Employee[]>('employees'),
+    placeholderData: () => (
+      readLocalQueryCache<Employee[]>('employeeDirectory')
+      ?? readLocalQueryCache<Employee[]>('employees')
+    ),
     staleTime: 5 * 60 * 1000
   })
 }
