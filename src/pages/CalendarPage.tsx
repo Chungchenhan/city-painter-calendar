@@ -9,6 +9,7 @@ import { employeeNicknameTitle } from '../lib/employeeDirectory'
 import { fulfillmentPaymentNotice, type FulfillmentCashPaymentResult } from '../lib/fulfillmentPaymentResult'
 import { composeEditableEventTitle } from '../lib/calendarEventTitle'
 import { readLocalQueryCache, updateLocalQueryCache, writeLocalQueryCache } from '../lib/localQueryCache'
+import { extractPhotoCaptureMetadata, type PhotoCaptureMetadata } from '../lib/photoMetadata'
 import { ensurePushSubscription, isPushSupported } from '../lib/pushNotifications'
 import { useAuth } from '../contexts/AuthContext'
 import { useCalendarActivityLogs, useCalendarEvents, useCalendarGroups, useCalendarSearchEvents } from '../hooks/useCalendarData'
@@ -133,20 +134,28 @@ type ProductionLineRetry = {
 }
 const MAX_DIRECT_ATTACHMENT_BYTES = 3.5 * 1024 * 1024
 
+type PreparedAttachmentUpload = {
+  file: File
+  originalName: string
+  originalSize: number
+  capture?: PhotoCaptureMetadata
+}
+
 function attachmentTransferName(name: string) {
   const baseName = name.replace(/\.[^.]+$/, '') || 'image'
   return `${baseName}.jpg`
 }
 
-async function prepareAttachmentUpload(file: File) {
+async function prepareAttachmentUpload(file: File): Promise<PreparedAttachmentUpload> {
   const metadata = { originalName: file.name, originalSize: file.size }
   const imageLike = file.type.startsWith('image/') || /\.(?:avif|heic|heif|jpe?g|png|webp)$/i.test(file.name)
   if (!imageLike || file.type === 'image/svg+xml') {
     if (file.size > MAX_DIRECT_ATTACHMENT_BYTES) throw new Error('附件超過 3.5 MB，請縮小檔案後再試。')
     return { file, ...metadata }
   }
+  const capture = await extractPhotoCaptureMetadata(file)
   if (file.size <= MAX_DIRECT_ATTACHMENT_BYTES) {
-    return { file, ...metadata }
+    return { file, ...metadata, capture }
   }
 
   const sourceUrl = URL.createObjectURL(file)
@@ -178,7 +187,8 @@ async function prepareAttachmentUpload(file: File) {
       if (blob?.type === 'image/jpeg' && blob.size <= MAX_DIRECT_ATTACHMENT_BYTES) {
         return {
           file: new File([blob], attachmentTransferName(file.name), { type: 'image/jpeg', lastModified: file.lastModified }),
-          ...metadata
+          ...metadata,
+          capture
         }
       }
     }
@@ -435,8 +445,17 @@ function isImageAttachment(attachment: EventAttachment) {
 
 function attachmentPreviewUrl(attachment: EventAttachment) {
   if (!isImageAttachment(attachment)) return ''
+  if (attachment.linePreviewUrl) return attachment.linePreviewUrl
   if (attachment.provider === 'google-drive' && attachment.path) {
     return `https://drive.google.com/thumbnail?id=${encodeURIComponent(attachment.path)}&sz=w1000`
+  }
+  return attachment.url
+}
+
+function attachmentFullImageUrl(attachment: EventAttachment) {
+  if (attachment.lineOriginalUrl) return attachment.lineOriginalUrl
+  if (attachment.provider === 'google-drive' && attachment.path) {
+    return `https://drive.google.com/thumbnail?id=${encodeURIComponent(attachment.path)}&sz=w2400`
   }
   return attachment.url
 }
@@ -456,16 +475,15 @@ function normalizeFulfillmentPaymentPrompt(value: unknown): FulfillmentPaymentPr
   const source = value as Record<string, unknown>
   const outstandingTotal = finitePaymentAmount(source.outstandingTotal ?? source.totalOutstanding)
   const currentOrderUnpaidAmount = finitePaymentAmount(
-    source.currentOrderUnpaidAmount ?? source.currentSalesUnpaidAmount ?? source.defaultAmount ?? outstandingTotal
+    source.currentOrderUnpaidAmount ?? source.currentSalesUnpaidAmount ?? source.defaultAmount
   )
-  if (source.required !== true || outstandingTotal <= 0) return undefined
   return {
-    required: true,
+    required: source.required === true && currentOrderUnpaidAmount > 0,
     customerId: typeof source.customerId === 'string' ? source.customerId : undefined,
     customerCode: typeof source.customerCode === 'string' ? source.customerCode : undefined,
     customerName: typeof source.customerName === 'string' ? source.customerName : undefined,
     outstandingTotal,
-    currentOrderUnpaidAmount: currentOrderUnpaidAmount > 0 ? currentOrderUnpaidAmount : outstandingTotal,
+    currentOrderUnpaidAmount,
     unpaidOrderCount: finitePaymentAmount(source.unpaidOrderCount) || undefined
   }
 }
@@ -999,6 +1017,11 @@ export default function CalendarPage() {
   const [savingTitleIcons, setSavingTitleIcons] = useState(false)
   const [lastSeenActivityAt, setLastSeenActivityAt] = useState(() => localStorage.getItem(ACTIVITY_NOTIFICATION_SEEN_KEY) || '')
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null)
+  const [enlargedEventAttachment, setEnlargedEventAttachment] = useState<EventAttachment | null>(null)
+  const [salesCenterAttachments, setSalesCenterAttachments] = useState<EventAttachment[]>([])
+  const [salesCenterAttachmentsLoading, setSalesCenterAttachmentsLoading] = useState(false)
+  const [salesCenterAttachmentsError, setSalesCenterAttachmentsError] = useState('')
+  const [salesCenterAttachmentsReloadKey, setSalesCenterAttachmentsReloadKey] = useState(0)
   const [monthDayEventRowLimit, setMonthDayEventRowLimit] = useState(DEFAULT_MONTH_DAY_EVENT_ROW_LIMIT)
   const [showEventActionMenu, setShowEventActionMenu] = useState(false)
   const [showCalendarModal, setShowCalendarModal] = useState(false)
@@ -1478,10 +1501,22 @@ export default function CalendarPage() {
   }, [dayListDate])
 
   useEffect(() => {
+    setEnlargedEventAttachment(null)
     if (selectedEventId) return
     eventDetailSwipeRef.current = null
     setEventDetailSwipeOffset(0)
   }, [selectedEventId])
+
+  useEffect(() => {
+    if (!enlargedEventAttachment) return
+
+    function closeAttachmentPreviewWithEscape(event: KeyboardEvent) {
+      if (event.key === 'Escape') setEnlargedEventAttachment(null)
+    }
+
+    document.addEventListener('keydown', closeAttachmentPreviewWithEscape)
+    return () => document.removeEventListener('keydown', closeAttachmentPreviewWithEscape)
+  }, [enlargedEventAttachment])
 
   useEffect(() => {
     if (!dayListDate) return
@@ -1537,13 +1572,13 @@ export default function CalendarPage() {
     function closeEventDetail(event: MouseEvent | TouchEvent) {
       if (shouldKeepOverlayOpenForSystemGesture(event)) return
       const target = event.target
-      if (target instanceof Element && target.closest('.event-detail-panel, .event-pill, .event-line, .week-event, .fulfillment-payment-overlay')) return
+      if (target instanceof Element && target.closest('.event-detail-panel, .event-pill, .event-line, .week-event, .fulfillment-payment-overlay, .event-attachment-lightbox-overlay')) return
       setSelectedEventId(null)
       setShowEventActionMenu(false)
     }
 
     function closeEventDetailWithEscape(event: KeyboardEvent) {
-      if (event.key === 'Escape' && !fulfillmentPaymentModal) setSelectedEventId(null)
+      if (event.key === 'Escape' && !fulfillmentPaymentModal && !enlargedEventAttachment) setSelectedEventId(null)
     }
 
     document.addEventListener('mousedown', closeEventDetail)
@@ -1554,7 +1589,7 @@ export default function CalendarPage() {
       document.removeEventListener('touchstart', closeEventDetail)
       document.removeEventListener('keydown', closeEventDetailWithEscape)
     }
-  }, [selectedEventId, fulfillmentPaymentModal])
+  }, [selectedEventId, fulfillmentPaymentModal, enlargedEventAttachment])
 
   useEffect(() => {
     if (!showEventActionMenu) return
@@ -1718,6 +1753,15 @@ export default function CalendarPage() {
       visibleSearchEvents.find((event) => event.id === selectedEventId) ??
       null
   }, [selectedEventId, visibleEvents, visibleSearchEvents])
+  const eventDetailAttachments = useMemo(() => {
+    const seen = new Set<string>()
+    return [...salesCenterAttachments, ...(selectedEvent?.attachments ?? [])].filter((attachment) => {
+      const key = attachment.path || attachment.url
+      if (!key || seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+  }, [salesCenterAttachments, selectedEvent?.attachments])
   const commentThreadId = selectedEvent ? recurrenceRootId(selectedEvent) : ''
   const groupedEventComments = useMemo(() => {
     const groups: { key: string, label: string, comments: CalendarEventComment[] }[] = []
@@ -1741,6 +1785,37 @@ export default function CalendarPage() {
     setCommentFiles([])
     setDeletingCommentId(null)
   }, [commentThreadId])
+
+  useEffect(() => {
+    let cancelled = false
+    setSalesCenterAttachments([])
+    setSalesCenterAttachmentsError('')
+    if (!selectedEvent || selectedEvent.source !== 'erpSalesDelivery' || !canOpenSalesForm || !user?.uid) {
+      setSalesCenterAttachmentsLoading(false)
+      return () => {
+        cancelled = true
+      }
+    }
+
+    setSalesCenterAttachmentsLoading(true)
+    void (async () => {
+      try {
+        const attachments = await fetchSalesCenterAttachments(selectedEvent.id)
+        if (!cancelled) setSalesCenterAttachments(attachments)
+      } catch (error) {
+        if (!cancelled) {
+          setSalesCenterAttachments([])
+          setSalesCenterAttachmentsError(error instanceof Error ? error.message : '附件中心讀取失敗')
+        }
+      } finally {
+        if (!cancelled) setSalesCenterAttachmentsLoading(false)
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [selectedEvent?.id, selectedEvent?.source, canOpenSalesForm, user?.uid, salesCenterAttachmentsReloadKey])
 
   useEffect(() => {
     setEventComments([])
@@ -3711,6 +3786,11 @@ export default function CalendarPage() {
         formData.set('eventId', eventId)
         formData.set('originalName', prepared.originalName)
         formData.set('originalSize', String(prepared.originalSize))
+        if (prepared.capture) {
+          formData.set('capturedAtSource', prepared.capture.capturedAtSource)
+          if (prepared.capture.capturedAt) formData.set('capturedAt', prepared.capture.capturedAt)
+          if (prepared.capture.location) formData.set('location', JSON.stringify(prepared.capture.location))
+        }
         if (context.uploadKind) formData.set('uploadKind', context.uploadKind)
         if (context.commentId) formData.set('commentId', context.commentId)
         formData.append('files', prepared.file)
@@ -3734,6 +3814,30 @@ export default function CalendarPage() {
       if (attachments.length) await deleteRemovedEventAttachments(attachments, eventId).catch(() => 0)
       throw error
     }
+  }
+
+  async function fetchSalesCenterAttachments(eventId: string) {
+    if (!user) throw new Error('登入已失效，請重新登入')
+    const token = await user.getIdToken()
+    const appCheckHeaders = await getAppCheckHeaders()
+    const response = await fetch('/api/upload-drive', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        ...appCheckHeaders
+      },
+      body: JSON.stringify({ action: 'sales-attachments', eventId })
+    })
+    const result = await response.json().catch(() => null) as {
+      ok?: boolean
+      attachments?: EventAttachment[]
+      error?: ApiErrorPayload
+    } | null
+    if (!response.ok || result?.ok !== true || !Array.isArray(result.attachments)) {
+      throw new Error(apiErrorMessage(result?.error, `附件中心讀取失敗（HTTP ${response.status}）`))
+    }
+    return result.attachments
   }
 
   async function fetchProductionLineStatus(eventId: string) {
@@ -3817,13 +3921,13 @@ export default function CalendarPage() {
   }
 
   function openFulfillmentPaymentPrompt(eventId: string, prompt: FulfillmentPaymentPrompt | undefined) {
-    if (!prompt?.required || fulfillmentPaymentModal?.eventId === eventId) return
+    if (!prompt) return
     setFulfillmentPaymentModal({
       ...prompt,
       eventId,
       idempotencyKey: globalThis.crypto?.randomUUID?.() || createClientId()
     })
-    setFulfillmentPaymentAmount(String(prompt.outstandingTotal))
+    setFulfillmentPaymentAmount(prompt.required ? String(prompt.outstandingTotal) : '')
     setFulfillmentPaymentError('')
   }
 
@@ -3879,6 +3983,12 @@ export default function CalendarPage() {
         outstandingTotal: typeof outstandingTotal === 'number'
           ? finitePaymentAmount(outstandingTotal)
           : current.outstandingTotal,
+        paymentPrompt: current.paymentPrompt ? {
+          ...current.paymentPrompt,
+          required: finitePaymentAmount(currentOrderUnpaidAmount) > 0,
+          currentOrderUnpaidAmount: finitePaymentAmount(currentOrderUnpaidAmount),
+          outstandingTotal: finitePaymentAmount(outstandingTotal),
+        } : current.paymentPrompt,
       } : current)
       setProductionLineNotice(fulfillmentPaymentNotice(payload.result))
       setFulfillmentPaymentModal(null)
@@ -4059,7 +4169,10 @@ export default function CalendarPage() {
     setDetailAttachmentUploading(true)
     try {
       if (selectedEvent.source === 'erpSalesDelivery') {
-        if (!latestProductionLineStatus) throw new Error('訂單與未付款資料仍在載入，請稍後再試')
+        latestProductionLineStatus = await fetchProductionLineStatus(selectedEvent.id)
+        setProductionLineStatus(latestProductionLineStatus)
+        setProductionLineStatusError('')
+        setSendDetailAttachmentsToLine(latestProductionLineStatus.bound)
         const shippingMethod = fulfillmentShippingMethod(selectedEvent, latestProductionLineStatus)
         fulfillmentEvent = shippingMethod === '外送' || shippingMethod === '施工'
         if (fulfillmentEvent && latestProductionLineStatus.canCompleteOrder !== true) {
@@ -4069,11 +4182,10 @@ export default function CalendarPage() {
           throw new Error('外送／施工完成只能上傳照片')
         }
       }
-      const uploadPromise = uploadEventAttachments(selectedEvent.id, files)
       if (fulfillmentEvent) {
         openFulfillmentPaymentPrompt(selectedEvent.id, latestProductionLineStatus?.paymentPrompt)
       }
-      uploadedAttachments = await uploadPromise
+      uploadedAttachments = await uploadEventAttachments(selectedEvent.id, files)
       if (!uploadedAttachments.length) throw new Error('附件上傳失敗')
       const nextAttachments = [...(selectedEvent.attachments ?? []), ...uploadedAttachments]
       const updatedAt = new Date().toISOString()
@@ -5197,7 +5309,7 @@ export default function CalendarPage() {
                   type="button"
                   className="event-detail-upload-btn"
                   onClick={() => detailAttachmentInputRef.current?.click()}
-                  disabled={detailAttachmentUploading || productionLineStatusLoading || !productionLineStatus}
+                  disabled={detailAttachmentUploading}
                   aria-label={orderFulfillmentEvent ? '上傳外送或施工完成照片' : '上傳檔案或照片'}
                 >
                   <span>＋</span>
@@ -5405,28 +5517,6 @@ export default function CalendarPage() {
             </a>
           )}
 
-          {selectedEvent.attachments && selectedEvent.attachments.length > 0 && (
-            <div className="event-detail-attachments">
-              <strong>附件</strong>
-              {selectedEvent.attachments.map((attachment) => {
-                const previewUrl = attachmentPreviewUrl(attachment)
-                return (
-                  <a className={previewUrl ? 'image-attachment' : ''} href={attachment.url} target="_blank" rel="noreferrer" key={attachment.path || attachment.url}>
-                    {previewUrl ? (
-                      <img src={previewUrl} alt={attachment.name} loading="lazy" referrerPolicy="no-referrer" />
-                    ) : (
-                      <span>▧</span>
-                    )}
-                    <div>
-                      <b>{attachment.name}</b>
-                      {attachment.size && <small>{Math.ceil(attachment.size / 1024)} KB{attachment.optimized ? ' · WebP' : ''}</small>}
-                    </div>
-                  </a>
-                )
-              })}
-            </div>
-          )}
-
           {selectedEvent.note && (!isHrLeaveRequestEvent(selectedEvent) || canViewHrLeaveNote) && (
             <div className="event-detail-note">
               <strong>備註</strong>
@@ -5438,6 +5528,55 @@ export default function CalendarPage() {
                 productionLineStatusLoading,
                 productionLineStatusError,
               )}</p>
+            </div>
+          )}
+          {canOpenSalesForm && (
+            eventDetailAttachments.length > 0
+            || (selectedEvent.source === 'erpSalesDelivery' && (salesCenterAttachmentsLoading || Boolean(salesCenterAttachmentsError)))
+          ) && (
+            <div className="event-detail-attachments">
+              <strong>附件中心</strong>
+              {salesCenterAttachmentsLoading && eventDetailAttachments.length === 0 ? (
+                <div className="event-detail-attachment-loading" aria-label="附件中心載入中">
+                  <span /><span /><span />
+                </div>
+              ) : salesCenterAttachmentsError && eventDetailAttachments.length === 0 ? (
+                <div className="event-detail-attachment-error" role="alert">
+                  <span>{salesCenterAttachmentsError}</span>
+                  <button type="button" onClick={() => setSalesCenterAttachmentsReloadKey((key) => key + 1)}>重試</button>
+                </div>
+              ) : (
+                <div className="event-detail-attachment-grid">
+                {eventDetailAttachments.map((attachment) => {
+                  const previewUrl = attachmentPreviewUrl(attachment)
+                  const attachmentName = attachment.originalName || attachment.name
+                  return previewUrl ? (
+                    <button
+                      type="button"
+                      className="event-detail-attachment-thumb"
+                      onClick={() => setEnlargedEventAttachment(attachment)}
+                      aria-label={`全螢幕開啟圖片：${attachmentName}`}
+                      title={attachmentName}
+                      key={attachment.path || attachment.url}
+                    >
+                      <img src={previewUrl} alt={attachmentName} loading="lazy" referrerPolicy="no-referrer" />
+                    </button>
+                  ) : (
+                    <a
+                      className="event-detail-attachment-file"
+                      href={attachment.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      title={attachmentName}
+                      key={attachment.path || attachment.url}
+                    >
+                      <span>附件</span>
+                      <b>{attachmentName}</b>
+                    </a>
+                  )
+                })}
+                </div>
+              )}
             </div>
           )}
           {selectedEvent.todos && selectedEvent.todos.length > 0 && (
@@ -5733,6 +5872,8 @@ export default function CalendarPage() {
 
   function renderFulfillmentPaymentPrompt() {
     if (!fulfillmentPaymentModal) return null
+    const paymentRequired = fulfillmentPaymentModal.required
+      && fulfillmentPaymentModal.currentOrderUnpaidAmount > 0
     const customerLabel = [fulfillmentPaymentModal.customerCode, fulfillmentPaymentModal.customerName]
       .filter(Boolean)
       .join(' ')
@@ -5749,43 +5890,89 @@ export default function CalendarPage() {
           onClick={(event) => event.stopPropagation()}
         >
           <div className="modal-header">
-            <h2 id="fulfillment-payment-title">確認現金收款</h2>
+            <h2 id="fulfillment-payment-title">{paymentRequired ? '確認現金收款' : '確認收款狀態'}</h2>
           </div>
           <div className="modal-body fulfillment-payment-body">
             {customerLabel && <p>{customerLabel}</p>}
             <div className="fulfillment-payment-total">
-              <span>累計未付</span>
-              <strong>${fulfillmentPaymentModal.outstandingTotal.toLocaleString()}</strong>
-              <small>
-                本單未付 ${fulfillmentPaymentModal.currentOrderUnpaidAmount.toLocaleString()}
-                {fulfillmentPaymentModal.unpaidOrderCount ? `，共 ${fulfillmentPaymentModal.unpaidOrderCount} 筆未付款銷貨單` : ''}
-              </small>
+              {paymentRequired ? <>
+                <span>累計未付</span>
+                <strong>${fulfillmentPaymentModal.outstandingTotal.toLocaleString()}</strong>
+                <small>
+                  本單未付 ${fulfillmentPaymentModal.currentOrderUnpaidAmount.toLocaleString()}
+                  {fulfillmentPaymentModal.unpaidOrderCount ? `，共 ${fulfillmentPaymentModal.unpaidOrderCount} 筆未付款銷貨單` : ''}
+                </small>
+              </> : <>
+                <span>本張銷貨單</span>
+                <strong>已付清</strong>
+                <small>
+                  本單未付 $0
+                  {fulfillmentPaymentModal.outstandingTotal > 0
+                    ? `，此客戶其他銷貨單累計未付 $${fulfillmentPaymentModal.outstandingTotal.toLocaleString()}`
+                    : '，此客戶目前沒有其他未付款銷貨單'}
+                </small>
+              </>}
             </div>
-            <label className="fulfillment-payment-field">
-              <span>本次收款金額</span>
-              <input
-                type="text"
-                inputMode="decimal"
-                autoComplete="off"
-                value={fulfillmentPaymentAmount}
-                disabled={fulfillmentPaymentSaving}
-                onChange={(event) => {
-                  setFulfillmentPaymentAmount(event.target.value.replace(/[^0-9.,]/g, ''))
-                  setFulfillmentPaymentError('')
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') void recordFulfillmentCashPayment()
-                }}
-              />
-              <small>收款方式固定為現金；多筆會自動依序沖帳，多付的金額會列入溢收。</small>
-            </label>
+            {paymentRequired && (
+              <label className="fulfillment-payment-field">
+                <span>本次收款金額</span>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  autoComplete="off"
+                  value={fulfillmentPaymentAmount}
+                  disabled={fulfillmentPaymentSaving}
+                  onChange={(event) => {
+                    setFulfillmentPaymentAmount(event.target.value.replace(/[^0-9.,]/g, ''))
+                    setFulfillmentPaymentError('')
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') void recordFulfillmentCashPayment()
+                  }}
+                />
+                <small>收款方式固定為現金；多筆會自動依序沖帳，多付的金額會列入溢收。</small>
+              </label>
+            )}
             {fulfillmentPaymentError && <div className="form-error">{fulfillmentPaymentError}</div>}
           </div>
           <div className="modal-footer fulfillment-payment-actions">
-            <button type="button" disabled={fulfillmentPaymentSaving} onClick={dismissFulfillmentPaymentPrompt}>尚未收款</button>
-            <button type="button" className="primary-btn" disabled={fulfillmentPaymentSaving} onClick={recordFulfillmentCashPayment}>
-              {fulfillmentPaymentSaving ? '收款處理中...' : '確認收款'}
-            </button>
+            {paymentRequired ? <>
+              <button type="button" disabled={fulfillmentPaymentSaving} onClick={dismissFulfillmentPaymentPrompt}>尚未收款</button>
+              <button type="button" className="primary-btn" disabled={fulfillmentPaymentSaving} onClick={recordFulfillmentCashPayment}>
+                {fulfillmentPaymentSaving ? '收款處理中...' : '確認收款'}
+              </button>
+            </> : (
+              <button type="button" className="primary-btn" onClick={dismissFulfillmentPaymentPrompt}>已確認</button>
+            )}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  function renderEventAttachmentLightbox() {
+    if (!enlargedEventAttachment) return null
+    const attachmentName = enlargedEventAttachment.originalName || enlargedEventAttachment.name
+    return (
+      <div
+        className="event-attachment-lightbox-overlay"
+        role="dialog"
+        aria-modal="true"
+        aria-label={`圖片預覽：${attachmentName}`}
+        onTouchStartCapture={rememberOverlaySystemGesture}
+        onClick={(event) => {
+          if (event.target === event.currentTarget && !shouldKeepOverlayOpenForSystemGesture(event)) {
+            setEnlargedEventAttachment(null)
+          }
+        }}
+      >
+        <div className="event-attachment-lightbox">
+          <div className="event-attachment-lightbox-header">
+            <strong title={attachmentName}>{attachmentName}</strong>
+            <button type="button" onClick={() => setEnlargedEventAttachment(null)} aria-label="關閉圖片預覽">×</button>
+          </div>
+          <div className="event-attachment-lightbox-body">
+            <img src={attachmentFullImageUrl(enlargedEventAttachment)} alt={attachmentName} referrerPolicy="no-referrer" />
           </div>
         </div>
       </div>
@@ -6340,6 +6527,7 @@ export default function CalendarPage() {
       {renderDayListPanel()}
       {renderEventDetailPanel()}
       {renderFulfillmentPaymentPrompt()}
+      {renderEventAttachmentLightbox()}
 
       {dragPreview && (
         <div

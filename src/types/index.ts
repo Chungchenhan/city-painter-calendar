@@ -102,6 +102,15 @@ export interface CalendarEvent {
     originalName?: string
     originalSize?: number
     optimized?: boolean
+    capturedAt?: string
+    capturedAtSource?: 'exif' | 'manual' | 'unknown'
+    uploadedAt?: string
+    location?: {
+      latitude: number
+      longitude: number
+      source: 'exif' | 'manual'
+      label?: string
+    }
     lineOriginalUrl?: string
     linePreviewUrl?: string
   }[]

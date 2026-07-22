@@ -166,11 +166,53 @@ async function canManageEvent(db, actor, event, eventId) {
   return false
 }
 
+async function canOpenSalesAttachmentCenter(db, actor) {
+  const accessSnapshot = await db.collection('erp_access').doc(actor.uid).get()
+  if (!accessSnapshot.exists) return false
+  const access = accessSnapshot.data() || {}
+  const employeeNo = text(actor.employee.empNo)
+  if (
+    access.enabled !== true
+    || text(access.uid) !== actor.uid
+    || text(access.employeeId) !== actor.employeeId
+    || (employeeNo && text(access.employeeNo) !== employeeNo)
+    || Number(access.schemaVersion) < 2
+  ) return false
+  const matrix = access.permissionMatrix && typeof access.permissionMatrix === 'object'
+    ? access.permissionMatrix
+    : {}
+  return ['sales-main', 'dashboard-sales-main'].some((featureKey) => {
+    const permission = matrix[featureKey]
+    return permission && typeof permission === 'object'
+      && permission.browse === true
+      && (permission.update === true || permission.delete === true)
+  })
+}
+
 async function loadEvent(db, eventId) {
   const id = text(eventId)
   if (!id || id === 'draft-event') return null
   const snapshot = await db.collection('calendarEvents').doc(id).get()
   return snapshot.exists ? { id: snapshot.id, ...snapshot.data() } : null
+}
+
+async function loadSalesRecordForEvent(db, event) {
+  const sourceId = text(event?.sourceId)
+  const salesNo = text(event?.sourceSalesNo)
+  if (sourceId && !sourceId.includes('/')) {
+    const snapshot = await db.collection('sales').doc(sourceId).get()
+    if (snapshot.exists) return { id: snapshot.id, ...snapshot.data() }
+  }
+  if (!salesNo) return null
+  const snapshot = await db.collection('sales').where('salesNo', '==', salesNo).limit(1).get()
+  return snapshot.empty ? null : { id: snapshot.docs[0].id, ...snapshot.docs[0].data() }
+}
+
+function salesAttachmentFileIds(sales) {
+  return new Set((Array.isArray(sales?.attachments) ? sales.attachments : []).flatMap((attachment) => [
+    text(attachment?.path),
+    text(attachment?.thumbnailPath),
+  ]).filter(Boolean))
 }
 
 function attachmentBelongsToEvent(event, fileId) {
@@ -196,6 +238,35 @@ function validLineImageSignature(fileId, variant, signature) {
     return false
   }
   return expected.length === received.length && timingSafeEqual(expected, received)
+}
+
+function salesAttachmentSignature(eventId, fileId, variant, expires) {
+  return createHmac('sha256', lineImageSigningSecret())
+    .update(`sales-attachment:${eventId}:${fileId}:${variant}:${expires}`)
+    .digest('hex')
+}
+
+function validSalesAttachmentSignature(eventId, fileId, variant, expires, signature) {
+  const expected = Buffer.from(salesAttachmentSignature(eventId, fileId, variant, expires), 'hex')
+  let received
+  try {
+    received = Buffer.from(String(signature || ''), 'hex')
+  } catch {
+    return false
+  }
+  return expected.length === received.length && timingSafeEqual(expected, received)
+}
+
+function salesAttachmentImageUrl(eventId, fileId, variant, expires) {
+  const params = new URLSearchParams({
+    scope: 'sales-attachment',
+    eventId,
+    fileId,
+    variant,
+    expires: String(expires),
+    signature: salesAttachmentSignature(eventId, fileId, variant, expires),
+  })
+  return `/api/upload-drive?${params.toString()}`
 }
 
 function lineImageUrls(fileId) {
@@ -261,6 +332,52 @@ function fieldText(value) {
   return typeof normalized === 'string' ? normalized.trim() : ''
 }
 
+function parsePhotoLocation(value) {
+  const source = fieldText(value)
+  if (!source) return null
+  let location
+  try {
+    location = JSON.parse(source)
+  } catch {
+    throw requestError('照片拍攝地點格式不正確', 400)
+  }
+  const latitude = Number(location?.latitude)
+  const longitude = Number(location?.longitude)
+  const locationSource = text(location?.source)
+  if (
+    !Number.isFinite(latitude)
+    || latitude < -90
+    || latitude > 90
+    || !Number.isFinite(longitude)
+    || longitude < -180
+    || longitude > 180
+    || !['exif', 'manual'].includes(locationSource)
+  ) throw requestError('照片拍攝地點格式不正確', 400)
+  return {
+    latitude,
+    longitude,
+    source: locationSource,
+    ...(text(location?.label) ? { label: text(location.label).slice(0, 300) } : {})
+  }
+}
+
+export function parseUploadPhotoMetadata(metadata = {}) {
+  const source = fieldText(metadata.capturedAtSource)
+  if (source && !['exif', 'manual', 'unknown'].includes(source)) {
+    throw requestError('照片拍攝日期來源不正確', 400)
+  }
+  const capturedAtText = fieldText(metadata.capturedAt)
+  const capturedAtDate = capturedAtText ? new Date(capturedAtText) : null
+  if (capturedAtDate && Number.isNaN(capturedAtDate.getTime())) {
+    throw requestError('照片拍攝日期格式不正確', 400)
+  }
+  return {
+    capturedAtSource: source || 'unknown',
+    ...(capturedAtDate ? { capturedAt: capturedAtDate.toISOString() } : {}),
+    ...(fieldText(metadata.location) ? { location: parsePhotoLocation(metadata.location) } : {})
+  }
+}
+
 function isImage(file) {
   return Boolean(file.mimetype?.startsWith('image/')) && file.mimetype !== 'image/svg+xml'
 }
@@ -286,6 +403,8 @@ async function prepareUploadFile(file, metadata = {}) {
     }
   }
 
+  const photoMetadata = parseUploadPhotoMetadata(metadata)
+
   const outputPath = path.join(os.tmpdir(), `${randomUUID()}.webp`)
   await sharp(file.filepath)
     .rotate()
@@ -301,7 +420,8 @@ async function prepareUploadFile(file, metadata = {}) {
     size: stat.size,
     originalName,
     originalSize,
-    optimized: true
+    optimized: true,
+    ...photoMetadata
   }
 }
 
@@ -359,6 +479,81 @@ async function renderLineImage(req, res) {
   res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
   res.setHeader('X-Content-Type-Options', 'nosniff')
   res.status(200).end(output)
+}
+
+async function renderSalesAttachmentImage(req, res) {
+  const requestUrl = new URL(req.url || '/', 'http://localhost')
+  const value = (key) => typeof req.query?.[key] === 'string'
+    ? req.query[key].trim()
+    : String(requestUrl.searchParams.get(key) || '').trim()
+  const eventId = value('eventId')
+  const fileId = value('fileId')
+  const variant = value('variant') === 'preview' ? 'preview' : 'original'
+  const expires = Number(value('expires'))
+  const signature = value('signature')
+  const now = Math.floor(Date.now() / 1000)
+  if (
+    !eventId
+    || eventId.includes('/')
+    || !/^[A-Za-z0-9_-]{10,200}$/.test(fileId)
+    || !Number.isSafeInteger(expires)
+    || expires <= now
+    || !validSalesAttachmentSignature(eventId, fileId, variant, expires, signature)
+  ) {
+    throw requestError('附件預覽連結無效或已過期', 403)
+  }
+
+  getAdminApp()
+  const db = admin.firestore()
+  const event = await loadEvent(db, eventId)
+  if (!event || text(event.source) !== 'erpSalesDelivery') throw requestError('找不到對應的銷貨單事件', 404)
+  const sales = await loadSalesRecordForEvent(db, event)
+  if (!sales || !salesAttachmentFileIds(sales).has(fileId)) throw requestError('找不到此銷貨單附件', 404)
+
+  const drive = google.drive({ version: 'v3', auth: getDriveAuth() })
+  const metadata = await drive.files.get({ fileId, fields: 'mimeType', supportsAllDrives: true })
+  if (!metadata.data.mimeType?.startsWith('image/')) throw requestError('此附件不是圖片', 415)
+  const source = await drive.files.get({ fileId, alt: 'media', supportsAllDrives: true }, { responseType: 'arraybuffer' })
+  const output = await createLineJpeg(Buffer.from(source.data), variant)
+
+  res.setHeader('Content-Type', 'image/jpeg')
+  res.setHeader('Content-Length', String(output.length))
+  res.setHeader('Cache-Control', `private, max-age=${Math.max(0, Math.min(600, expires - now))}`)
+  res.setHeader('X-Content-Type-Options', 'nosniff')
+  res.status(200).end(output)
+}
+
+async function salesAttachmentCenterResponse(db, actor, body) {
+  const event = await loadEvent(db, body.eventId)
+  if (!event || text(event.source) !== 'erpSalesDelivery') throw requestError('找不到對應的銷貨單事件', 404)
+  if (!await canViewEvent(db, actor, event)) throw requestError('沒有查看此銷貨單事件的權限', 403)
+  if (!await canOpenSalesAttachmentCenter(db, actor)) throw requestError('沒有查看銷貨單附件中心的權限', 403)
+  const sales = await loadSalesRecordForEvent(db, event)
+  if (!sales) throw requestError('找不到對應的銷貨單', 404)
+  const expires = Math.floor(Date.now() / 1000) + 10 * 60
+  const attachments = (Array.isArray(sales.attachments) ? sales.attachments : [])
+    .filter((attachment) => text(attachment?.type).startsWith('image/') || text(attachment?.kind) === 'image')
+    .map((attachment) => {
+      const fileId = text(attachment.path)
+      const previewFileId = text(attachment.thumbnailPath) || fileId
+      if (!fileId || !previewFileId) return null
+      return {
+        name: text(attachment.name) || text(attachment.originalName) || '圖片',
+        originalName: text(attachment.originalName) || text(attachment.name) || '圖片',
+        path: fileId,
+        type: text(attachment.type) || 'image/jpeg',
+        size: Number(attachment.size) || undefined,
+        provider: 'google-drive',
+        ...(text(attachment.capturedAt) ? { capturedAt: text(attachment.capturedAt) } : {}),
+        ...(text(attachment.capturedAtSource) ? { capturedAtSource: text(attachment.capturedAtSource) } : {}),
+        ...(text(attachment.uploadedAt) ? { uploadedAt: text(attachment.uploadedAt) } : {}),
+        ...(attachment.location && typeof attachment.location === 'object' ? { location: attachment.location } : {}),
+        linePreviewUrl: salesAttachmentImageUrl(event.id, previewFileId, 'preview', expires),
+        lineOriginalUrl: salesAttachmentImageUrl(event.id, fileId, 'original', expires),
+      }
+    })
+    .filter(Boolean)
+  return { ok: true, attachments }
 }
 
 export function buildForwardedLineActionBody(body) {
@@ -477,10 +672,13 @@ async function authorizeLineAction(db, actor, body) {
 export default async function handler(req, res) {
   if (req.method === 'GET') {
     try {
-      await renderLineImage(req, res)
+      const requestUrl = new URL(req.url || '/', 'http://localhost')
+      const scope = typeof req.query?.scope === 'string' ? req.query.scope : requestUrl.searchParams.get('scope')
+      if (scope === 'sales-attachment') await renderSalesAttachmentImage(req, res)
+      else await renderLineImage(req, res)
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Image conversion failed'
-      res.status(500).json({ error: message })
+      res.status(Number(error?.status) || 500).json({ error: message })
     }
     return
   }
@@ -532,6 +730,10 @@ export default async function handler(req, res) {
 
     if (req.headers['content-type']?.includes('application/json')) {
       const body = await parseJsonBody(req)
+      if (body.action === 'sales-attachments') {
+        res.status(200).json(await salesAttachmentCenterResponse(db, actor, body))
+        return
+      }
       if (![
         'production-photo-status',
         'send-production-photos',
@@ -563,7 +765,10 @@ export default async function handler(req, res) {
     for (const file of uploadFiles) {
       const prepared = await prepareUploadFile(file, {
         originalName: fields.originalName,
-        originalSize: fields.originalSize
+        originalSize: fields.originalSize,
+        capturedAt: fields.capturedAt,
+        capturedAtSource: fields.capturedAtSource,
+        location: fields.location
       })
       const created = await drive.files.create({
         requestBody: {
@@ -581,7 +786,7 @@ export default async function handler(req, res) {
           mimeType: prepared.mimeType,
           body: fs.createReadStream(prepared.filepath)
         },
-        fields: 'id,name,mimeType,size,webViewLink,webContentLink'
+        fields: 'id,name,mimeType,size,createdTime,webViewLink,webContentLink'
       })
 
       try {
@@ -606,6 +811,10 @@ export default async function handler(req, res) {
         originalName: prepared.originalName,
         originalSize: prepared.originalSize,
         optimized: prepared.optimized,
+        ...(prepared.capturedAt ? { capturedAt: prepared.capturedAt } : {}),
+        ...(prepared.capturedAtSource ? { capturedAtSource: prepared.capturedAtSource } : {}),
+        ...(prepared.location ? { location: prepared.location } : {}),
+        ...(text(created.data.createdTime) ? { uploadedAt: text(created.data.createdTime) } : {}),
         ...(prepared.optimized && created.data.id ? lineImageUrls(created.data.id) : {})
       })
 
