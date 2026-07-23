@@ -990,7 +990,7 @@ function erpOrigin() {
 
 export default function CalendarPage() {
   const queryClient = useQueryClient()
-  const { user, role, employeeId, employeeDepartmentId, employeeDepartmentName, displayName, canOpenSalesForm } = useAuth()
+  const { user, role, employeeId, employeeDepartmentId, employeeDepartmentName, displayName, canOpenSalesForm, canScanSalesOrder, canViewSalesAttachments } = useAuth()
   const isAdmin = role === 'admin'
   const [month, setMonth] = useState(dayjs().startOf('month'))
   const [backgroundDataReady, setBackgroundDataReady] = useState(false)
@@ -1772,7 +1772,7 @@ export default function CalendarPage() {
       visibleSearchEvents.find((event) => event.id === selectedEventId) ??
       null
   }, [selectedEventId, visibleEvents, visibleSearchEvents])
-  const salesAttachmentEventId = selectedEvent?.source === 'erpSalesDelivery' && canOpenSalesForm
+  const salesAttachmentEventId = selectedEvent?.source === 'erpSalesDelivery' && canViewSalesAttachments
     ? selectedEvent.id
     : ''
   const salesCenterAttachmentsQuery = useQuery({
@@ -3259,20 +3259,20 @@ export default function CalendarPage() {
   }
 
   useEffect(() => {
-    if (!user || !canOpenSalesForm) return
+    if (!user || !canScanSalesOrder) return
     const timer = window.setTimeout(() => {
       void preloadErpOrderScannerModule().catch(() => undefined)
     }, 250)
     return () => window.clearTimeout(timer)
-  }, [canOpenSalesForm, user])
+  }, [canScanSalesOrder, user])
 
   function openErpOrderScan() {
     if (!auth.currentUser) {
       alert('登入已失效，請重新登入')
       return
     }
-    if (!canOpenSalesForm) {
-      alert('您沒有修改銷售作業的權限')
+    if (!canScanSalesOrder) {
+      alert('您沒有掃描銷貨單的權限')
       return
     }
     setShowErpOrderScanner(true)
@@ -5608,7 +5608,7 @@ export default function CalendarPage() {
               {salesFormOpenError && <div className="form-error" role="alert">{salesFormOpenError}</div>}
             </div>
           )}
-          {canOpenSalesForm && (
+          {canViewSalesAttachments && (
             eventDetailAttachments.length > 0
             || (selectedEvent.source === 'erpSalesDelivery' && Boolean(salesCenterAttachmentsError))
           ) && (
@@ -6454,7 +6454,7 @@ export default function CalendarPage() {
             className="tt-erp-scan-link"
             aria-label="掃描 ERP 銷貨單 QR Code"
             aria-expanded={showErpOrderScanner}
-            disabled={!canOpenSalesForm}
+            disabled={!canScanSalesOrder}
             onFocus={() => void preloadErpOrderScannerModule().catch(() => undefined)}
             onPointerDown={() => void preloadErpOrderScannerModule().catch(() => undefined)}
             onPointerEnter={() => void preloadErpOrderScannerModule().catch(() => undefined)}

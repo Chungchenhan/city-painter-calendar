@@ -168,10 +168,7 @@ async function canManageEvent(db, actor, event, eventId) {
   return false
 }
 
-async function canOpenSalesAttachmentCenter(db, actor) {
-  const accessSnapshot = await db.collection('erp_access').doc(actor.uid).get()
-  if (!accessSnapshot.exists) return false
-  const access = accessSnapshot.data() || {}
+export function canOpenSalesAttachmentCenterFromAccess(access, actor) {
   const employeeNo = text(actor.employee.empNo)
   if (
     access.enabled !== true
@@ -183,12 +180,21 @@ async function canOpenSalesAttachmentCenter(db, actor) {
   const matrix = access.permissionMatrix && typeof access.permissionMatrix === 'object'
     ? access.permissionMatrix
     : {}
-  return ['sales-main', 'dashboard-sales-main'].some((featureKey) => {
+  return [
+    { keys: ['sales-order-scan', 'dashboard-order-status'], actions: ['update', 'special'] },
+    { keys: ['sales-main', 'dashboard-sales-main'], actions: ['update', 'delete'] },
+  ].some(({ keys, actions }) => keys.some((featureKey) => {
     const permission = matrix[featureKey]
     return permission && typeof permission === 'object'
       && permission.browse === true
-      && (permission.update === true || permission.delete === true)
-  })
+      && actions.some((action) => permission[action] === true)
+  }))
+}
+
+async function canOpenSalesAttachmentCenter(db, actor) {
+  const accessSnapshot = await db.collection('erp_access').doc(actor.uid).get()
+  if (!accessSnapshot.exists) return false
+  return canOpenSalesAttachmentCenterFromAccess(accessSnapshot.data() || {}, actor)
 }
 
 async function loadEvent(db, eventId) {

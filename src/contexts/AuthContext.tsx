@@ -2,6 +2,11 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from '
 import { onAuthStateChanged, signOut, type User } from 'firebase/auth'
 import { doc, getDoc, onSnapshot } from 'firebase/firestore'
 import { auth, db } from '../lib/firebase'
+import {
+  canOpenSalesFormFromAccess,
+  canScanSalesOrderFromAccess,
+  canViewSalesAttachmentsFromAccess,
+} from '../lib/erpAccess'
 import type { UserRole } from '../types'
 
 interface AuthContextType {
@@ -12,6 +17,8 @@ interface AuthContextType {
   employeeDepartmentName: string
   displayName: string
   canOpenSalesForm: boolean
+  canScanSalesOrder: boolean
+  canViewSalesAttachments: boolean
   loading: boolean
 }
 
@@ -23,6 +30,8 @@ const AuthContext = createContext<AuthContextType>({
   employeeDepartmentName: '',
   displayName: '',
   canOpenSalesForm: false,
+  canScanSalesOrder: false,
+  canViewSalesAttachments: false,
   loading: true
 })
 
@@ -81,18 +90,6 @@ function erpAccessCanAccess(
     && Number(data.schemaVersion) >= 2
 }
 
-function canOpenSalesFormFromAccess(data: Record<string, unknown> | null): boolean {
-  if (!data || data.enabled !== true) return false
-  const matrix = data.permissionMatrix
-  if (!matrix || typeof matrix !== 'object') return false
-  return ['sales-main', 'dashboard-sales-main'].some((featureKey) => {
-    const actions = (matrix as Record<string, unknown>)[featureKey]
-    if (!actions || typeof actions !== 'object') return false
-    const permission = actions as Record<string, unknown>
-    return permission.browse === true && (permission.update === true || permission.delete === true)
-  })
-}
-
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
   const [role, setRole] = useState<AuthContextType['role']>('loading')
@@ -101,12 +98,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [employeeDepartmentName, setEmployeeDepartmentName] = useState('')
   const [displayName, setDisplayName] = useState('')
   const [canOpenSalesForm, setCanOpenSalesForm] = useState(false)
+  const [canScanSalesOrder, setCanScanSalesOrder] = useState(false)
+  const [canViewSalesAttachments, setCanViewSalesAttachments] = useState(false)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (nextUser) => {
       setLoading(true)
       setCanOpenSalesForm(false)
+      setCanScanSalesOrder(false)
+      setCanViewSalesAttachments(false)
 
       if (!nextUser) {
         setUser(null)
@@ -194,8 +195,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             erpAccessCanAccess(accessData, nextUser.uid, nextEmployeeId, empData.empNo)
             && canOpenSalesFormFromAccess(accessData),
           )
+          setCanScanSalesOrder(
+            erpAccessCanAccess(accessData, nextUser.uid, nextEmployeeId, empData.empNo)
+            && canScanSalesOrderFromAccess(accessData),
+          )
+          setCanViewSalesAttachments(
+            erpAccessCanAccess(accessData, nextUser.uid, nextEmployeeId, empData.empNo)
+            && canViewSalesAttachmentsFromAccess(accessData),
+          )
         } catch {
           setCanOpenSalesForm(false)
+          setCanScanSalesOrder(false)
+          setCanViewSalesAttachments(false)
         }
         writeCachedAuthProfile({
           uid: nextUser.uid,
@@ -223,16 +234,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     setCanOpenSalesForm(false)
+    setCanScanSalesOrder(false)
+    setCanViewSalesAttachments(false)
     if (!user || !employeeId) return
     return onSnapshot(doc(db, 'erp_access', user.uid), async (snapshot) => {
       const accessData = snapshot.exists() ? snapshot.data() as Record<string, unknown> : null
       if (!erpAccessCanAccess(accessData, user.uid, employeeId)) {
         setCanOpenSalesForm(false)
+        setCanScanSalesOrder(false)
+        setCanViewSalesAttachments(false)
         return
       }
       setCanOpenSalesForm(canOpenSalesFormFromAccess(accessData))
+      setCanScanSalesOrder(canScanSalesOrderFromAccess(accessData))
+      setCanViewSalesAttachments(canViewSalesAttachmentsFromAccess(accessData))
     }, () => {
       setCanOpenSalesForm(false)
+      setCanScanSalesOrder(false)
+      setCanViewSalesAttachments(false)
     })
   }, [employeeId, user])
 
@@ -260,7 +279,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [employeeId, user])
 
   return (
-    <AuthContext.Provider value={{ user, role, employeeId, employeeDepartmentId, employeeDepartmentName, displayName, canOpenSalesForm, loading }}>
+    <AuthContext.Provider value={{ user, role, employeeId, employeeDepartmentId, employeeDepartmentName, displayName, canOpenSalesForm, canScanSalesOrder, canViewSalesAttachments, loading }}>
       {children}
     </AuthContext.Provider>
   )

@@ -3,6 +3,7 @@ import test from 'node:test'
 import {
   buildForwardedLineActionBody,
   buildForwardedLineActionResponse,
+  canOpenSalesAttachmentCenterFromAccess,
   canServeDirectSalesAttachmentThumbnail,
 } from './upload-drive.js'
 
@@ -89,4 +90,41 @@ test('只有可管理事件者能取得背景未付款提示', () => {
     ...result,
     canCompleteOrder: true
   })
+})
+
+test('銷貨單掃描權限可查看附件中心，但不會放行缺少更新權限者', () => {
+  const actor = {
+    uid: 'scanner-uid',
+    employeeId: 'emp-scanner',
+    employee: { empNo: '239215' },
+  }
+  const baseAccess = {
+    enabled: true,
+    uid: actor.uid,
+    employeeId: actor.employeeId,
+    employeeNo: actor.employee.empNo,
+    schemaVersion: 2,
+  }
+
+  assert.equal(canOpenSalesAttachmentCenterFromAccess({
+    ...baseAccess,
+    permissionMatrix: {
+      'sales-order-scan': { browse: true, update: true, special: false },
+    },
+  }, actor), true)
+
+  assert.equal(canOpenSalesAttachmentCenterFromAccess({
+    ...baseAccess,
+    permissionMatrix: {
+      'sales-order-scan': { browse: true, update: false, special: false },
+    },
+  }, actor), false)
+
+  assert.equal(canOpenSalesAttachmentCenterFromAccess({
+    ...baseAccess,
+    employeeId: 'other-employee',
+    permissionMatrix: {
+      'sales-order-scan': { browse: true, update: true, special: false },
+    },
+  }, actor), false)
 })
