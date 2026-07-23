@@ -71,7 +71,7 @@ export function useCalendarGroups() {
       writeLocalQueryCache('calendarCalendars', sorted)
       return sorted
     },
-    placeholderData: () => readLocalQueryCache<CalendarGroup[]>('calendarCalendars'),
+    placeholderData: () => readLocalQueryCache<CalendarGroup[]>('calendarCalendars') ?? [],
     staleTime: 2 * 60 * 1000
   })
 }
@@ -86,15 +86,17 @@ export function useCalendarEvents(activeMonth: string) {
   const result = useQuery({
     queryKey,
     queryFn: async () => {
-      const rangeSnap = await getDocs(query(
-        collection(db, 'calendarEvents'),
-        where('date', '>=', startDate),
-        where('date', '<=', endDate)
-      ))
-      const repeatSnap = await getDocs(query(
-        collection(db, 'calendarEvents'),
-        where('repeat', 'in', REPEAT_VALUES)
-      ))
+      const [rangeSnap, repeatSnap] = await Promise.all([
+        getDocs(query(
+          collection(db, 'calendarEvents'),
+          where('date', '>=', startDate),
+          where('date', '<=', endDate)
+        )),
+        getDocs(query(
+          collection(db, 'calendarEvents'),
+          where('repeat', 'in', REPEAT_VALUES)
+        )),
+      ])
       const map = new Map<string, CalendarEvent>()
       rangeSnap.docs.forEach((d) => map.set(d.id, { id: d.id, ...d.data() } as CalendarEvent))
       const repeatRows = repeatSnap.docs.map((d) => ({ id: d.id, ...d.data() })) as CalendarEvent[]
@@ -107,8 +109,6 @@ export function useCalendarEvents(activeMonth: string) {
       return sorted
     },
     placeholderData: () => cachedEventsInRange(startDate, endDate),
-    refetchInterval: 15 * 1000,
-    refetchIntervalInBackground: false,
     refetchOnWindowFocus: 'always',
     staleTime: 60 * 1000
   })
@@ -169,7 +169,7 @@ export function useCalendarEvents(activeMonth: string) {
     if (!activeMonth) return
     let cancelled = false
     const timer = window.setTimeout(async () => {
-      const months = [2, 3, 4].map((offset) => monthValue.subtract(offset, 'month').format('YYYY-MM'))
+      const months = [3, 4].map((offset) => monthValue.subtract(offset, 'month').format('YYYY-MM'))
       for (const monthKey of months) {
         if (cancelled || cachedArchiveMonths().has(monthKey)) continue
         const monthStart = dayjs(monthKey).startOf('month').format('YYYY-MM-DD')

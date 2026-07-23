@@ -1,6 +1,41 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { buildForwardedLineActionBody, buildForwardedLineActionResponse } from './upload-drive.js'
+import {
+  buildForwardedLineActionBody,
+  buildForwardedLineActionResponse,
+  canServeDirectSalesAttachmentThumbnail,
+} from './upload-drive.js'
+
+const salesWithThumbnail = {
+  attachments: [{ path: 'original-file-id', thumbnailPath: 'thumbnail-file-id' }]
+}
+
+test('只有已綁定的安全小縮圖可略過 Sharp 轉檔', () => {
+  for (const mimeType of ['image/webp', 'image/jpeg', 'image/png']) {
+    assert.equal(canServeDirectSalesAttachmentThumbnail(salesWithThumbnail, {
+      fileId: 'thumbnail-file-id',
+      variant: 'preview',
+      mimeType,
+      size: 2 * 1024 * 1024
+    }), true)
+  }
+})
+
+test('原圖、未知縮圖、危險格式與超限檔案仍必須轉檔', () => {
+  const base = {
+    fileId: 'thumbnail-file-id',
+    variant: 'preview',
+    mimeType: 'image/webp',
+    size: 120_000
+  }
+  assert.equal(canServeDirectSalesAttachmentThumbnail(salesWithThumbnail, { ...base, variant: 'original' }), false)
+  assert.equal(canServeDirectSalesAttachmentThumbnail(salesWithThumbnail, { ...base, fileId: 'original-file-id' }), false)
+  assert.equal(canServeDirectSalesAttachmentThumbnail(salesWithThumbnail, { ...base, fileId: 'unknown-file-id' }), false)
+  assert.equal(canServeDirectSalesAttachmentThumbnail(salesWithThumbnail, { ...base, mimeType: 'image/svg+xml' }), false)
+  assert.equal(canServeDirectSalesAttachmentThumbnail(salesWithThumbnail, { ...base, mimeType: 'image/gif' }), false)
+  assert.equal(canServeDirectSalesAttachmentThumbnail(salesWithThumbnail, { ...base, size: 2 * 1024 * 1024 + 1 }), false)
+  assert.equal(canServeDirectSalesAttachmentThumbnail(salesWithThumbnail, { ...base, size: 0 }), false)
+})
 
 test('舊的完工 action 只轉送事件與附件資料', () => {
   assert.deepEqual(buildForwardedLineActionBody({

@@ -10,6 +10,8 @@ import sharp from 'sharp'
 const DEFAULT_DRIVE_FOLDER_ID = '1aqx7A8VwTKBSltaEj0IFoOXQP4HUJWF4'
 const DEFAULT_PUBLIC_BASE_URL = 'https://sch.city-painter.com'
 const PROJECT_ID = 'city-painter-erp'
+const MAX_DIRECT_SALES_THUMBNAIL_BYTES = 2 * 1024 * 1024
+const DIRECT_SALES_THUMBNAIL_MIME_TYPES = new Set(['image/webp', 'image/jpeg', 'image/png'])
 
 export const config = {
   api: {
@@ -213,6 +215,18 @@ function salesAttachmentFileIds(sales) {
     text(attachment?.path),
     text(attachment?.thumbnailPath),
   ]).filter(Boolean))
+}
+
+export function canServeDirectSalesAttachmentThumbnail(sales, { fileId, variant, mimeType, size }) {
+  if (variant !== 'preview') return false
+  const normalizedFileId = text(fileId)
+  const isThumbnail = (Array.isArray(sales?.attachments) ? sales.attachments : []).some((attachment) => (
+    text(attachment?.thumbnailPath) === normalizedFileId
+  ))
+  if (!normalizedFileId || !isThumbnail) return false
+  if (!DIRECT_SALES_THUMBNAIL_MIME_TYPES.has(text(mimeType).toLowerCase())) return false
+  const byteSize = Number(size)
+  return Number.isFinite(byteSize) && byteSize > 0 && byteSize <= MAX_DIRECT_SALES_THUMBNAIL_BYTES
 }
 
 function attachmentBelongsToEvent(event, fileId) {
@@ -511,12 +525,20 @@ async function renderSalesAttachmentImage(req, res) {
   if (!sales || !salesAttachmentFileIds(sales).has(fileId)) throw requestError('找不到此銷貨單附件', 404)
 
   const drive = google.drive({ version: 'v3', auth: getDriveAuth() })
-  const metadata = await drive.files.get({ fileId, fields: 'mimeType', supportsAllDrives: true })
+  const metadata = await drive.files.get({ fileId, fields: 'mimeType,size', supportsAllDrives: true })
   if (!metadata.data.mimeType?.startsWith('image/')) throw requestError('此附件不是圖片', 415)
   const source = await drive.files.get({ fileId, alt: 'media', supportsAllDrives: true }, { responseType: 'arraybuffer' })
-  const output = await createLineJpeg(Buffer.from(source.data), variant)
+  const input = Buffer.from(source.data)
+  const serveDirectThumbnail = canServeDirectSalesAttachmentThumbnail(sales, {
+    fileId,
+    variant,
+    mimeType: metadata.data.mimeType,
+    size: metadata.data.size,
+  }) && input.length <= MAX_DIRECT_SALES_THUMBNAIL_BYTES
+  const output = serveDirectThumbnail ? input : await createLineJpeg(input, variant)
+  const responseMimeType = serveDirectThumbnail ? metadata.data.mimeType : 'image/jpeg'
 
-  res.setHeader('Content-Type', 'image/jpeg')
+  res.setHeader('Content-Type', responseMimeType)
   res.setHeader('Content-Length', String(output.length))
   res.setHeader('Cache-Control', `private, max-age=${Math.max(0, Math.min(600, expires - now))}`)
   res.setHeader('X-Content-Type-Options', 'nosniff')
@@ -553,7 +575,7 @@ async function salesAttachmentCenterResponse(db, actor, body) {
       }
     })
     .filter(Boolean)
-  return { ok: true, attachments }
+  return { ok: true, attachments, expiresAt: new Date(expires * 1000).toISOString() }
 }
 
 export function buildForwardedLineActionBody(body) {
@@ -731,6 +753,7 @@ export default async function handler(req, res) {
     if (req.headers['content-type']?.includes('application/json')) {
       const body = await parseJsonBody(req)
       if (body.action === 'sales-attachments') {
+        res.setHeader('Cache-Control', 'private, no-store')
         res.status(200).json(await salesAttachmentCenterResponse(db, actor, body))
         return
       }

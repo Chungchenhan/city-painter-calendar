@@ -3,7 +3,7 @@ import type { CSSProperties, ChangeEvent, ClipboardEvent as ReactClipboardEvent,
 import dayjs from 'dayjs'
 import { addDoc, arrayUnion, collection, deleteDoc, deleteField, doc, getDoc, getDocs, limitToLast, onSnapshot, orderBy, query, serverTimestamp, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore'
 import { signOut } from 'firebase/auth'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { auth, db, getAppCheckHeaders } from '../lib/firebase'
 import { employeeNicknameTitle } from '../lib/employeeDirectory'
 import { fulfillmentPaymentNotice, type FulfillmentCashPaymentResult } from '../lib/fulfillmentPaymentResult'
@@ -89,6 +89,27 @@ type AttachmentUpload = {
 type PendingCommentFile = {
   id: string
   file: File
+}
+type EventCommentsState = {
+  cacheKey: string
+  rows: CalendarEventComment[]
+}
+type EventCommentsErrorState = {
+  cacheKey: string
+  message: string
+}
+
+const EVENT_COMMENTS_MEMORY_CACHE_LIMIT = 30
+const eventCommentsMemoryCache = new Map<string, CalendarEventComment[]>()
+
+function cacheEventComments(cacheKey: string, rows: CalendarEventComment[]) {
+  eventCommentsMemoryCache.delete(cacheKey)
+  eventCommentsMemoryCache.set(cacheKey, rows)
+  while (eventCommentsMemoryCache.size > EVENT_COMMENTS_MEMORY_CACHE_LIMIT) {
+    const oldestKey = eventCommentsMemoryCache.keys().next().value
+    if (typeof oldestKey !== 'string') break
+    eventCommentsMemoryCache.delete(oldestKey)
+  }
 }
 type ProductionLineStatus = {
   eligible: boolean
@@ -510,6 +531,7 @@ function eventDetailNoteContent(
   canViewPaymentStatus: boolean,
   statusLoading: boolean,
   statusError: string,
+  onSalesFormClick: (clickEvent: ReactMouseEvent<HTMLAnchorElement>, salesId: string) => void,
 ): ReactNode {
   const note = event.source === 'erpSalesDelivery'
     ? (() => {
@@ -551,6 +573,7 @@ function eventDetailNoteContent(
         href={erpSalesFormUrl(event.sourceId as string)}
         target="_blank"
         rel="noreferrer"
+        onClick={(clickEvent) => onSalesFormClick(clickEvent, event.sourceId as string)}
         key={`${salesNo}-${index}`}
       >
         {salesNo}
@@ -1018,10 +1041,7 @@ export default function CalendarPage() {
   const [lastSeenActivityAt, setLastSeenActivityAt] = useState(() => localStorage.getItem(ACTIVITY_NOTIFICATION_SEEN_KEY) || '')
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null)
   const [enlargedEventAttachment, setEnlargedEventAttachment] = useState<EventAttachment | null>(null)
-  const [salesCenterAttachments, setSalesCenterAttachments] = useState<EventAttachment[]>([])
-  const [salesCenterAttachmentsLoading, setSalesCenterAttachmentsLoading] = useState(false)
-  const [salesCenterAttachmentsError, setSalesCenterAttachmentsError] = useState('')
-  const [salesCenterAttachmentsReloadKey, setSalesCenterAttachmentsReloadKey] = useState(0)
+  const [salesFormOpenError, setSalesFormOpenError] = useState('')
   const [monthDayEventRowLimit, setMonthDayEventRowLimit] = useState(DEFAULT_MONTH_DAY_EVENT_ROW_LIMIT)
   const [showEventActionMenu, setShowEventActionMenu] = useState(false)
   const [showCalendarModal, setShowCalendarModal] = useState(false)
@@ -1049,9 +1069,8 @@ export default function CalendarPage() {
   const [eventEditorTouchLocked, setEventEditorTouchLocked] = useState(false)
   const [saving, setSaving] = useState(false)
   const [detailAttachmentUploading, setDetailAttachmentUploading] = useState(false)
-  const [eventComments, setEventComments] = useState<CalendarEventComment[]>([])
-  const [eventCommentsLoading, setEventCommentsLoading] = useState(false)
-  const [eventCommentsError, setEventCommentsError] = useState('')
+  const [eventCommentsState, setEventCommentsState] = useState<EventCommentsState>({ cacheKey: '', rows: [] })
+  const [eventCommentsErrorState, setEventCommentsErrorState] = useState<EventCommentsErrorState>({ cacheKey: '', message: '' })
   const [eventCommentsReloadKey, setEventCommentsReloadKey] = useState(0)
   const [commentDraft, setCommentDraft] = useState('')
   const [commentFiles, setCommentFiles] = useState<PendingCommentFile[]>([])
@@ -1753,9 +1772,26 @@ export default function CalendarPage() {
       visibleSearchEvents.find((event) => event.id === selectedEventId) ??
       null
   }, [selectedEventId, visibleEvents, visibleSearchEvents])
+  const salesAttachmentEventId = selectedEvent?.source === 'erpSalesDelivery' && canOpenSalesForm
+    ? selectedEvent.id
+    : ''
+  const salesCenterAttachmentsQuery = useQuery({
+    queryKey: ['sales-center-attachments', user?.uid ?? '', salesAttachmentEventId],
+    enabled: Boolean(user?.uid && salesAttachmentEventId),
+    queryFn: () => fetchSalesCenterAttachments(salesAttachmentEventId),
+    staleTime: 7 * 60 * 1000,
+    gcTime: 9 * 60 * 1000,
+    retry: 1,
+  })
+  const salesCenterAttachments = salesCenterAttachmentsQuery.data ?? []
+  const salesCenterAttachmentsError = salesCenterAttachmentsQuery.isError
+    ? salesCenterAttachmentsQuery.error instanceof Error
+      ? salesCenterAttachmentsQuery.error.message
+      : '附件中心讀取失敗'
+    : ''
   const eventDetailAttachments = useMemo(() => {
     const seen = new Set<string>()
-    return [...salesCenterAttachments, ...(selectedEvent?.attachments ?? [])].filter((attachment) => {
+    return [...(selectedEvent?.attachments ?? []), ...salesCenterAttachments].filter((attachment) => {
       const key = attachment.path || attachment.url
       if (!key || seen.has(key)) return false
       seen.add(key)
@@ -1763,6 +1799,18 @@ export default function CalendarPage() {
     })
   }, [salesCenterAttachments, selectedEvent?.attachments])
   const commentThreadId = selectedEvent ? recurrenceRootId(selectedEvent) : ''
+  const eventCommentsCacheKey = user?.uid && commentThreadId ? `${user.uid}:${commentThreadId}` : ''
+  const cachedEventComments = eventCommentsCacheKey
+    ? eventCommentsMemoryCache.get(eventCommentsCacheKey)
+    : undefined
+  const eventComments = eventCommentsState.cacheKey === eventCommentsCacheKey
+    ? eventCommentsState.rows
+    : cachedEventComments ?? []
+  const eventCommentsReady = eventCommentsState.cacheKey === eventCommentsCacheKey
+    || cachedEventComments !== undefined
+  const eventCommentsError = eventCommentsErrorState.cacheKey === eventCommentsCacheKey
+    ? eventCommentsErrorState.message
+    : ''
   const groupedEventComments = useMemo(() => {
     const groups: { key: string, label: string, comments: CalendarEventComment[] }[] = []
     eventComments.forEach((comment) => {
@@ -1787,45 +1835,16 @@ export default function CalendarPage() {
   }, [commentThreadId])
 
   useEffect(() => {
-    let cancelled = false
-    setSalesCenterAttachments([])
-    setSalesCenterAttachmentsError('')
-    if (!selectedEvent || selectedEvent.source !== 'erpSalesDelivery' || !canOpenSalesForm || !user?.uid) {
-      setSalesCenterAttachmentsLoading(false)
-      return () => {
-        cancelled = true
-      }
-    }
-
-    setSalesCenterAttachmentsLoading(true)
-    void (async () => {
-      try {
-        const attachments = await fetchSalesCenterAttachments(selectedEvent.id)
-        if (!cancelled) setSalesCenterAttachments(attachments)
-      } catch (error) {
-        if (!cancelled) {
-          setSalesCenterAttachments([])
-          setSalesCenterAttachmentsError(error instanceof Error ? error.message : '附件中心讀取失敗')
-        }
-      } finally {
-        if (!cancelled) setSalesCenterAttachmentsLoading(false)
-      }
-    })()
-
-    return () => {
-      cancelled = true
-    }
-  }, [selectedEvent?.id, selectedEvent?.source, canOpenSalesForm, user?.uid, salesCenterAttachmentsReloadKey])
+    setSalesFormOpenError('')
+  }, [selectedEvent?.id])
 
   useEffect(() => {
-    setEventComments([])
-    setEventCommentsError('')
-    if (!commentThreadId) {
-      setEventCommentsLoading(false)
-      return
-    }
+    if (!commentThreadId || !eventCommentsCacheKey) return
 
-    setEventCommentsLoading(true)
+    const cachedRows = eventCommentsMemoryCache.get(eventCommentsCacheKey)
+    if (cachedRows) setEventCommentsState({ cacheKey: eventCommentsCacheKey, rows: cachedRows })
+    setEventCommentsErrorState({ cacheKey: eventCommentsCacheKey, message: '' })
+
     const commentsQuery = query(
       collection(db, 'calendarEvents', commentThreadId, 'comments'),
       orderBy('createdAt', 'asc'),
@@ -1844,16 +1863,14 @@ export default function CalendarPage() {
           createdAt: firestoreDateIso(data.createdAt)
         } satisfies CalendarEventComment
       }).sort((a, b) => `${a.createdAt}-${a.id}`.localeCompare(`${b.createdAt}-${b.id}`))
-      setEventComments(rows)
-      setEventCommentsError('')
-      setEventCommentsLoading(false)
+      cacheEventComments(eventCommentsCacheKey, rows)
+      setEventCommentsState({ cacheKey: eventCommentsCacheKey, rows })
+      setEventCommentsErrorState({ cacheKey: eventCommentsCacheKey, message: '' })
     }, (error) => {
       console.warn('[calendar] event comments listener failed', error)
-      setEventComments([])
-      setEventCommentsError('留言載入失敗，請稍後重試')
-      setEventCommentsLoading(false)
+      setEventCommentsErrorState({ cacheKey: eventCommentsCacheKey, message: '留言載入失敗，請稍後重試' })
     })
-  }, [commentThreadId, eventCommentsReloadKey])
+  }, [commentThreadId, eventCommentsCacheKey, eventCommentsReloadKey])
 
   useEffect(() => {
     let cancelled = false
@@ -5277,6 +5294,65 @@ export default function CalendarPage() {
     })
   }
 
+  async function openSalesFormWithCalendarLogin(
+    clickEvent: ReactMouseEvent<HTMLAnchorElement>,
+    salesId: string,
+  ) {
+    if (
+      clickEvent.button !== 0
+      || clickEvent.metaKey
+      || clickEvent.ctrlKey
+      || clickEvent.shiftKey
+      || clickEvent.altKey
+    ) return
+
+    setSalesFormOpenError('')
+    const salesFormWindow = window.open('about:blank', '_blank')
+    if (!salesFormWindow) {
+      setSalesFormOpenError('瀏覽器阻擋了新分頁，請允許彈出式視窗後再試。')
+      return
+    }
+    clickEvent.preventDefault()
+    salesFormWindow.opener = null
+
+    try {
+      if (!user) throw new Error('登入已失效，請重新登入行事曆。')
+      const targetPath = `/sales/main/${encodeURIComponent(salesId)}/edit`
+      const [token, appCheckHeaders] = await Promise.all([
+        user.getIdToken(),
+        getAppCheckHeaders(),
+      ])
+      const response = await fetch(`${erpOrigin()}/api/access-control`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+          ...appCheckHeaders,
+        },
+        body: JSON.stringify({
+          action: 'create-calendar-scan-ticket',
+          targetPath,
+        }),
+      })
+      const payload = await response.json().catch(() => ({})) as {
+        redirectUrl?: unknown
+        message?: unknown
+      }
+      if (!response.ok || typeof payload.redirectUrl !== 'string') {
+        throw new Error(typeof payload.message === 'string' ? payload.message : '無法建立 ERP 登入接續。')
+      }
+
+      const redirectUrl = new URL(payload.redirectUrl)
+      if (redirectUrl.origin !== new URL(erpOrigin()).origin || redirectUrl.pathname !== targetPath) {
+        throw new Error('ERP 登入接續網址不正確。')
+      }
+      salesFormWindow.location.replace(redirectUrl.toString())
+    } catch (error) {
+      salesFormWindow.close()
+      setSalesFormOpenError(error instanceof Error ? error.message : '開啟銷貨單失敗，請稍後再試。')
+    }
+  }
+
   function renderEventDetailPanel() {
     if (!selectedEvent) return null
     const calendar = visibleCalendarMap.get(eventDisplayCalendarId(selectedEvent))
@@ -5527,27 +5603,25 @@ export default function CalendarPage() {
                 canManageEvent,
                 productionLineStatusLoading,
                 productionLineStatusError,
+                openSalesFormWithCalendarLogin,
               )}</p>
+              {salesFormOpenError && <div className="form-error" role="alert">{salesFormOpenError}</div>}
             </div>
           )}
           {canOpenSalesForm && (
             eventDetailAttachments.length > 0
-            || (selectedEvent.source === 'erpSalesDelivery' && (salesCenterAttachmentsLoading || Boolean(salesCenterAttachmentsError)))
+            || (selectedEvent.source === 'erpSalesDelivery' && Boolean(salesCenterAttachmentsError))
           ) && (
             <div className="event-detail-attachments">
               <strong>附件中心</strong>
-              {salesCenterAttachmentsLoading && eventDetailAttachments.length === 0 ? (
-                <div className="event-detail-attachment-loading" aria-label="附件中心載入中">
-                  <span /><span /><span />
-                </div>
-              ) : salesCenterAttachmentsError && eventDetailAttachments.length === 0 ? (
+              {salesCenterAttachmentsError && eventDetailAttachments.length === 0 ? (
                 <div className="event-detail-attachment-error" role="alert">
                   <span>{salesCenterAttachmentsError}</span>
-                  <button type="button" onClick={() => setSalesCenterAttachmentsReloadKey((key) => key + 1)}>重試</button>
+                  <button type="button" onClick={() => void salesCenterAttachmentsQuery.refetch()}>重試</button>
                 </div>
               ) : (
                 <div className="event-detail-attachment-grid">
-                {eventDetailAttachments.map((attachment) => {
+                {eventDetailAttachments.map((attachment, attachmentIndex) => {
                   const previewUrl = attachmentPreviewUrl(attachment)
                   const attachmentName = attachment.originalName || attachment.name
                   return previewUrl ? (
@@ -5559,7 +5633,14 @@ export default function CalendarPage() {
                       title={attachmentName}
                       key={attachment.path || attachment.url}
                     >
-                      <img src={previewUrl} alt={attachmentName} loading="lazy" referrerPolicy="no-referrer" />
+                      <img
+                        src={previewUrl}
+                        alt={attachmentName}
+                        loading={attachmentIndex < 3 ? 'eager' : 'lazy'}
+                        fetchPriority={attachmentIndex < 3 ? 'high' : 'auto'}
+                        decoding="async"
+                        referrerPolicy="no-referrer"
+                      />
                     </button>
                   ) : (
                     <a
@@ -5601,22 +5682,19 @@ export default function CalendarPage() {
               <strong>留言板</strong>
               {eventComments.length >= 100 && <small>顯示最近 100 則</small>}
             </div>
-            {eventCommentsLoading && (
-              <div className="event-comment-skeleton" aria-label="留言載入中">
-                <span />
-                <span />
-              </div>
+            {!eventCommentsReady && !eventCommentsError && (
+              <div className="event-comment-empty is-loading" aria-label="留言載入中">留言同步中…</div>
             )}
-            {!eventCommentsLoading && eventCommentsError && (
+            {eventCommentsError && eventComments.length === 0 && (
               <div className="event-comment-error" role="alert">
                 <span>{eventCommentsError}</span>
                 <button type="button" onClick={() => setEventCommentsReloadKey((key) => key + 1)}>重試</button>
               </div>
             )}
-            {!eventCommentsLoading && !eventCommentsError && eventComments.length === 0 && (
+            {eventCommentsReady && !eventCommentsError && eventComments.length === 0 && (
               <div className="event-comment-empty">還沒有留言，輸入第一則訊息吧</div>
             )}
-            {!eventCommentsLoading && !eventCommentsError && groupedEventComments.map((group) => (
+            {eventComments.length > 0 && groupedEventComments.map((group) => (
               <div className="event-comment-date-group" key={group.key}>
                 <div className="event-comment-date-label">{group.label}</div>
                 {group.comments.map((comment) => {

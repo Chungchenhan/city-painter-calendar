@@ -2341,21 +2341,6 @@ html.calendar-event-touch-dragging ::selection {
   gap: 8px;
 }
 
-.event-detail-attachment-loading {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.event-detail-attachment-loading span {
-  aspect-ratio: 4 / 3;
-  border: 1px solid #e4e4e4;
-  border-radius: 6px;
-  background: linear-gradient(90deg, #f1f1f1 25%, #fafafa 45%, #f1f1f1 65%);
-  background-size: 240% 100%;
-  animation: event-comment-loading 1.2s linear infinite;
-}
-
 .event-detail-attachment-error {
   min-height: 48px;
   display: flex;
@@ -2506,33 +2491,9 @@ html.calendar-event-touch-dragging ::selection {
   font-size: 11px;
 }
 
-.event-comment-skeleton {
-  min-height: 116px;
-  display: grid;
-  gap: 12px;
-  padding: 8px 0;
-}
-
-.event-comment-skeleton span {
-  width: 76%;
-  height: 46px;
-  border-radius: 12px;
-  background: linear-gradient(90deg, #f2f2f2 25%, #fafafa 50%, #f2f2f2 75%);
-  background-size: 200% 100%;
-  animation: event-comment-loading 1.2s linear infinite;
-}
-
-.event-comment-skeleton span:last-child {
-  justify-self: end;
-}
-
-@keyframes event-comment-loading {
-  to { background-position: -200% 0; }
-}
-
 .event-comment-empty,
 .event-comment-error {
-  min-height: 88px;
+  min-height: 36px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2542,7 +2503,12 @@ html.calendar-event-touch-dragging ::selection {
   text-align: center;
 }
 
+.event-comment-empty.is-loading {
+  color: #999;
+}
+
 .event-comment-error {
+  min-height: 48px;
   color: #a52323;
 }
 
