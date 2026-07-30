@@ -5,6 +5,7 @@ import {
   buildForwardedLineActionResponse,
   canOpenSalesAttachmentCenterFromAccess,
   canServeDirectSalesAttachmentThumbnail,
+  canUseErpOrderFulfillmentPermission,
 } from './upload-drive.js'
 
 const salesWithThumbnail = {
@@ -127,4 +128,27 @@ test('銷貨單掃描權限可查看附件中心，但不會放行缺少更新�
       'sales-order-scan': { browse: true, update: true, special: false },
     },
   }, actor), false)
+})
+
+test('銷貨完成權限只套用於 ERP 外送或施工事件', () => {
+  assert.equal(canUseErpOrderFulfillmentPermission({
+    source: 'erpSalesDelivery',
+    sourceShippingMethod: '外送',
+  }, true), true)
+  assert.equal(canUseErpOrderFulfillmentPermission({
+    source: 'erpSalesDelivery',
+    sourceShippingMethod: '施工',
+  }, true), true)
+  assert.equal(canUseErpOrderFulfillmentPermission({
+    source: 'erpSalesDelivery',
+    sourceShippingMethod: '民族自取',
+  }, true), false)
+  assert.equal(canUseErpOrderFulfillmentPermission({
+    source: 'erpSalesDelivery',
+    sourceShippingMethod: '外送',
+  }, false), false)
+  assert.equal(canUseErpOrderFulfillmentPermission({
+    source: 'timeTreeImport',
+    sourceShippingMethod: '外送',
+  }, true), false)
 })

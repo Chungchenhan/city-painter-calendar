@@ -197,6 +197,20 @@ async function canOpenSalesAttachmentCenter(db, actor) {
   return canOpenSalesAttachmentCenterFromAccess(accessSnapshot.data() || {}, actor)
 }
 
+export function canUseErpOrderFulfillmentPermission(event, canScanSalesOrder) {
+  if (!canScanSalesOrder) return false
+  if (text(event?.source) !== 'erpSalesDelivery') return false
+  const shippingMethod = text(event?.sourceShippingMethod)
+  return shippingMethod === '外送' || shippingMethod === '施工'
+}
+
+async function canOperateErpOrderFulfillment(db, actor, event) {
+  return canUseErpOrderFulfillmentPermission(
+    event,
+    await canOpenSalesAttachmentCenter(db, actor),
+  )
+}
+
 async function loadEvent(db, eventId) {
   const id = text(eventId)
   if (!id || id === 'draft-event') return null
@@ -656,7 +670,10 @@ async function authorizeUpload(db, actor, fields) {
     if (!await canViewEvent(db, actor, event)) throw requestError('沒有此事件的附件上傳權限', 403)
     return { eventId, uploadKind: 'comment', commentId }
   }
-  if (!await canManageEvent(db, actor, event, eventId)) throw requestError('沒有此事件的附件上傳權限', 403)
+  if (
+    !await canManageEvent(db, actor, event, eventId)
+    && !await canOperateErpOrderFulfillment(db, actor, event)
+  ) throw requestError('沒有此事件的附件上傳權限', 403)
   return { eventId, uploadKind: 'event', commentId: '' }
 }
 
@@ -671,7 +688,13 @@ async function authorizeDelete(db, actor, fileId, requestedEventId, appPropertie
   }
   if (uploadKind === 'event' && storedEventId) {
     const event = await loadEvent(db, storedEventId)
-    if (event && await canManageEvent(db, actor, event, storedEventId)) return
+    if (
+      event
+      && (
+        await canManageEvent(db, actor, event, storedEventId)
+        || await canOperateErpOrderFulfillment(db, actor, event)
+      )
+    ) return
     throw requestError('沒有此附件的刪除權限', 403)
   }
 
@@ -680,7 +703,10 @@ async function authorizeDelete(db, actor, fileId, requestedEventId, appPropertie
   if (
     event
     && attachmentBelongsToEvent(event, fileId)
-    && await canManageEvent(db, actor, event, eventId)
+    && (
+      await canManageEvent(db, actor, event, eventId)
+      || await canOperateErpOrderFulfillment(db, actor, event)
+    )
   ) return
   throw requestError('舊附件缺少所有權資料，僅管理員可刪除', 403)
 }
@@ -691,9 +717,15 @@ async function authorizeLineAction(db, actor, body) {
   if (!event || text(event.source) !== 'erpSalesDelivery') throw requestError('找不到對應的銷貨單事件', 404)
   if (body.action === 'production-photo-status') {
     if (!await canViewEvent(db, actor, event)) throw requestError('沒有查看此銷貨單事件的權限', 403)
-    return { canManageEvent: await canManageEvent(db, actor, event, eventId) }
+    return {
+      canManageEvent: await canManageEvent(db, actor, event, eventId)
+        || await canOperateErpOrderFulfillment(db, actor, event)
+    }
   }
-  if (!await canManageEvent(db, actor, event, eventId)) throw requestError('沒有操作此銷貨單事件的權限', 403)
+  if (
+    !await canManageEvent(db, actor, event, eventId)
+    && !await canOperateErpOrderFulfillment(db, actor, event)
+  ) throw requestError('沒有操作此銷貨單事件的權限', 403)
   return { canManageEvent: true }
 }
 

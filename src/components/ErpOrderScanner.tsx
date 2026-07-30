@@ -13,6 +13,23 @@ type OrderSummary = {
   orderStatus: string
 }
 
+type RelatedFulfillmentOrder = {
+  id: string
+  salesId: string
+  salesNo: string
+  customerCode: string
+  customer: string
+  shippingMethod: string
+  orderStatus: string
+  deliveryDate: string
+  deliveryTime: string
+  deliveryStartTime: string
+  deliveryEndTime: string
+  recipientName: string
+  recipientAddress: string
+  sameAddress: boolean
+}
+
 const ERP_LINE_API_URL = 'https://erp.city-painter.com/api/line'
 const ERP_SCAN_PATH = '/sales/order-scan'
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '100.77.87.95', 'macbook-air.tail7313ae.ts.net'])
@@ -89,6 +106,41 @@ function responseOrder(payload: Record<string, unknown>, salesId: string): Order
   }
 }
 
+function relatedFulfillmentOrders(payload: Record<string, unknown>, processedSalesIds: Set<string>): RelatedFulfillmentOrder[] {
+  if (!Array.isArray(payload.relatedFulfillmentOrders)) return []
+
+  return payload.relatedFulfillmentOrders
+    .filter(isRecord)
+    .map((record) => ({
+      id: readText(record, ['id']),
+      salesId: readText(record, ['salesId', 'id']),
+      salesNo: readText(record, ['salesNo']),
+      customerCode: readText(record, ['customerCode']),
+      customer: readText(record, ['customer', 'customerName']),
+      shippingMethod: readText(record, ['shippingMethod']),
+      orderStatus: readText(record, ['orderStatus']) || '未設定',
+      deliveryDate: readText(record, ['deliveryDate']),
+      deliveryTime: readText(record, ['deliveryTime']),
+      deliveryStartTime: readText(record, ['deliveryStartTime']),
+      deliveryEndTime: readText(record, ['deliveryEndTime']),
+      recipientName: readText(record, ['recipientName']),
+      recipientAddress: readText(record, ['recipientAddress']),
+      sameAddress: record.sameAddress === true
+    }))
+    .filter((order) => {
+      if (!order.salesId && !order.id) return false
+      return !processedSalesIds.has(order.salesId) && !processedSalesIds.has(order.id)
+    })
+    .sort((a, b) => Number(b.sameAddress) - Number(a.sameAddress))
+}
+
+function fulfillmentSchedule(order: RelatedFulfillmentOrder): string {
+  const timeRange = order.deliveryStartTime && order.deliveryEndTime
+    ? `${order.deliveryStartTime}–${order.deliveryEndTime}`
+    : order.deliveryTime || order.deliveryStartTime || order.deliveryEndTime
+  return [order.deliveryDate, timeRange].filter(Boolean).join(' ') || '未設定'
+}
+
 function parseSalesId(rawValue: string): string {
   const raw = rawValue.trim()
   if (!raw) throw new Error('QR Code 沒有包含銷貨單資料。')
@@ -162,6 +214,9 @@ export default function ErpOrderScanner({ onClose }: { onClose: () => void }) {
   const [order, setOrder] = useState<OrderSummary | null>(null)
   const [cameraActive, setCameraActive] = useState(false)
   const [cameraStarting, setCameraStarting] = useState(false)
+  const [reminderOrders, setReminderOrders] = useState<RelatedFulfillmentOrder[]>([])
+  const [reminderOpen, setReminderOpen] = useState(false)
+  const [reminderTruncated, setReminderTruncated] = useState(false)
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const cameraCaptureInputRef = useRef<HTMLInputElement | null>(null)
   const controlsRef = useRef<ScannerControls | null>(null)
@@ -170,6 +225,7 @@ export default function ErpOrderScanner({ onClose }: { onClose: () => void }) {
   const processingRef = useRef(false)
   const processedRef = useRef(new Set<string>())
   const lastLiveScanRef = useRef('')
+  const reminderOpenRef = useRef(false)
   const liveCameraSupported = supportsLiveCamera()
 
   const stopCamera = useCallback(() => {
@@ -190,8 +246,13 @@ export default function ErpOrderScanner({ onClose }: { onClose: () => void }) {
     onClose()
   }, [onClose, stopCamera])
 
+  const closeReminder = useCallback(() => {
+    reminderOpenRef.current = false
+    setReminderOpen(false)
+  }, [])
+
   const processSalesId = useCallback(async (rawValue: string, continuousCamera = false) => {
-    if (processingRef.current) return
+    if (processingRef.current || reminderOpenRef.current) return
     let salesId = ''
     try {
       salesId = parseSalesId(rawValue)
@@ -208,6 +269,13 @@ export default function ErpOrderScanner({ onClose }: { onClose: () => void }) {
       setPhase('success')
       const resultMessage = readText(payload, ['message']) || `訂單狀態已更新為「${updatedOrder.orderStatus}」。`
       setMessage(continuousCamera ? `${resultMessage} 相機保持開啟，請繼續掃描下一張。` : resultMessage)
+      const relatedOrders = relatedFulfillmentOrders(payload, processedRef.current)
+      if (relatedOrders.length > 0) {
+        reminderOpenRef.current = true
+        setReminderOrders(relatedOrders)
+        setReminderTruncated(payload.relatedFulfillmentOrdersTruncated === true)
+        setReminderOpen(true)
+      }
     } catch (error) {
       if (salesId) processedRef.current.delete(salesId)
       setPhase('error')
@@ -223,7 +291,9 @@ export default function ErpOrderScanner({ onClose }: { onClose: () => void }) {
     const previousOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') closeScanner()
+      if (event.key !== 'Escape') return
+      if (reminderOpenRef.current) closeReminder()
+      else closeScanner()
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => {
@@ -239,7 +309,7 @@ export default function ErpOrderScanner({ onClose }: { onClose: () => void }) {
       controlsRef.current = null
       stopVideoTracks(videoRef.current)
     }
-  }, [closeScanner])
+  }, [closeReminder, closeScanner])
 
   async function startCamera() {
     stopCamera()
@@ -268,7 +338,7 @@ export default function ErpOrderScanner({ onClose }: { onClose: () => void }) {
         audio: false,
         video: { facingMode: { ideal: 'environment' } }
       }, videoRef.current, (result) => {
-        if (!result || processingRef.current) return
+        if (!result || processingRef.current || reminderOpenRef.current) return
         const rawValue = result.getText()
         if (rawValue === lastLiveScanRef.current) return
         lastLiveScanRef.current = rawValue
@@ -347,6 +417,30 @@ export default function ErpOrderScanner({ onClose }: { onClose: () => void }) {
         .erp-order-scanner-grid { display: grid; grid-template-columns: 90px minmax(0,1fr); gap: 9px 10px; line-height: 1.45; }
         .erp-order-scanner-label { color: #68716d; }
         .erp-order-scanner-status { color: #087f5b; font-size: 18px; font-weight: bold; }
+        .erp-order-scanner-reminder-backdrop { position: fixed; inset: 0; z-index: 5; display: grid; place-items: center; padding: max(16px, env(safe-area-inset-top)) 16px calc(16px + env(safe-area-inset-bottom)); background: rgba(10,20,15,.58); }
+        .erp-order-scanner-reminder-backdrop[hidden] { display: none; }
+        .erp-order-scanner-reminder { width: min(100%, 560px); max-height: min(82dvh, 720px); display: flex; flex-direction: column; overflow: hidden; border-radius: 14px; background: #fff; box-shadow: 0 18px 60px rgba(0,0,0,.32); }
+        .erp-order-scanner-reminder-header { padding: 18px 18px 12px; border-bottom: 1px solid #dce2df; }
+        .erp-order-scanner-reminder-header h2 { margin: 0; color: #075c47; font-size: 20px; font-weight: 500; line-height: 1.4; }
+        .erp-order-scanner-reminder-header p { margin: 7px 0 0; color: #68716d; font-size: 14px; line-height: 1.45; }
+        .erp-order-scanner-reminder-list { display: grid; gap: 10px; min-height: 0; margin: 0; padding: 12px 18px; overflow-y: auto; list-style: none; background: #fff; }
+        .erp-order-scanner-reminder-order { padding: 13px 13px 13px 15px; border: 1px solid #cbd7d2; border-left: 4px solid #0aa17b; border-radius: 9px; background: #fbfdfc; }
+        .erp-order-scanner-reminder-order-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+        .erp-order-scanner-reminder-order-heading strong { font-size: 17px; }
+        .erp-order-scanner-reminder-address-badge { display: inline-flex; flex: 0 0 auto; align-items: center; min-height: 26px; padding: 2px 8px; border-radius: 999px; background: #ddf7eb; color: #087f5b; font-size: 13px; font-weight: bold; }
+        .erp-order-scanner-reminder-address-badge.needs-check { background: #fff0cc; color: #765500; }
+        .erp-order-scanner-reminder-details { display: grid; grid-template-columns: 90px minmax(0,1fr); gap: 7px 8px; font-size: 14px; line-height: 1.45; }
+        .erp-order-scanner-reminder-label { color: #68716d; }
+        .erp-order-scanner-reminder-status { color: #087f5b; font-weight: 700; }
+        .erp-order-scanner-reminder-truncated { padding: 10px 12px; border-radius: 8px; background: #fff7dc; color: #765500; font-size: 13px; line-height: 1.5; }
+        .erp-order-scanner-reminder-footer { padding: 12px 18px calc(12px + env(safe-area-inset-bottom)); border-top: 1px solid #dce2df; background: #fff; }
+        .erp-order-scanner-reminder-close { width: 100%; min-height: 48px; border: 0; border-radius: 0; background: #f7f7f7; color: #18211d; font-size: 16px; font-weight: 500; }
+        .erp-order-scanner-reminder-close:active { background: #ecefed; }
+        @media (max-width: 600px) {
+          .erp-order-scanner-reminder-backdrop { padding: max(16px, env(safe-area-inset-top)) 16px calc(16px + env(safe-area-inset-bottom)); }
+          .erp-order-scanner-reminder { width: 100%; max-height: 82dvh; border-radius: 14px; }
+          .erp-order-scanner-reminder-details { grid-template-columns: 90px minmax(0,1fr); }
+        }
       `}</style>
       <header className="erp-order-scanner-header">
         <span />
@@ -390,6 +484,43 @@ export default function ErpOrderScanner({ onClose }: { onClose: () => void }) {
             </div>
           </section>
         )}
+      </div>
+
+      <div className="erp-order-scanner-reminder-backdrop" hidden={!reminderOpen}>
+        <section className="erp-order-scanner-reminder" role="alertdialog" aria-modal="true" aria-labelledby="erp-order-scanner-reminder-title">
+          <header className="erp-order-scanner-reminder-header">
+            <h2 id="erp-order-scanner-reminder-title">同一客戶還有 {reminderOrders.length} 筆待處理訂單</h2>
+            <p>請核對日期時間與地址，確認是否可一併配送或施工。</p>
+          </header>
+          <ul className="erp-order-scanner-reminder-list">
+            {reminderOrders.map((relatedOrder) => (
+              <li className="erp-order-scanner-reminder-order" key={relatedOrder.salesId || relatedOrder.id}>
+                <div className="erp-order-scanner-reminder-order-heading">
+                  <strong>{relatedOrder.salesNo || '未設定單號'}</strong>
+                  <span className={`erp-order-scanner-reminder-address-badge${relatedOrder.sameAddress ? '' : ' needs-check'}`}>
+                    {relatedOrder.sameAddress ? '同地址' : '地址需確認'}
+                  </span>
+                </div>
+                <div className="erp-order-scanner-reminder-details">
+                  <div className="erp-order-scanner-reminder-label">客戶</div><div>{[relatedOrder.customerCode, relatedOrder.customer].filter(Boolean).join(' ') || '—'}</div>
+                  <div className="erp-order-scanner-reminder-label">方式</div><div>{relatedOrder.shippingMethod || '—'}</div>
+                  <div className="erp-order-scanner-reminder-label">狀態</div><div className="erp-order-scanner-reminder-status">{relatedOrder.orderStatus}</div>
+                  <div className="erp-order-scanner-reminder-label">日期時間</div><div>{fulfillmentSchedule(relatedOrder)}</div>
+                  <div className="erp-order-scanner-reminder-label">收件人</div><div>{relatedOrder.recipientName || relatedOrder.customer || '—'}</div>
+                  <div className="erp-order-scanner-reminder-label">地址</div><div>{relatedOrder.recipientAddress || '—'}</div>
+                </div>
+              </li>
+            ))}
+            {reminderTruncated && (
+              <li className="erp-order-scanner-reminder-truncated" role="note">
+                符合條件的訂單較多，目前僅顯示部分資料，請回銷貨單查詢確認完整清單。
+              </li>
+            )}
+          </ul>
+          <footer className="erp-order-scanner-reminder-footer">
+            <button type="button" className="erp-order-scanner-reminder-close" onClick={closeReminder}>我知道了，繼續掃描</button>
+          </footer>
+        </section>
       </div>
     </div>,
     document.body

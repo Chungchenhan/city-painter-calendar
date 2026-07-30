@@ -147,6 +147,7 @@ export interface CalendarEventComment {
 
 export interface FulfillmentPaymentPrompt {
   required: boolean
+  paymentState?: 'monthly' | 'paid' | 'unpaid' | 'voided'
   customerId?: string
   customerCode?: string
   customerName?: string

@@ -8,9 +8,16 @@ import { auth, db, getAppCheckHeaders } from '../lib/firebase'
 import { employeeNicknameTitle } from '../lib/employeeDirectory'
 import { fulfillmentPaymentNotice, type FulfillmentCashPaymentResult } from '../lib/fulfillmentPaymentResult'
 import { composeEditableEventTitle } from '../lib/calendarEventTitle'
+import {
+  deliveryGroupCompletedCount,
+  deliveryGroupTitle,
+  groupCalendarDayEvents,
+  type CalendarDayDisplayItem,
+} from '../lib/deliveryEventGrouping'
 import { readLocalQueryCache, updateLocalQueryCache, writeLocalQueryCache } from '../lib/localQueryCache'
 import { extractPhotoCaptureMetadata, type PhotoCaptureMetadata } from '../lib/photoMetadata'
 import { ensurePushSubscription, isPushSupported } from '../lib/pushNotifications'
+import ZoomableAttachmentImage from '../components/ZoomableAttachmentImage'
 import { useAuth } from '../contexts/AuthContext'
 import { useCalendarActivityLogs, useCalendarEvents, useCalendarGroups, useCalendarSearchEvents } from '../hooks/useCalendarData'
 import { useDepartments, useEmployees, useShifts } from '../hooks/useHrData'
@@ -114,10 +121,18 @@ function cacheEventComments(cacheKey: string, rows: CalendarEventComment[]) {
 type ProductionLineStatus = {
   eligible: boolean
   bound: boolean
+  hasAnyLineBinding?: boolean
   canCompleteOrder?: boolean
   customerCode: string
   customerName: string
+  recipientName?: string
   lineDisplayName: string
+  lineTargetType?: string
+  recipientCount?: number
+  notificationMode?: 'recipient' | 'group' | 'recipient_and_group' | 'none'
+  availablePersonalCount?: number
+  availableGroupCount?: number
+  availableGroupNames?: string[]
   salesNo: string
   reason: string
   shippingMethod?: string
@@ -127,6 +142,33 @@ type ProductionLineStatus = {
   outstandingTotal?: number
   paymentPrompt?: FulfillmentPaymentPrompt
 }
+
+function productionLineBindingDescription(status: ProductionLineStatus, includePrefix = true) {
+  const prefix = includePrefix ? '官方 LINE：' : ''
+  if (status.bound) {
+    return `${prefix}已綁定（${status.customerCode} ${status.lineDisplayName || status.customerName}）`
+  }
+  const groupNames = (status.availableGroupNames || []).filter(Boolean)
+  const groupLabel = groupNames.length > 0 ? groupNames.join('、') : '已綁定群組'
+  if (status.reason === 'recipient_not_bound_group_available') {
+    const recipient = status.recipientName ? `收件人「${status.recipientName}」` : '收件人'
+    return `${prefix}群組已綁定（${groupLabel}），但本單設定為僅收件人，${recipient}尚未綁定個人 LINE`
+  }
+  if (status.reason === 'group_not_selected') {
+    return `${prefix}群組已綁定（${groupLabel}），但本單尚未選擇通知群組`
+  }
+  if (status.reason === 'group_selection_unavailable') {
+    return `${prefix}本單選擇的通知群組已失效或不屬於此客戶`
+  }
+  if (status.reason === 'notification_disabled') return `${prefix}本單設定為不通知`
+  if (status.reason === 'recipient_not_bound') return `${prefix}本單收件人尚未綁定個人 LINE`
+  if (status.reason === 'customer_not_bound') {
+    return `${prefix}尚未綁定（${status.customerCode} ${status.customerName}）`
+  }
+  if (status.reason === 'contact_inactive') return `${prefix}已封鎖或取消加入`
+  return `${prefix}目前無法取得綁定資料`
+}
+
 type ProductionLineDelivery = {
   sent: boolean
   skipped?: boolean
@@ -494,12 +536,16 @@ function finitePaymentAmount(value: unknown) {
 function normalizeFulfillmentPaymentPrompt(value: unknown): FulfillmentPaymentPrompt | undefined {
   if (!value || typeof value !== 'object') return undefined
   const source = value as Record<string, unknown>
+  const paymentState = ['monthly', 'paid', 'unpaid', 'voided'].includes(String(source.paymentState))
+    ? source.paymentState as FulfillmentPaymentPrompt['paymentState']
+    : undefined
   const outstandingTotal = finitePaymentAmount(source.outstandingTotal ?? source.totalOutstanding)
   const currentOrderUnpaidAmount = finitePaymentAmount(
     source.currentOrderUnpaidAmount ?? source.currentSalesUnpaidAmount ?? source.defaultAmount
   )
   return {
     required: source.required === true && currentOrderUnpaidAmount > 0,
+    paymentState,
     customerId: typeof source.customerId === 'string' ? source.customerId : undefined,
     customerCode: typeof source.customerCode === 'string' ? source.customerCode : undefined,
     customerName: typeof source.customerName === 'string' ? source.customerName : undefined,
@@ -1026,6 +1072,7 @@ export default function CalendarPage() {
   const [showRepeatPicker, setShowRepeatPicker] = useState(false)
   const [showRepeatCustomModal, setShowRepeatCustomModal] = useState(false)
   const [dayListDate, setDayListDate] = useState<string | null>(null)
+  const [selectedDeliveryGroupKey, setSelectedDeliveryGroupKey] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [activeSearchDepartmentIds, setActiveSearchDepartmentIds] = useState<string[]>([])
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>(() => (
@@ -1193,13 +1240,21 @@ export default function CalendarPage() {
     return hrLeaveCalendar ? [...departmentList, hrLeaveCalendar] : departmentList
   }, [currentEmployeeDepartmentName, departmentCalendars, hrLeaveCalendar, isAdmin])
 
-  const visibleCalendarIds = visibleCalendars.map((calendar) => calendar.id)
-  const activeVisibleCalendarIds = activeCalendarIds.filter((id) => visibleCalendarIds.includes(id))
-  const selectedCalendarIds = calendarSelectionMode === 'all'
-    ? visibleCalendarIds
-    : calendarSelectionMode === 'none'
-      ? []
-      : activeVisibleCalendarIds
+  const visibleCalendarIds = useMemo(
+    () => visibleCalendars.map((calendar) => calendar.id),
+    [visibleCalendars]
+  )
+  const activeVisibleCalendarIds = useMemo(
+    () => activeCalendarIds.filter((id) => visibleCalendarIds.includes(id)),
+    [activeCalendarIds, visibleCalendarIds]
+  )
+  const selectedCalendarIds = useMemo(() => (
+    calendarSelectionMode === 'all'
+      ? visibleCalendarIds
+      : calendarSelectionMode === 'none'
+        ? []
+        : activeVisibleCalendarIds
+  ), [activeVisibleCalendarIds, calendarSelectionMode, visibleCalendarIds])
   const allCalendarsSelected = selectedCalendarIds.length === visibleCalendarIds.length
   const visibleCalendarMap = useMemo(() => new Map(visibleCalendars.map((calendar) => [calendar.id, calendar])), [visibleCalendars])
   const writableCalendars = visibleCalendars.filter((calendar) => calendar.systemKind !== 'hrLeave')
@@ -1279,6 +1334,28 @@ export default function CalendarPage() {
     map.forEach((list) => list.sort(compareDayEvents))
     return map
   }, [visibleEvents])
+
+  const displayItemsByDate = useMemo(() => {
+    const map = new Map<string, CalendarDayDisplayItem[]>()
+    eventsByDate.forEach((dayEvents, date) => {
+      map.set(date, groupCalendarDayEvents(dayEvents))
+    })
+    return map
+  }, [eventsByDate])
+
+  const deliveryGroupsByKey = useMemo(() => {
+    const map = new Map<string, CalendarDayDisplayItem>()
+    displayItemsByDate.forEach((items) => {
+      items.forEach((item) => {
+        if (item.isDeliveryGroup) map.set(item.key, item)
+      })
+    })
+    return map
+  }, [displayItemsByDate])
+
+  const selectedDeliveryGroup = selectedDeliveryGroupKey
+    ? deliveryGroupsByKey.get(selectedDeliveryGroupKey) ?? null
+    : null
 
   function canReceiveActivityLog(log: CalendarActivityLog) {
     const assigneeIds = log.assigneeIds ?? []
@@ -1560,6 +1637,34 @@ export default function CalendarPage() {
       document.removeEventListener('keydown', closeDayListWithEscape)
     }
   }, [dayListDate])
+
+  useEffect(() => {
+    if (!selectedDeliveryGroupKey) return
+    if (!selectedDeliveryGroup) {
+      setSelectedDeliveryGroupKey(null)
+      return
+    }
+
+    function closeDeliveryGroup(event: MouseEvent | TouchEvent) {
+      if (shouldKeepOverlayOpenForSystemGesture(event)) return
+      const target = event.target
+      if (target instanceof Element && target.closest('.delivery-group-panel')) return
+      setSelectedDeliveryGroupKey(null)
+    }
+
+    function closeDeliveryGroupWithEscape(event: KeyboardEvent) {
+      if (event.key === 'Escape') setSelectedDeliveryGroupKey(null)
+    }
+
+    document.addEventListener('mousedown', closeDeliveryGroup)
+    document.addEventListener('touchstart', closeDeliveryGroup)
+    document.addEventListener('keydown', closeDeliveryGroupWithEscape)
+    return () => {
+      document.removeEventListener('mousedown', closeDeliveryGroup)
+      document.removeEventListener('touchstart', closeDeliveryGroup)
+      document.removeEventListener('keydown', closeDeliveryGroupWithEscape)
+    }
+  }, [selectedDeliveryGroup, selectedDeliveryGroupKey])
 
   useEffect(() => {
     if (!showCalendarDrawer) return
@@ -2169,6 +2274,11 @@ export default function CalendarPage() {
     return Boolean(event.assigneeIds?.includes(employeeId) || eventBelongsToCurrentEmployeeDepartment(event))
   }
 
+  function canUploadDetailAttachment(event: CalendarEvent, status: ProductionLineStatus | null) {
+    if (canManageCalendarEvent(event)) return true
+    return canScanSalesOrder && isErpOrderFulfillmentEvent(event, status)
+  }
+
   function eventTitleOverrideAppliesToViewer(event: CalendarEvent) {
     const overrides = event.titleOverrides ?? []
     if (!overrides.length || !employeeId) return false
@@ -2577,22 +2687,31 @@ export default function CalendarPage() {
   const eventTitleIconOptions = eventDepartmentTitleIcons.length
     ? titleIconOptions.filter((item) => eventDepartmentTitleIcons.includes(item.icon))
     : titleIconOptions
-  const cachedEventArchive = useMemo(() => readLocalQueryCache<CalendarEvent[]>('calendarEventsArchive') ?? [], [events])
+  const titleSuggestionEnabled = showEventModal && showTitleSuggestions
+  const cachedEventArchive = useMemo(
+    () => titleSuggestionEnabled
+      ? readLocalQueryCache<CalendarEvent[]>('calendarEventsArchive') ?? []
+      : [],
+    [events, titleSuggestionEnabled]
+  )
   const titleSuggestionEvents = useMemo(() => {
+    if (!titleSuggestionEnabled) return []
     const map = new Map<string, CalendarEvent>()
     cachedEventArchive.forEach((event) => map.set(event.id, event))
     events.forEach((event) => map.set(event.id, event))
     return Array.from(map.values())
-  }, [cachedEventArchive, events])
+  }, [cachedEventArchive, events, titleSuggestionEnabled])
   const titleSuggestionIndex = useMemo(() => (
-    titleSuggestionEvents
+    titleSuggestionEnabled
+      ? titleSuggestionEvents
       .filter((event) => dayjs(event.date).isBefore(dayjs(eventForm.date).add(1, 'day'), 'day'))
       .sort((a, b) => `${b.date} ${b.startTime}`.localeCompare(`${a.date} ${a.startTime}`))
       .map((event) => ({
         event,
         normalizedTitle: normalizeSearchText(eventDisplayTitle(event), titleIconOptions)
       }))
-  ), [eventForm.date, employees, titleIconOptions, titleSuggestionEvents])
+      : []
+  ), [eventForm.date, employees, titleIconOptions, titleSuggestionEnabled, titleSuggestionEvents])
   const titleSuggestions = useMemo(() => {
     const query = normalizeSearchText(currentTitleText, titleIconOptions)
     if (query.length < 1) return []
@@ -2979,12 +3098,24 @@ export default function CalendarPage() {
   function openEventDetail(event: CalendarEvent, options: { preserveMonth?: boolean } = {}) {
     setDragActionMenu(null)
     setDayListDate(null)
+    setSelectedDeliveryGroupKey(null)
     setShowEventActionMenu(false)
     setSelectedDate(event.date)
     if (!options.preserveMonth && !dayjs(event.date).isSame(month, 'month')) {
       setMonth(dayjs(event.date).startOf('month'))
     }
     setSelectedEventId(event.id)
+    if (showNotificationsPanel) markActivityNotificationsSeen()
+    setShowNotificationsPanel(false)
+    setShowSearchPanel(false)
+  }
+
+  function openDeliveryGroup(item: CalendarDayDisplayItem) {
+    setDragActionMenu(null)
+    setShowEventActionMenu(false)
+    setSelectedEventId(null)
+    setSelectedDate(item.primaryEvent.date)
+    setSelectedDeliveryGroupKey(item.key)
     if (showNotificationsPanel) markActivityNotificationsSeen()
     setShowNotificationsPanel(false)
     setShowSearchPanel(false)
@@ -4167,7 +4298,7 @@ export default function CalendarPage() {
     const files = Array.from(event.target.files ?? [])
     event.target.value = ''
     if (!files.length || !selectedEvent) return
-    if (!canManageCalendarEvent(selectedEvent) || isHrReadonlyEvent(selectedEvent)) {
+    if (!canUploadDetailAttachment(selectedEvent, productionLineStatus) || isHrReadonlyEvent(selectedEvent)) {
       alert('沒有此事件的附件上傳權限')
       return
     }
@@ -5120,13 +5251,53 @@ export default function CalendarPage() {
     )
   }
 
+  function deliveryGroupDisplayTitle(item: CalendarDayDisplayItem) {
+    return deliveryGroupTitle(eventDisplayTitle(item.primaryEvent), item.events.length)
+  }
+
+  function deliveryGroupProgressText(item: CalendarDayDisplayItem) {
+    const completedCount = deliveryGroupCompletedCount(item.events)
+    return completedCount > 0 ? `已完成 ${completedCount}/${item.events.length}` : `${item.events.length} 筆訂單`
+  }
+
+  function renderDayDisplayItem(item: CalendarDayDisplayItem) {
+    const event = item.primaryEvent
+    if (!item.isDeliveryGroup) {
+      return renderEventSummary(event, { enableTouchDrag: true })
+    }
+    return (
+      <button
+        className="day-list-event delivery-group-summary"
+        key={item.key}
+        style={{ '--event-color': eventCalendarColor(event) } as CSSProperties}
+        onClick={() => openDeliveryGroup(item)}
+      >
+        <span className="day-list-time">
+          {event.allDay ? (
+            <b>全天</b>
+          ) : (
+            <>
+              <b>{event.startTime}</b>
+              <small>{event.endTime}</small>
+            </>
+          )}
+        </span>
+        <span className="day-list-content">
+          <strong>{deliveryGroupDisplayTitle(item)}</strong>
+          <small>{event.location} · {deliveryGroupProgressText(item)}</small>
+        </span>
+        <span className="delivery-group-count" aria-label={`${item.events.length}筆訂單`}>{item.events.length}</span>
+      </button>
+    )
+  }
+
   function renderMonthGridDays(days: dayjs.Dayjs[], displayMonth: dayjs.Dayjs, activeMonth: boolean) {
     return days.map((day) => {
       const date = day.format('YYYY-MM-DD')
-      const dayEvents = eventsByDate.get(date) ?? []
-      const visibleDayEventCount = dayEvents.length > monthDayEventRowLimit ? monthDayEventRowLimit - 1 : monthDayEventRowLimit
-      const visibleDayEvents = dayEvents.slice(0, visibleDayEventCount)
-      const hiddenDayEventCount = dayEvents.length - visibleDayEventCount
+      const dayItems = displayItemsByDate.get(date) ?? []
+      const visibleDayEventCount = dayItems.length > monthDayEventRowLimit ? monthDayEventRowLimit - 1 : monthDayEventRowLimit
+      const visibleDayItems = dayItems.slice(0, visibleDayEventCount)
+      const hiddenDayEventCount = dayItems.length - visibleDayEventCount
       const selected = selectedDate === date
       const today = dayjs().format('YYYY-MM-DD') === date
       return (
@@ -5147,13 +5318,15 @@ export default function CalendarPage() {
         >
           <span className={`day-number ${today ? 'today' : ''}`}>{day.date()}</span>
           <span className="day-events">
-            {visibleDayEvents.map((event) => (
+            {visibleDayItems.map((item) => {
+              const event = item.primaryEvent
+              return (
               <button
-                className={`event-pill ${event.allDay ? 'all-day' : 'timed'} ${selectedEventId === event.id ? 'active' : ''}`}
+                className={`event-pill ${event.allDay ? 'all-day' : 'timed'} ${selectedEventId === event.id || selectedDeliveryGroupKey === item.key ? 'active' : ''}`}
                 style={{ '--event-color': eventCalendarColor(event) } as CSSProperties}
-                key={event.id}
-                draggable={activeMonth && !isTouchDevice && !shouldUseMobileEventListFlow() && eventDragAllowed(event)}
-                onDragStart={(dragEvent) => activeMonth && startNativeEventDrag(dragEvent, event)}
+                key={item.key}
+                draggable={activeMonth && !item.isDeliveryGroup && !isTouchDevice && !shouldUseMobileEventListFlow() && eventDragAllowed(event)}
+                onDragStart={(dragEvent) => activeMonth && !item.isDeliveryGroup && startNativeEventDrag(dragEvent, event)}
                 onDragEnd={clearEventDragState}
                 onTouchStart={() => {
                   if (activeMonth) lastEventPointerTypeRef.current = 'touch'
@@ -5161,7 +5334,7 @@ export default function CalendarPage() {
                 onPointerDown={(pointerEvent) => {
                   if (!activeMonth) return
                   lastEventPointerTypeRef.current = pointerEvent.pointerType
-                  if (isTouchDragPointer(pointerEvent)) {
+                  if (item.isDeliveryGroup || isTouchDragPointer(pointerEvent)) {
                     return
                   }
                   beginPointerEventDrag(pointerEvent, event)
@@ -5180,14 +5353,19 @@ export default function CalendarPage() {
                     return
                   }
                   lastEventPointerTypeRef.current = ''
-                  openEventDetail(event, { preserveMonth: day.month() !== displayMonth.month() })
+                  if (item.isDeliveryGroup) {
+                    openDeliveryGroup(item)
+                  } else {
+                    openEventDetail(event, { preserveMonth: day.month() !== displayMonth.month() })
+                  }
                 }}
                 tabIndex={activeMonth ? 0 : -1}
               >
-                <span>{eventDisplayTitle(event)}</span>
+                <span>{item.isDeliveryGroup ? deliveryGroupDisplayTitle(item) : eventDisplayTitle(event)}</span>
                 {!event.allDay && <small>{eventTimeForCalendarDate(event, date)}</small>}
               </button>
-            ))}
+              )
+            })}
             {hiddenDayEventCount > 0 && (
               <span
                 className="more-pill"
@@ -5219,7 +5397,7 @@ export default function CalendarPage() {
   function renderWeekGridDays(days: dayjs.Dayjs[], activeWeek: boolean) {
     return days.map((day) => {
       const date = day.format('YYYY-MM-DD')
-      const dayEvents = eventsByDate.get(date) ?? []
+      const dayItems = displayItemsByDate.get(date) ?? []
       const selected = activeWeek && selectedDate === date
       const today = dayjs().format('YYYY-MM-DD') === date
       return (
@@ -5245,13 +5423,15 @@ export default function CalendarPage() {
           <span className={`week-date ${today ? 'today' : ''}`}>{day.format('M/D')}</span>
           <strong>星期{WEEKDAYS[day.day()]}</strong>
           <span className="week-events">
-            {dayEvents.length === 0 ? <small>沒有工作</small> : dayEvents.map((event) => (
+            {dayItems.length === 0 ? <small>沒有工作</small> : dayItems.map((item) => {
+              const event = item.primaryEvent
+              return (
               <button
-                className={`week-event ${event.allDay ? 'all-day' : 'timed'} ${event.done ? 'done' : ''} ${selectedEventId === event.id ? 'active' : ''}`}
+                className={`week-event ${event.allDay ? 'all-day' : 'timed'} ${event.done ? 'done' : ''} ${selectedEventId === event.id || selectedDeliveryGroupKey === item.key ? 'active' : ''}`}
                 style={{ '--event-color': eventCalendarColor(event) } as CSSProperties}
-                key={event.id}
-                draggable={activeWeek && !isTouchDevice && !shouldUseMobileEventListFlow() && eventDragAllowed(event)}
-                onDragStart={(dragEvent) => activeWeek && startNativeEventDrag(dragEvent, event)}
+                key={item.key}
+                draggable={activeWeek && !item.isDeliveryGroup && !isTouchDevice && !shouldUseMobileEventListFlow() && eventDragAllowed(event)}
+                onDragStart={(dragEvent) => activeWeek && !item.isDeliveryGroup && startNativeEventDrag(dragEvent, event)}
                 onDragEnd={clearEventDragState}
                 onTouchStart={() => {
                   if (activeWeek) lastEventPointerTypeRef.current = 'touch'
@@ -5259,6 +5439,7 @@ export default function CalendarPage() {
                 onPointerDown={(pointerEvent) => {
                   if (!activeWeek) return
                   lastEventPointerTypeRef.current = pointerEvent.pointerType
+                  if (item.isDeliveryGroup) return
                   if (isTouchDragPointer(pointerEvent)) {
                     beginDayListTouchDrag(pointerEvent, event)
                     return
@@ -5279,15 +5460,20 @@ export default function CalendarPage() {
                     return
                   }
                   lastEventPointerTypeRef.current = ''
-                  openEventDetail(event)
+                  if (item.isDeliveryGroup) {
+                    openDeliveryGroup(item)
+                  } else {
+                    openEventDetail(event)
+                  }
                 }}
                 tabIndex={activeWeek ? 0 : -1}
               >
                 <i />
                 <span>{event.allDay ? '整天' : event.startTime}</span>
-                <b>{eventDisplayTitle(event)}</b>
+                <b>{item.isDeliveryGroup ? deliveryGroupDisplayTitle(item) : eventDisplayTitle(event)}</b>
               </button>
-            ))}
+              )
+            })}
           </span>
         </button>
       )
@@ -5363,6 +5549,7 @@ export default function CalendarPage() {
     const locationText = selectedEvent.location?.trim()
     const canManageEvent = canManageCalendarEvent(selectedEvent)
     const orderFulfillmentEvent = isErpOrderFulfillmentEvent(selectedEvent, productionLineStatus)
+    const canUploadAttachment = canUploadDetailAttachment(selectedEvent, productionLineStatus)
     const visibilityTitleRows = eventDetailVisibilityTitleRows(selectedEvent)
     return (
       <aside
@@ -5379,7 +5566,7 @@ export default function CalendarPage() {
         <div className="event-detail-header">
           <strong>事件詳情</strong>
           <div>
-            {canManageEvent && selectedEvent.source === 'erpSalesDelivery' && (
+            {canUploadAttachment && selectedEvent.source === 'erpSalesDelivery' && (
               <>
                 <button
                   type="button"
@@ -5493,13 +5680,9 @@ export default function CalendarPage() {
                       ? `官方 LINE：${productionLineStatusError}`
                       : productionLineStatusLoading
                         ? '官方 LINE：正在確認綁定狀態...'
-                        : productionLineStatus?.bound
-                          ? `官方 LINE：已綁定（${productionLineStatus.customerCode} ${productionLineStatus.lineDisplayName || productionLineStatus.customerName}）`
-                          : productionLineStatus?.reason === 'customer_not_bound'
-                            ? `官方 LINE：尚未綁定（${productionLineStatus.customerCode} ${productionLineStatus.customerName}）`
-                            : productionLineStatus?.reason === 'contact_inactive'
-                              ? '官方 LINE：已封鎖或取消加入'
-                              : '官方 LINE：目前無法取得綁定資料'}
+                        : productionLineStatus
+                          ? productionLineBindingDescription(productionLineStatus)
+                          : '官方 LINE：目前無法取得綁定資料'}
                   </small>
                   <small>上傳照片後會同步完成訂單、客戶附件與 LINE 通知。</small>
                 </div>
@@ -5515,13 +5698,9 @@ export default function CalendarPage() {
                   <small className={productionLineStatusError ? 'error' : undefined}>
                     {productionLineStatusError || (productionLineStatusLoading
                       ? '正在確認客戶綁定...'
-                      : productionLineStatus?.bound
-                        ? `收件人：${productionLineStatus.customerCode} ${productionLineStatus.lineDisplayName || productionLineStatus.customerName}`
-                        : productionLineStatus?.reason === 'customer_not_bound'
-                          ? `${productionLineStatus.customerCode} ${productionLineStatus.customerName} 尚未綁定 LINE`
-                          : productionLineStatus?.reason === 'contact_inactive'
-                            ? '客戶已封鎖或取消加入官方帳號'
-                            : '目前無法取得客戶 LINE 綁定資料')}
+                      : productionLineStatus
+                        ? productionLineBindingDescription(productionLineStatus, false)
+                        : '目前無法取得客戶 LINE 綁定資料')}
                   </small>
                 </span>
               </label>}
@@ -5842,6 +6021,7 @@ export default function CalendarPage() {
   function renderDayListPanel() {
     if (!dayListDate) return null
     const dayEvents = eventsByDate.get(dayListDate) ?? []
+    const dayItems = displayItemsByDate.get(dayListDate) ?? []
     return (
       <aside
         className={`tt-floating-panel tt-day-list-panel${dayListSwipeOffset > 0 ? ' swiping' : ''}`}
@@ -5857,12 +6037,54 @@ export default function CalendarPage() {
         </div>
         <p className="panel-hint">共 {dayEvents.length} 筆</p>
         <div className="panel-list">
-          {dayEvents.map((event) => renderEventSummary(event, { enableTouchDrag: true }))}
+          {dayItems.map(renderDayDisplayItem)}
           {dayEvents.length === 0 && <p className="panel-empty">這天沒有事件</p>}
         </div>
         {canCreateEvent && (
           <button className="day-list-add-btn" onClick={() => openAddEvent(dayListDate)}>新增這天事件</button>
         )}
+      </aside>
+    )
+  }
+
+  function renderDeliveryGroupPanel() {
+    if (!selectedDeliveryGroup) return null
+    const primaryEvent = selectedDeliveryGroup.primaryEvent
+    const completedCount = deliveryGroupCompletedCount(selectedDeliveryGroup.events)
+    const timeText = primaryEvent.allDay
+      ? '全天'
+      : `${primaryEvent.startTime}–${primaryEvent.endTime}`
+    return (
+      <aside
+        className="tt-floating-panel tt-day-list-panel delivery-group-panel"
+        style={{ '--event-color': eventCalendarColor(primaryEvent) } as CSSProperties}
+      >
+        <div className="panel-head">
+          <h2>{deliveryGroupDisplayTitle(selectedDeliveryGroup)}</h2>
+          <button onClick={() => setSelectedDeliveryGroupKey(null)} aria-label="關閉配送訂單">×</button>
+        </div>
+        <div className="delivery-group-meta">
+          <span>{formatChineseDate(primaryEvent.date)} · {timeText}</span>
+          <span>{primaryEvent.location}</span>
+          <strong>{completedCount > 0 ? `已完成 ${completedCount}/${selectedDeliveryGroup.events.length}` : '尚未完成'}</strong>
+        </div>
+        <div className="panel-list delivery-group-orders">
+          {selectedDeliveryGroup.events.map((event, index) => (
+            <button
+              type="button"
+              className={`delivery-group-order ${event.done || deliveryGroupCompletedCount([event]) > 0 ? 'done' : ''}`}
+              key={event.id}
+              onClick={() => openEventDetail(event)}
+            >
+              <span className="delivery-group-order-index">{index + 1}</span>
+              <span className="delivery-group-order-content">
+                <strong>{event.sourceSalesNo || `訂單 ${index + 1}`}</strong>
+                <small>{eventListSecondaryText(event) || '無訂單備註'}</small>
+              </span>
+              <span className="delivery-group-order-status">{event.orderStatus || (event.done ? '已完成' : '未設定')}</span>
+            </button>
+          ))}
+        </div>
       </aside>
     )
   }
@@ -5982,7 +6204,7 @@ export default function CalendarPage() {
                 </small>
               </> : <>
                 <span>本張銷貨單</span>
-                <strong>已付清</strong>
+                <strong>{(fulfillmentPaymentModal.paymentState ?? productionLineStatus?.paymentState) === 'monthly' ? '月結客戶' : '已付清'}</strong>
                 <small>
                   本單未付 $0
                   {fulfillmentPaymentModal.outstandingTotal > 0
@@ -6049,9 +6271,10 @@ export default function CalendarPage() {
             <strong title={attachmentName}>{attachmentName}</strong>
             <button type="button" onClick={() => setEnlargedEventAttachment(null)} aria-label="關閉圖片預覽">×</button>
           </div>
-          <div className="event-attachment-lightbox-body">
-            <img src={attachmentFullImageUrl(enlargedEventAttachment)} alt={attachmentName} referrerPolicy="no-referrer" />
-          </div>
+          <ZoomableAttachmentImage
+            src={attachmentFullImageUrl(enlargedEventAttachment)}
+            alt={attachmentName}
+          />
         </div>
       </div>
     )
@@ -6603,6 +6826,7 @@ export default function CalendarPage() {
       {renderNotificationSettingsModal()}
       {renderTitleIconSettingsModal()}
       {renderDayListPanel()}
+      {renderDeliveryGroupPanel()}
       {renderEventDetailPanel()}
       {renderFulfillmentPaymentPrompt()}
       {renderEventAttachmentLightbox()}
