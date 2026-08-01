@@ -1,5 +1,5 @@
 import fs from 'node:fs'
-import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
+import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
 import admin from 'firebase-admin'
@@ -66,6 +66,8 @@ function stringList(value) {
 }
 
 async function verifyAppCheck(req) {
+  // 本機 Vite API 仍會驗證 Firebase 登入與員工權限，但不依賴 iOS WebView 不穩定的 App Check。
+  if (process.env.CALENDAR_LOCAL_API === '1') return
   const token = text(req.headers['x-firebase-appcheck'])
   if (!token) throw requestError('缺少網站安全驗證', 401)
   try {
@@ -414,6 +416,191 @@ export function parseUploadPhotoMetadata(metadata = {}) {
 
 function isImage(file) {
   return Boolean(file.mimetype?.startsWith('image/')) && file.mimetype !== 'image/svg+xml'
+}
+
+const MAX_BACKGROUND_IMAGE_BYTES = 50 * 1024 * 1024
+const BACKGROUND_COMPLETION_MODES = new Set(['fulfillment', 'production', 'none'])
+
+export function parseAttachmentUploadJobRequest(body = {}) {
+  const eventId = text(body.eventId)
+  const name = text(body.originalName)
+  const type = text(body.contentType).toLowerCase()
+  const size = Number(body.originalSize)
+  const completionMode = text(body.completionMode)
+  const clientUploadId = text(body.clientUploadId)
+  if (!eventId || eventId.includes('/') || eventId.length > 200) throw requestError('附件事件識別碼不正確', 400)
+  if (!name || name.length > 500) throw requestError('照片檔名不正確', 400)
+  if (!type.startsWith('image/') || type === 'image/svg+xml') throw requestError('外送／施工完成只能上傳照片', 400)
+  if (!Number.isSafeInteger(size) || size <= 0 || size > MAX_BACKGROUND_IMAGE_BYTES) {
+    throw requestError('照片不可超過 50 MB', 400)
+  }
+  if (!BACKGROUND_COMPLETION_MODES.has(completionMode)) throw requestError('照片完成模式不正確', 400)
+  if (clientUploadId && !/^[A-Za-z0-9-]{8,120}$/.test(clientUploadId)) {
+    throw requestError('照片佇列識別碼不正確', 400)
+  }
+  const capture = parseUploadPhotoMetadata({
+    capturedAt: body.capture?.capturedAt,
+    capturedAtSource: body.capture?.capturedAtSource,
+    location: body.capture?.location ? JSON.stringify(body.capture.location) : ''
+  })
+  return { eventId, name, type, size, completionMode, capture, clientUploadId }
+}
+
+export function attachmentUploadJobDocumentId(uploaderUid, clientUploadId) {
+  return `calendar-${createHash('sha256').update(`${text(uploaderUid)}\0${text(clientUploadId)}`).digest('hex').slice(0, 48)}`
+}
+
+export function attachmentFromUploadJob(jobId, job) {
+  const image = job?.result?.image && typeof job.result.image === 'object' ? job.result.image : {}
+  const thumbnail = job?.result?.thumbnail && typeof job.result.thumbnail === 'object' ? job.result.thumbnail : {}
+  const fileId = text(image.path)
+  if (!fileId) throw requestError('背景照片處理結果不完整', 409)
+  const original = job?.original && typeof job.original === 'object' ? job.original : {}
+  const originalName = text(original.name) || text(image.name) || '照片'
+  return {
+    name: text(image.name) || webpName(originalName),
+    url: text(image.url) || `https://drive.google.com/file/d/${fileId}/view`,
+    path: fileId,
+    type: text(image.type) || 'image/webp',
+    size: Number(image.size) || 0,
+    provider: 'google-drive',
+    originalName,
+    originalSize: Number(original.size) || 0,
+    optimized: true,
+    ...(text(thumbnail.path) ? { thumbnailPath: text(thumbnail.path) } : {}),
+    ...(text(image.uploadedAt) ? { uploadedAt: text(image.uploadedAt) } : {}),
+    ...(text(job?.capture?.capturedAt) ? { capturedAt: text(job.capture.capturedAt) } : {}),
+    ...(text(job?.capture?.capturedAtSource) ? { capturedAtSource: text(job.capture.capturedAtSource) } : {}),
+    ...(job?.capture?.location && typeof job.capture.location === 'object' ? { location: job.capture.location } : {}),
+    ...lineImageUrls(fileId),
+    uploadJobId: jobId
+  }
+}
+
+export function mergeProductionLineRetryAttachmentIds(previousRetry, completionMode, attachmentPath) {
+  const existing = previousRetry?.mode === completionMode && Array.isArray(previousRetry.attachmentIds)
+    ? previousRetry.attachmentIds.map(text).filter(Boolean)
+    : []
+  return Array.from(new Set([...existing, text(attachmentPath)].filter(Boolean)))
+}
+
+async function createAttachmentUploadJob(db, actor, body) {
+  const request = parseAttachmentUploadJobRequest(body)
+  await authorizeUpload(db, actor, { eventId: request.eventId, uploadKind: 'event' })
+  const jobRef = request.clientUploadId
+    ? db.collection('attachmentUploadJobs').doc(attachmentUploadJobDocumentId(actor.uid, request.clientUploadId))
+    : db.collection('attachmentUploadJobs').doc()
+  const stagingPath = `attachment-staging/${actor.uid}/${jobRef.id}/original`
+  await db.runTransaction(async (transaction) => {
+    const existingSnapshot = await transaction.get(jobRef)
+    if (existingSnapshot.exists) {
+      const existing = existingSnapshot.data() || {}
+      if (
+        text(existing.uploaderUid) !== actor.uid
+        || text(existing.clientUploadId) !== request.clientUploadId
+        || text(existing.target?.eventId) !== request.eventId
+        || text(existing.target?.completionMode) !== request.completionMode
+        || text(existing.original?.name) !== request.name
+        || Number(existing.original?.size) !== request.size
+        || text(existing.original?.type) !== request.type
+      ) throw requestError('照片背景工作識別碼衝突', 409)
+      return
+    }
+    transaction.create(jobRef, {
+      status: 'created',
+      uploaderUid: actor.uid,
+      uploaderEmployeeId: actor.employeeId,
+      ...(request.clientUploadId ? { clientUploadId: request.clientUploadId } : {}),
+      stagingPath,
+      original: {
+        name: request.name,
+        size: request.size,
+        type: request.type
+      },
+      capture: request.capture,
+      metadata: {
+        source: 'calendar',
+        jobId: jobRef.id,
+        ...(request.clientUploadId ? { clientUploadId: request.clientUploadId } : {})
+      },
+      target: {
+        kind: 'calendar-event',
+        eventId: request.eventId,
+        uploadKind: 'event',
+        completionMode: request.completionMode
+      },
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    })
+  })
+  return { ok: true, jobId: jobRef.id, stagingPath }
+}
+
+async function finalizeAttachmentUploadJob(db, actor, body) {
+  const jobId = text(body.jobId)
+  if (!jobId || jobId.includes('/') || jobId.length > 200) throw requestError('背景工作識別碼不正確', 400)
+  const jobRef = db.collection('attachmentUploadJobs').doc(jobId)
+  return db.runTransaction(async (transaction) => {
+    const jobSnapshot = await transaction.get(jobRef)
+    if (!jobSnapshot.exists) throw requestError('找不到背景照片工作', 404)
+    const job = jobSnapshot.data() || {}
+    if (text(job.uploaderUid) !== actor.uid) throw requestError('沒有此背景照片工作的權限', 403)
+    if (text(job.status) === 'committed') {
+      const attachment = job.attachment && typeof job.attachment === 'object'
+        ? job.attachment
+        : attachmentFromUploadJob(jobId, job)
+      return { ok: true, attachment, committed: true, completionMode: text(job.target?.completionMode) || 'none' }
+    }
+    if (text(job.status) !== 'ready') throw requestError('照片仍在背景處理中', 409)
+    if (text(job.target?.kind) !== 'calendar-event' || text(job.target?.uploadKind) !== 'event') {
+      throw requestError('背景照片目標不正確', 409)
+    }
+    const eventId = text(job.target?.eventId)
+    const eventRef = db.collection('calendarEvents').doc(eventId)
+    const eventSnapshot = await transaction.get(eventRef)
+    if (!eventSnapshot.exists) throw requestError('找不到附件對應的行事曆事件', 404)
+    const event = { id: eventSnapshot.id, ...eventSnapshot.data() }
+    if (
+      !await canManageEvent(db, actor, event, eventId)
+      && !await canOperateErpOrderFulfillment(db, actor, event)
+    ) throw requestError('沒有此事件的附件上傳權限', 403)
+
+    const attachment = attachmentFromUploadJob(jobId, job)
+    const existingAttachments = Array.isArray(event.attachments) ? event.attachments : []
+    const alreadyAttached = existingAttachments.some((item) => text(item?.uploadJobId) === jobId)
+    const completionMode = BACKGROUND_COMPLETION_MODES.has(text(job.target?.completionMode))
+      ? text(job.target.completionMode)
+      : 'none'
+    const now = new Date().toISOString()
+    const update = {
+      attachments: alreadyAttached ? existingAttachments : [...existingAttachments, attachment],
+      updatedAt: now
+    }
+    if (completionMode === 'fulfillment' || completionMode === 'production') {
+      const previousRetry = event.productionLineRetry && typeof event.productionLineRetry === 'object'
+        ? event.productionLineRetry
+        : null
+      // 交易衝突重試後會重新讀取事件，確保多張並行 finalize 不會彼此覆蓋。
+      const attachmentIds = mergeProductionLineRetryAttachmentIds(previousRetry, completionMode, attachment.path)
+      update.productionLineRetry = {
+        mode: completionMode,
+        attachmentIds,
+        status: 'pending',
+        message: completionMode === 'fulfillment'
+          ? '照片已保留，訂單完成尚待確認。'
+          : '照片已保留，LINE 傳送尚待確認。',
+        updatedAt: now
+      }
+    }
+    transaction.update(eventRef, update)
+    transaction.update(jobRef, {
+      status: 'committed',
+      attachment,
+      committedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    })
+    return { ok: true, attachment, committed: true, completionMode }
+  })
 }
 
 function webpName(filename) {
@@ -790,6 +977,14 @@ export default async function handler(req, res) {
 
     if (req.headers['content-type']?.includes('application/json')) {
       const body = await parseJsonBody(req)
+      if (body.action === 'create-attachment-upload-job') {
+        res.status(201).json(await createAttachmentUploadJob(db, actor, body))
+        return
+      }
+      if (body.action === 'finalize-attachment-upload-job') {
+        res.status(200).json(await finalizeAttachmentUploadJob(db, actor, body))
+        return
+      }
       if (body.action === 'sales-attachments') {
         res.setHeader('Cache-Control', 'private, no-store')
         res.status(200).json(await salesAttachmentCenterResponse(db, actor, body))
@@ -821,6 +1016,10 @@ export default async function handler(req, res) {
     const drive = google.drive({ version: 'v3', auth })
     const folderId = process.env.GOOGLE_DRIVE_CALENDAR_FOLDER_ID || DEFAULT_DRIVE_FOLDER_ID
     const uploadContext = await authorizeUpload(db, actor, fields)
+    const clientUploadId = fieldText(fields.clientUploadId)
+    if (clientUploadId && !/^[A-Za-z0-9-]{8,120}$/.test(clientUploadId)) {
+      throw requestError('照片佇列識別碼不正確', 400)
+    }
 
     const attachments = []
     for (const file of uploadFiles) {
@@ -831,43 +1030,60 @@ export default async function handler(req, res) {
         capturedAtSource: fields.capturedAtSource,
         location: fields.location
       })
-      const created = await drive.files.create({
-        requestBody: {
-          name: prepared.name,
-          mimeType: prepared.mimeType,
-          parents: [folderId],
-          appProperties: {
-            calendarUploadKind: uploadContext.uploadKind,
-            calendarUploaderUid: actor.uid,
-            calendarEventId: uploadContext.eventId,
-            ...(uploadContext.commentId ? { calendarCommentId: uploadContext.commentId } : {})
-          }
-        },
-        media: {
-          mimeType: prepared.mimeType,
-          body: fs.createReadStream(prepared.filepath)
-        },
-        fields: 'id,name,mimeType,size,createdTime,webViewLink,webContentLink'
-      })
-
-      try {
-        await drive.permissions.create({
-          fileId: created.data.id,
-          requestBody: {
-            type: 'anyone',
-            role: 'reader'
-          }
+      let driveFile = null
+      if (clientUploadId) {
+        const existing = await drive.files.list({
+          q: `'${folderId}' in parents and trashed = false and appProperties has { key='calendarClientUploadId' and value='${clientUploadId}' }`,
+          spaces: 'drive',
+          pageSize: 10,
+          fields: 'files(id,name,mimeType,size,createdTime,webViewLink,webContentLink,appProperties)'
         })
-      } catch {
-        // 若雲端硬碟政策不允許公開連結，仍保留檔案的 Drive 連結。
+        driveFile = existing.data.files?.find((item) => (
+          text(item.appProperties?.calendarUploaderUid) === actor.uid
+          && text(item.appProperties?.calendarEventId) === uploadContext.eventId
+        )) || null
+      }
+      if (!driveFile) {
+        const created = await drive.files.create({
+          requestBody: {
+            name: prepared.name,
+            mimeType: prepared.mimeType,
+            parents: [folderId],
+            appProperties: {
+              calendarUploadKind: uploadContext.uploadKind,
+              calendarUploaderUid: actor.uid,
+              calendarEventId: uploadContext.eventId,
+              ...(clientUploadId ? { calendarClientUploadId: clientUploadId } : {}),
+              ...(uploadContext.commentId ? { calendarCommentId: uploadContext.commentId } : {})
+            }
+          },
+          media: {
+            mimeType: prepared.mimeType,
+            body: fs.createReadStream(prepared.filepath)
+          },
+          fields: 'id,name,mimeType,size,createdTime,webViewLink,webContentLink'
+        })
+        driveFile = created.data
+
+        try {
+          await drive.permissions.create({
+            fileId: driveFile.id,
+            requestBody: {
+              type: 'anyone',
+              role: 'reader'
+            }
+          })
+        } catch {
+          // 若雲端硬碟政策不允許公開連結，仍保留檔案的 Drive 連結。
+        }
       }
 
       attachments.push({
-        name: created.data.name || prepared.name,
-        url: created.data.webViewLink || `https://drive.google.com/file/d/${created.data.id}/view`,
-        path: created.data.id || '',
-        type: created.data.mimeType || prepared.mimeType,
-        size: created.data.size ? Number(created.data.size) : prepared.size,
+        name: driveFile.name || prepared.name,
+        url: driveFile.webViewLink || `https://drive.google.com/file/d/${driveFile.id}/view`,
+        path: driveFile.id || '',
+        type: driveFile.mimeType || prepared.mimeType,
+        size: driveFile.size ? Number(driveFile.size) : prepared.size,
         provider: 'google-drive',
         originalName: prepared.originalName,
         originalSize: prepared.originalSize,
@@ -875,8 +1091,8 @@ export default async function handler(req, res) {
         ...(prepared.capturedAt ? { capturedAt: prepared.capturedAt } : {}),
         ...(prepared.capturedAtSource ? { capturedAtSource: prepared.capturedAtSource } : {}),
         ...(prepared.location ? { location: prepared.location } : {}),
-        ...(text(created.data.createdTime) ? { uploadedAt: text(created.data.createdTime) } : {}),
-        ...(prepared.optimized && created.data.id ? lineImageUrls(created.data.id) : {})
+        ...(text(driveFile.createdTime) ? { uploadedAt: text(driveFile.createdTime) } : {}),
+        ...(prepared.optimized && driveFile.id ? lineImageUrls(driveFile.id) : {})
       })
 
       if (prepared.optimized) {

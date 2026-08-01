@@ -88,6 +88,32 @@ textarea {
   background: transparent;
 }
 
+.durable-upload-banner {
+  position: fixed;
+  z-index: 120;
+  left: 50%;
+  bottom: 18px;
+  width: min(680px, calc(100vw - 32px));
+  min-height: 44px;
+  transform: translateX(-50%);
+  display: grid;
+  place-items: center;
+  padding: 10px 14px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  background: #fff7df;
+  color: #744b00;
+  font-size: 13px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.durable-upload-banner.safe {
+  background: #eaf8ef;
+  color: #176936;
+}
+
 .topbar-left,
 .topbar-right,
 .tt-stepper,
@@ -2466,6 +2492,21 @@ html.calendar-event-touch-dragging ::selection {
   gap: 8px;
 }
 
+.event-detail-attachment-loading {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.event-detail-attachment-loading span {
+  aspect-ratio: 4 / 3;
+  border: 1px solid #e3e0da;
+  border-radius: 6px;
+  background: linear-gradient(90deg, #f0ede7 25%, #faf8f4 37%, #f0ede7 63%);
+  background-size: 400% 100%;
+  animation: shimmer 1.2s ease-in-out infinite;
+}
+
 .event-detail-attachment-error {
   min-height: 48px;
   display: flex;
@@ -2568,6 +2609,23 @@ html.calendar-event-touch-dragging ::selection {
   white-space: nowrap;
 }
 
+.event-attachment-lightbox-title {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.event-attachment-lightbox-title strong {
+  min-width: 0;
+}
+
+.event-attachment-lightbox-title span {
+  flex: 0 0 auto;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 12px;
+}
+
 .event-attachment-lightbox-header button {
   width: 48px;
   min-height: 48px;
@@ -2596,15 +2654,25 @@ html.calendar-event-touch-dragging ::selection {
 }
 
 .event-attachment-lightbox-body img {
-  width: auto;
-  height: auto;
-  max-width: min(1440px, calc(100vw - 48px));
-  max-height: min(860px, calc(100dvh - 112px - env(safe-area-inset-top) - env(safe-area-inset-bottom)));
+  position: absolute;
+  top: 8px;
+  left: 8px;
   display: block;
+  width: calc(100% - 16px);
+  height: calc(100% - 16px - env(safe-area-inset-bottom));
+  max-width: none;
+  max-height: none;
   object-fit: contain;
   transform-origin: center;
   will-change: transform;
   -webkit-user-drag: none;
+  transition: transform 180ms ease-out, opacity 180ms ease-out;
+}
+
+.event-attachment-lightbox-body.zoomed img,
+.event-attachment-lightbox-body.is-dismissing img,
+.event-attachment-lightbox-body.is-changing img {
+  transition: none;
 }
 
 .event-attachment-zoom-hint {
@@ -2628,13 +2696,6 @@ html.calendar-event-touch-dragging ::selection {
 
 .event-attachment-lightbox-body.zoomed .event-attachment-zoom-hint {
   opacity: 0;
-}
-
-@media (max-width: 720px) {
-  .event-attachment-lightbox-body img {
-    max-width: calc(100vw - 24px);
-    max-height: calc(100dvh - 96px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
-  }
 }
 
 .event-comment-thread {
@@ -2811,8 +2872,11 @@ html.calendar-event-touch-dragging ::selection {
   min-width: 0;
   display: block;
   overflow: hidden;
+  border: 0;
   border-radius: 8px;
+  padding: 0;
   background: #f3f3f3;
+  cursor: pointer;
 }
 
 .event-comment-image:only-child {
@@ -4619,6 +4683,11 @@ p {
   :root {
     --mobile-panel-top: 96px;
     --mobile-panel-bottom: calc(28px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .durable-upload-banner {
+    bottom: calc(76px + env(safe-area-inset-bottom, 0px));
+    width: calc(100vw - 24px);
   }
 
   input,

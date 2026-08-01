@@ -116,7 +116,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setEmployeeDepartmentId('')
         setEmployeeDepartmentName('')
         setDisplayName('')
-        clearCachedAuthProfile()
         setLoading(false)
         return
       }
@@ -188,26 +187,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setEmployeeDepartmentId(nextDepartmentId)
         setEmployeeDepartmentName(nextDepartmentName)
         setDisplayName(nextDisplayName)
-        try {
-          const accessSnap = await getDoc(doc(db, 'erp_access', nextUser.uid))
-          const accessData = accessSnap.exists() ? accessSnap.data() as Record<string, unknown> : null
-          setCanOpenSalesForm(
-            erpAccessCanAccess(accessData, nextUser.uid, nextEmployeeId, empData.empNo)
-            && canOpenSalesFormFromAccess(accessData),
-          )
-          setCanScanSalesOrder(
-            erpAccessCanAccess(accessData, nextUser.uid, nextEmployeeId, empData.empNo)
-            && canScanSalesOrderFromAccess(accessData),
-          )
-          setCanViewSalesAttachments(
-            erpAccessCanAccess(accessData, nextUser.uid, nextEmployeeId, empData.empNo)
-            && canViewSalesAttachmentsFromAccess(accessData),
-          )
-        } catch {
-          setCanOpenSalesForm(false)
-          setCanScanSalesOrder(false)
-          setCanViewSalesAttachments(false)
-        }
         writeCachedAuthProfile({
           uid: nextUser.uid,
           role: roleData.role,
@@ -216,6 +195,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           employeeDepartmentName: nextDepartmentName,
           displayName: nextDisplayName
         })
+        setLoading(false)
       } catch {
         if (!cachedProfile) {
           setRole('unknown')

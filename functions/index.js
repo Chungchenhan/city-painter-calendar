@@ -1,8 +1,14 @@
 const crypto = require('node:crypto')
 const admin = require('firebase-admin')
-const { onDocumentCreated } = require('firebase-functions/v2/firestore')
+const { onDocumentCreated, onDocumentWritten } = require('firebase-functions/v2/firestore')
 const { onSchedule } = require('firebase-functions/v2/scheduler')
 const webpush = require('web-push')
+const {
+  cleanupStagedAttachments,
+  processPendingAttachments,
+  processStagedAttachment,
+} = require('./backgroundAttachmentWorker')
+const { bumpCalendarSalesStatusRevision } = require('./calendarSalesStatusRevision')
 
 admin.initializeApp()
 
@@ -18,6 +24,20 @@ const DEFAULT_NOTIFICATION_SETTINGS = {
 }
 
 let vapidDetailsReady = false
+
+function salesStatusRevisionTrigger(document, impact) {
+  return onDocumentWritten({
+    document,
+    region: 'asia-east1',
+    retry: true,
+  }, async () => {
+    await bumpCalendarSalesStatusRevision({
+      db: admin.firestore(),
+      fieldValue: admin.firestore.FieldValue,
+      ...impact,
+    })
+  })
+}
 
 function ensureVapidDetails() {
   if (vapidDetailsReady) return
@@ -424,3 +444,49 @@ exports.sendCalendarActivityNotifications = onDocumentCreated({
     unreadCount: 1,
   })
 })
+
+exports.invalidateCalendarSalesStatusFromSales = salesStatusRevisionTrigger(
+  'sales/{documentId}',
+  { line: true, payment: true },
+)
+
+exports.invalidateCalendarSalesPaymentStatusFromAccountsReceivable = salesStatusRevisionTrigger(
+  'accounts_receivable/{documentId}',
+  { payment: true },
+)
+
+exports.invalidateCalendarSalesLineStatusFromLineContacts = salesStatusRevisionTrigger(
+  'line_contacts/{documentId}',
+  { line: true },
+)
+
+exports.invalidateCalendarSalesLineStatusFromLineCustomerLinks = salesStatusRevisionTrigger(
+  'line_customer_links/{documentId}',
+  { line: true },
+)
+
+exports.invalidateCalendarSalesLineStatusFromLineGroupBindings = salesStatusRevisionTrigger(
+  'line_group_bindings/{documentId}',
+  { line: true },
+)
+
+exports.invalidateCalendarSalesLineStatusFromLineGroupMembers = onDocumentWritten({
+  document: 'line_group_bindings/{documentId}/members/{memberId}',
+  region: 'asia-east1',
+  retry: true,
+}, async () => {
+  await bumpCalendarSalesStatusRevision({
+    db: admin.firestore(),
+    fieldValue: admin.firestore.FieldValue,
+    line: true,
+  })
+})
+
+exports.invalidateCalendarSalesStatusFromCustomers = salesStatusRevisionTrigger(
+  'customers/{documentId}',
+  { line: true, payment: true },
+)
+
+exports.processStagedAttachment = processStagedAttachment
+exports.processPendingAttachments = processPendingAttachments
+exports.cleanupStagedAttachments = cleanupStagedAttachments

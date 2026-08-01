@@ -7,9 +7,62 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <title>都市彩繪行事曆</title>
+    <style>
+      * { box-sizing: border-box; }
+      html, body, #root { min-height: 100%; margin: 0; }
+      .calendar-startup-shell { min-height: 100dvh; background: #fff; color: #252525; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .calendar-startup-topbar { height: 64px; display: flex; align-items: center; gap: 16px; border-bottom: 1px solid #e8e8e8; padding: 0 22px; }
+      .calendar-startup-topbar strong { display: flex; align-items: center; gap: 8px; font-size: 17px; }
+      .calendar-startup-topbar strong span { color: #e5a500; font-size: 24px; }
+      .calendar-startup-topbar i { width: 34px; height: 13px; display: block; border-radius: 7px; background: #f0f0f0; }
+      .calendar-startup-topbar .calendar-startup-title { width: 104px; }
+      .calendar-startup-main { height: calc(100dvh - 64px); display: grid; grid-template-columns: 188px minmax(0, 1fr); }
+      .calendar-startup-main aside { display: grid; align-content: start; gap: 14px; border-right: 1px solid #ededed; padding: 24px 20px; }
+      .calendar-startup-main aside i { height: 16px; border-radius: 8px; background: #f1f1f1; }
+      .calendar-startup-main section { min-width: 0; display: grid; grid-template-rows: 34px minmax(0, 1fr); padding: 14px 18px 18px; }
+      .calendar-startup-weekdays { display: grid; grid-template-columns: repeat(7, 1fr); color: #8b8b8b; font-size: 12px; text-align: center; }
+      .calendar-startup-grid { display: grid; grid-template-columns: repeat(7, 1fr); grid-template-rows: repeat(6, 1fr); border-top: 1px solid #ededed; border-left: 1px solid #ededed; }
+      .calendar-startup-grid i { border-right: 1px solid #ededed; border-bottom: 1px solid #ededed; background: linear-gradient(145deg, #fff 55%, #fafafa); }
+      @media (max-width: 760px) {
+        .calendar-startup-topbar { height: calc(54px + env(safe-area-inset-top)); gap: 10px; padding: env(safe-area-inset-top) 14px 0; }
+        .calendar-startup-topbar strong { font-size: 15px; }
+        .calendar-startup-topbar strong span { font-size: 21px; }
+        .calendar-startup-topbar i:not(.calendar-startup-title) { display: none; }
+        .calendar-startup-topbar .calendar-startup-title { width: 86px; margin-left: auto; }
+        .calendar-startup-main { height: calc(100dvh - 54px - env(safe-area-inset-top)); display: block; padding-bottom: calc(64px + env(safe-area-inset-bottom)); }
+        .calendar-startup-main aside { display: none; }
+        .calendar-startup-main section { height: 100%; padding: 10px 6px 8px; }
+      }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div class="calendar-startup-shell" aria-label="行事曆載入中" aria-busy="true">
+        <header class="calendar-startup-topbar">
+          <strong><span>✣</span> Citypainter</strong>
+          <i></i>
+          <i></i>
+          <i></i>
+          <i class="calendar-startup-title"></i>
+        </header>
+        <main class="calendar-startup-main">
+          <aside><i></i><i></i><i></i></aside>
+          <section>
+            <div class="calendar-startup-weekdays">
+              <span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span>
+            </div>
+            <div class="calendar-startup-grid">
+              <i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+              <i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+              <i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+              <i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+              <i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+              <i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+            </div>
+          </section>
+        </main>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

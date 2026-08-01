@@ -1,17 +1,18 @@
-import { StrictMode } from 'react'
+import { lazy, StrictMode, Suspense, useEffect } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createBrowserRouter, Navigate, RouterProvider } from 'react-router-dom'
 import { AuthProvider } from './contexts/AuthContext'
 import { useAuth } from './contexts/AuthContext'
 import AppShell from './components/AppShell'
-import CalendarPage from './pages/CalendarPage'
 import LoginPage from './pages/LoginPage'
 import { setupAppUpdateChecks } from './lib/appUpdate'
 import { setupVisualViewportVars } from './lib/visualViewport'
 import './styles.css'
 
 const queryClient = new QueryClient()
+const loadCalendarPage = () => import('./pages/CalendarPage')
+const CalendarPage = lazy(loadCalendarPage)
 
 type CalendarRootElement = HTMLElement & {
   cityPainterCalendarRoot?: Root
@@ -37,10 +38,50 @@ if ('serviceWorker' in navigator) {
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const { user, role, loading } = useAuth()
 
-  if (loading || role === 'loading') return <div className="loading-page">載入中...</div>
+  useEffect(() => {
+    if (user) void loadCalendarPage()
+  }, [user])
+
+  if (loading || role === 'loading') return <CalendarLoadingShell />
   if (!user) return <Navigate to="/login" replace />
   if (role === 'unknown') return <div className="loading-page">此帳號尚未設定 HR 權限</div>
   return children
+}
+
+function CalendarLoadingShell() {
+  return (
+    <div className="calendar-startup-shell" aria-label="行事曆載入中" aria-busy="true">
+      <header className="calendar-startup-topbar">
+        <strong><span>✣</span> Citypainter</strong>
+        <i />
+        <i />
+        <i className="calendar-startup-title" />
+      </header>
+      <main className="calendar-startup-main">
+        <aside>
+          <i />
+          <i />
+          <i />
+        </aside>
+        <section>
+          <div className="calendar-startup-weekdays">
+            {['日', '一', '二', '三', '四', '五', '六'].map((day) => <span key={day}>{day}</span>)}
+          </div>
+          <div className="calendar-startup-grid">
+            {Array.from({ length: 42 }, (_, index) => <i key={index} />)}
+          </div>
+        </section>
+      </main>
+    </div>
+  )
+}
+
+function CalendarRoutePage() {
+  return (
+    <Suspense fallback={<CalendarLoadingShell />}>
+      <CalendarPage />
+    </Suspense>
+  )
 }
 
 const router = createBrowserRouter([
@@ -53,7 +94,7 @@ const router = createBrowserRouter([
       </AuthGuard>
     ),
     children: [
-      { index: true, element: <CalendarPage /> }
+      { index: true, element: <CalendarRoutePage /> }
     ]
   }
 ])

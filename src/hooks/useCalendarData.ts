@@ -156,7 +156,7 @@ export function useCalendarEvents(activeMonth: string) {
         console.warn('[calendar] repeat listener failed', error)
         void queryClient.invalidateQueries({ queryKey })
       })
-    }, 900)
+    }, 5000)
 
     return () => {
       window.clearTimeout(timer)
@@ -186,7 +186,7 @@ export function useCalendarEvents(activeMonth: string) {
           break
         }
       }
-    }, 1800)
+    }, 8000)
     return () => {
       cancelled = true
       window.clearTimeout(timer)

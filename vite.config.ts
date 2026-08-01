@@ -23,6 +23,7 @@ function localApiPlugin(): Plugin {
     name: 'local-api',
     configureServer(server) {
       loadLocalServerEnv()
+      process.env.CALENDAR_LOCAL_API = '1'
       // 本機驗收需使用尚未部署的 ERP API，避免誤走正式站舊版邏輯。
       if (!process.env.ERP_LINE_API_URL) {
         process.env.ERP_LINE_API_URL = 'http://127.0.0.1:5173/api/line'
@@ -128,15 +129,6 @@ export default defineConfig({
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
         navigateFallbackDenylist: [/^\/__\/auth\//, /^\/api\//],
         runtimeCaching: [
-          {
-            urlPattern: /^https:\/\/(firestore|identitytoolkit|securetoken)\.googleapis\.com\/.*/i,
-            handler: 'NetworkFirst',
-            options: {
-              cacheName: 'firebase-api',
-              expiration: { maxEntries: 60, maxAgeSeconds: 5 * 60 },
-              networkTimeoutSeconds: 5
-            }
-          },
           {
             urlPattern: ({ request, url }) => request.mode === 'navigate' && !url.pathname.startsWith('/__/auth/') && !url.pathname.startsWith('/api/'),
             handler: 'StaleWhileRevalidate',

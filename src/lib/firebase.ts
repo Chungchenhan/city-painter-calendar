@@ -2,6 +2,7 @@ import { initializeApp } from 'firebase/app'
 import { getToken, initializeAppCheck, ReCaptchaEnterpriseProvider, type AppCheck } from 'firebase/app-check'
 import { getAuth } from 'firebase/auth'
 import { getFirestore, initializeFirestore, persistentLocalCache, persistentMultipleTabManager } from 'firebase/firestore'
+import { getStorage } from 'firebase/storage'
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY || 'placeholder-dev',
@@ -25,14 +26,24 @@ export const appCheck: AppCheck | null = appCheckSiteKey
     })
   : null
 
-export async function getAppCheckHeaders() {
-  if (!appCheck) throw new Error('網站安全驗證尚未啟用。')
-  const result = await getToken(appCheck, false)
-  if (!result.token) throw new Error('無法取得網站安全驗證。')
-  return { 'X-Firebase-AppCheck': result.token }
+export async function getAppCheckHeaders(): Promise<Record<string, string>> {
+  if (!appCheck) {
+    if (import.meta.env.DEV) return {}
+    throw new Error('網站安全驗證尚未啟用。')
+  }
+  try {
+    const result = await getToken(appCheck, false)
+    if (!result.token) throw new Error('無法取得網站安全驗證。')
+    return { 'X-Firebase-AppCheck': result.token }
+  } catch (error) {
+    // iOS WebView 連線本機網址時可能回傳 Unsupported；本機 API 另有登入與員工權限驗證。
+    if (import.meta.env.DEV) return {}
+    throw error
+  }
 }
 
 export const auth = getAuth(app)
+export const storage = getStorage(app)
 export const db = (() => {
   try {
     return initializeFirestore(app, {

@@ -5,6 +5,22 @@ import { addDoc, arrayUnion, collection, deleteDoc, deleteField, doc, getDoc, ge
 import { signOut } from 'firebase/auth'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { auth, db, getAppCheckHeaders } from '../lib/firebase'
+import {
+  blocksBackgroundAttachmentUnload,
+  canUseBackgroundImageUpload,
+  durableBackgroundAttachmentFile,
+  loadDurableBackgroundAttachmentUploads,
+  loadBackgroundAttachmentRecoveries,
+  persistDurableBackgroundAttachmentUpload,
+  removeDurableBackgroundAttachmentUpload,
+  resumeBackgroundAttachmentUpload,
+  runWithConcurrency,
+  startBackgroundAttachmentUpload,
+  updateDurableBackgroundAttachmentUpload,
+  type BackgroundAttachmentCompletionMode,
+  type DurableBackgroundAttachmentUpload,
+  type DurableBackgroundAttachmentStatus,
+} from '../lib/backgroundAttachmentUpload'
 import { employeeNicknameTitle } from '../lib/employeeDirectory'
 import { fulfillmentPaymentNotice, type FulfillmentCashPaymentResult } from '../lib/fulfillmentPaymentResult'
 import { composeEditableEventTitle } from '../lib/calendarEventTitle'
@@ -16,11 +32,14 @@ import {
 } from '../lib/deliveryEventGrouping'
 import { readLocalQueryCache, updateLocalQueryCache, writeLocalQueryCache } from '../lib/localQueryCache'
 import { extractPhotoCaptureMetadata, type PhotoCaptureMetadata } from '../lib/photoMetadata'
+import { sortAttachmentsNewestFirst } from '../lib/attachmentSort'
 import { ensurePushSubscription, isPushSupported } from '../lib/pushNotifications'
 import ZoomableAttachmentImage from '../components/ZoomableAttachmentImage'
 import { useAuth } from '../contexts/AuthContext'
 import { useCalendarActivityLogs, useCalendarEvents, useCalendarGroups, useCalendarSearchEvents } from '../hooks/useCalendarData'
 import { useDepartments, useEmployees, useShifts } from '../hooks/useHrData'
+import { useSalesOperationalStatus } from '../hooks/useSalesOperationalStatus'
+import { fetchSalesOperationalStatus, type SalesOperationalStatus } from '../lib/salesOperationalStatus'
 import type { CalendarActivityLog, CalendarEvent, CalendarEventComment, CalendarGroup, Employee, FulfillmentPaymentPrompt, UserNotificationSettings } from '../types'
 
 const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六']
@@ -41,6 +60,9 @@ const ALL_EMPLOYEES_EXCEPT_SELF = 'allEmployeesExceptSelf'
 const ACTIVITY_NOTIFICATION_SEEN_KEY = 'cityPainterCalendarActivitySeenAt'
 const NOTIFIED_TAGS_KEY = 'cityPainterCalendarNotifiedTags'
 const NOTIFIED_TAG_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
+const SALES_ATTACHMENT_PREFETCH_DAYS = 7
+const SALES_ATTACHMENT_PREFETCH_EVENT_LIMIT = 14
+const SALES_ATTACHMENT_PREFETCH_DELAY_MS = 2500
 const TOUCH_DRAG_LONG_PRESS_MS = 360
 const TOUCH_DRAG_START_TOLERANCE = 48
 const DEFAULT_USER_NOTIFICATION_SETTINGS: UserNotificationSettings = {
@@ -77,6 +99,38 @@ const DEFAULT_TITLE_ICON_OPTIONS: TitleIconOption[] = [
 
 const loadErpOrderScanner = () => import('../components/ErpOrderScanner')
 const ErpOrderScanner = lazy(loadErpOrderScanner)
+const preloadedSalesAttachmentPreviews = new Set<string>()
+
+function shouldSkipSalesAttachmentPrefetch() {
+  const connection = (navigator as Navigator & {
+    connection?: { saveData?: boolean, effectiveType?: string }
+  }).connection
+  return connection?.saveData === true || connection?.effectiveType === 'slow-2g' || connection?.effectiveType === '2g'
+}
+
+function preloadSalesAttachmentPreview(source: string) {
+  if (!source || preloadedSalesAttachmentPreviews.has(source)) return Promise.resolve()
+  preloadedSalesAttachmentPreviews.add(source)
+  return new Promise<void>((resolve) => {
+    const image = new Image()
+    let settled = false
+    const finish = () => {
+      if (settled) return
+      settled = true
+      window.clearTimeout(timeout)
+      image.onload = null
+      image.onerror = null
+      resolve()
+    }
+    const timeout = window.setTimeout(finish, 12_000)
+    image.onload = finish
+    image.onerror = finish
+    image.decoding = 'async'
+    image.referrerPolicy = 'no-referrer'
+    image.setAttribute('fetchpriority', 'low')
+    image.src = source
+  })
+}
 
 function preloadErpOrderScannerModule() {
   return loadErpOrderScanner().then((module) => module.preloadErpOrderScanner())
@@ -118,30 +172,7 @@ function cacheEventComments(cacheKey: string, rows: CalendarEventComment[]) {
     eventCommentsMemoryCache.delete(oldestKey)
   }
 }
-type ProductionLineStatus = {
-  eligible: boolean
-  bound: boolean
-  hasAnyLineBinding?: boolean
-  canCompleteOrder?: boolean
-  customerCode: string
-  customerName: string
-  recipientName?: string
-  lineDisplayName: string
-  lineTargetType?: string
-  recipientCount?: number
-  notificationMode?: 'recipient' | 'group' | 'recipient_and_group' | 'none'
-  availablePersonalCount?: number
-  availableGroupCount?: number
-  availableGroupNames?: string[]
-  salesNo: string
-  reason: string
-  shippingMethod?: string
-  orderStatus?: string
-  paymentState?: 'monthly' | 'paid' | 'unpaid' | 'voided'
-  currentOrderUnpaidAmount?: number
-  outstandingTotal?: number
-  paymentPrompt?: FulfillmentPaymentPrompt
-}
+type ProductionLineStatus = SalesOperationalStatus
 
 function productionLineBindingDescription(status: ProductionLineStatus, includePrefix = true) {
   const prefix = includePrefix ? '官方 LINE：' : ''
@@ -194,6 +225,18 @@ type ProductionLineRetry = {
   eventId: string
   attachmentIds: string[]
   mode: 'production' | 'fulfillment'
+}
+type DetailBackgroundUpload = {
+  id: string
+  jobId?: string
+  eventId: string
+  name: string
+  previewUrl: string
+  status: DurableBackgroundAttachmentStatus
+  progress: number
+  cloudSafe: boolean
+  createdAt: string
+  error?: string
 }
 const MAX_DIRECT_ATTACHMENT_BYTES = 3.5 * 1024 * 1024
 
@@ -1041,7 +1084,7 @@ export default function CalendarPage() {
   const [month, setMonth] = useState(dayjs().startOf('month'))
   const [backgroundDataReady, setBackgroundDataReady] = useState(false)
   const { data: calendars = [], isLoading: calendarsLoading } = useCalendarGroups()
-  const { data: events = [], isLoading: eventsLoading } = useCalendarEvents(month.format('YYYY-MM'))
+  const { data: events = [], isLoading: eventsLoading, isFetching: eventsFetching } = useCalendarEvents(month.format('YYYY-MM'))
   const { data: activityLogs = [] } = useCalendarActivityLogs(backgroundDataReady)
   const { data: employees = [] } = useEmployees()
   const { data: departments = [] } = useDepartments()
@@ -1116,6 +1159,7 @@ export default function CalendarPage() {
   const [eventEditorTouchLocked, setEventEditorTouchLocked] = useState(false)
   const [saving, setSaving] = useState(false)
   const [detailAttachmentUploading, setDetailAttachmentUploading] = useState(false)
+  const [detailBackgroundUploads, setDetailBackgroundUploads] = useState<DetailBackgroundUpload[]>([])
   const [eventCommentsState, setEventCommentsState] = useState<EventCommentsState>({ cacheKey: '', rows: [] })
   const [eventCommentsErrorState, setEventCommentsErrorState] = useState<EventCommentsErrorState>({ cacheKey: '', message: '' })
   const [eventCommentsReloadKey, setEventCommentsReloadKey] = useState(0)
@@ -1123,9 +1167,6 @@ export default function CalendarPage() {
   const [commentFiles, setCommentFiles] = useState<PendingCommentFile[]>([])
   const [commentSending, setCommentSending] = useState(false)
   const [deletingCommentId, setDeletingCommentId] = useState<string | null>(null)
-  const [productionLineStatus, setProductionLineStatus] = useState<ProductionLineStatus | null>(null)
-  const [productionLineStatusLoading, setProductionLineStatusLoading] = useState(false)
-  const [productionLineStatusError, setProductionLineStatusError] = useState('')
   const [sendDetailAttachmentsToLine, setSendDetailAttachmentsToLine] = useState(true)
   const [productionLineNotice, setProductionLineNotice] = useState<{ variant: 'success' | 'error' | 'muted'; message: string } | null>(null)
   const [productionLineRetry, setProductionLineRetry] = useState<ProductionLineRetry | null>(null)
@@ -1136,6 +1177,9 @@ export default function CalendarPage() {
   const [fulfillmentPaymentError, setFulfillmentPaymentError] = useState('')
   const noteTextareaRef = useRef<HTMLTextAreaElement | null>(null)
   const detailAttachmentInputRef = useRef<HTMLInputElement | null>(null)
+  const backgroundAttachmentRecoveryIdsRef = useRef(new Set<string>())
+  const durableUploadLoadedUidRef = useRef('')
+  const detailBackgroundUploadsRef = useRef<DetailBackgroundUpload[]>([])
   const commentAttachmentInputRef = useRef<HTMLInputElement | null>(null)
   const commentThreadEndRef = useRef<HTMLDivElement | null>(null)
   const activeCommentThreadIdRef = useRef('')
@@ -1877,6 +1921,19 @@ export default function CalendarPage() {
       visibleSearchEvents.find((event) => event.id === selectedEventId) ??
       null
   }, [selectedEventId, visibleEvents, visibleSearchEvents])
+  const salesOperationalEventId = selectedEvent?.source === 'erpSalesDelivery' ? selectedEvent.id : ''
+  const canViewSalesOperationalPayment = Boolean(selectedEvent && canManageCalendarEvent(selectedEvent))
+  const {
+    status: productionLineStatus,
+    loading: productionLineStatusLoading,
+    error: productionLineStatusError,
+    setStatus: setProductionLineStatus,
+  } = useSalesOperationalStatus({
+    user,
+    eventId: salesOperationalEventId,
+    enabled: Boolean(user?.uid && salesOperationalEventId),
+    canViewPayment: canViewSalesOperationalPayment,
+  })
   const salesAttachmentEventId = selectedEvent?.source === 'erpSalesDelivery' && canViewSalesAttachments
     ? selectedEvent.id
     : ''
@@ -1889,6 +1946,9 @@ export default function CalendarPage() {
     retry: 1,
   })
   const salesCenterAttachments = salesCenterAttachmentsQuery.data ?? []
+  const salesCenterAttachmentsLoading = Boolean(
+    salesAttachmentEventId && salesCenterAttachmentsQuery.isFetching && !salesCenterAttachmentsQuery.data
+  )
   const salesCenterAttachmentsError = salesCenterAttachmentsQuery.isError
     ? salesCenterAttachmentsQuery.error instanceof Error
       ? salesCenterAttachmentsQuery.error.message
@@ -1896,13 +1956,87 @@ export default function CalendarPage() {
     : ''
   const eventDetailAttachments = useMemo(() => {
     const seen = new Set<string>()
-    return [...(selectedEvent?.attachments ?? []), ...salesCenterAttachments].filter((attachment) => {
+    const attachments = [...(selectedEvent?.attachments ?? []), ...salesCenterAttachments].filter((attachment) => {
       const key = attachment.path || attachment.url
       if (!key || seen.has(key)) return false
       seen.add(key)
       return true
     })
+    return sortAttachmentsNewestFirst(attachments)
   }, [salesCenterAttachments, selectedEvent?.attachments])
+  const eventDetailImageAttachments = useMemo(
+    () => eventDetailAttachments.filter((attachment) => Boolean(attachmentPreviewUrl(attachment))),
+    [eventDetailAttachments],
+  )
+  const selectedEventBackgroundUploads = useMemo(
+    () => sortAttachmentsNewestFirst(detailBackgroundUploads.filter((upload) => upload.eventId === selectedEvent?.id)),
+    [detailBackgroundUploads, selectedEvent?.id],
+  )
+  const unsafeActiveBackgroundUploads = useMemo(
+    () => detailBackgroundUploads.filter(blocksBackgroundAttachmentUnload),
+    [detailBackgroundUploads],
+  )
+  const safeProcessingBackgroundUploadCount = useMemo(
+    () => detailBackgroundUploads.filter((upload) => (
+      upload.cloudSafe && upload.status !== 'failed'
+    )).length,
+    [detailBackgroundUploads],
+  )
+
+  useEffect(() => {
+    if (
+      !backgroundDataReady
+      || eventsLoading
+      || eventsFetching
+      || !user?.uid
+      || !canViewSalesAttachments
+      || shouldSkipSalesAttachmentPrefetch()
+    ) return
+
+    const today = dayjs().startOf('day')
+    const finalDate = today.add(SALES_ATTACHMENT_PREFETCH_DAYS - 1, 'day').format('YYYY-MM-DD')
+    const eventIds = Array.from(new Set(
+      visibleEvents
+        .filter((event) => event.source === 'erpSalesDelivery' && event.date >= today.format('YYYY-MM-DD') && event.date <= finalDate)
+        .sort((a, b) => `${a.date} ${a.startTime}`.localeCompare(`${b.date} ${b.startTime}`))
+        .map((event) => recurrenceRootId(event))
+    )).slice(0, SALES_ATTACHMENT_PREFETCH_EVENT_LIMIT)
+    if (!eventIds.length) return
+
+    let cancelled = false
+    let idleCallback: number | undefined
+    const preload = async () => {
+      for (const eventId of eventIds) {
+        if (cancelled) return
+        try {
+          const attachments = await queryClient.fetchQuery({
+            queryKey: ['sales-center-attachments', user.uid, eventId],
+            queryFn: () => fetchSalesCenterAttachments(eventId),
+            staleTime: 7 * 60 * 1000,
+            gcTime: 9 * 60 * 1000,
+            retry: 0,
+          })
+          if (cancelled) return
+          const firstPreview = attachments.map(attachmentPreviewUrl).find(Boolean)
+          if (firstPreview) await preloadSalesAttachmentPreview(firstPreview)
+        } catch {
+          // 背景預載失敗不應干擾行事曆操作，點開事件時仍會依原流程重試。
+        }
+      }
+    }
+    const timer = window.setTimeout(() => {
+      const run = () => void preload()
+      idleCallback = window.requestIdleCallback?.(run, { timeout: 3000 })
+      if (!idleCallback) run()
+    }, SALES_ATTACHMENT_PREFETCH_DELAY_MS)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+      if (idleCallback) window.cancelIdleCallback?.(idleCallback)
+    }
+  }, [backgroundDataReady, canViewSalesAttachments, eventsFetching, eventsLoading, queryClient, user?.uid, visibleEvents])
+
   const commentThreadId = selectedEvent ? recurrenceRootId(selectedEvent) : ''
   const eventCommentsCacheKey = user?.uid && commentThreadId ? `${user.uid}:${commentThreadId}` : ''
   const cachedEventComments = eventCommentsCacheKey
@@ -1978,21 +2112,15 @@ export default function CalendarPage() {
   }, [commentThreadId, eventCommentsCacheKey, eventCommentsReloadKey])
 
   useEffect(() => {
-    let cancelled = false
     setFulfillmentPaymentModal(null)
     setFulfillmentPaymentAmount('')
     setFulfillmentPaymentSaving(false)
     setFulfillmentPaymentError('')
     setProductionLineNotice(null)
-    setProductionLineStatusError('')
     setProductionLineRetry(null)
     if (!selectedEvent || selectedEvent.source !== 'erpSalesDelivery' || !user?.uid) {
-      setProductionLineStatus(null)
-      setProductionLineStatusLoading(false)
       setSendDetailAttachmentsToLine(false)
-      return () => {
-        cancelled = true
-      }
+      return
     }
 
     const storedRetry = selectedEvent.productionLineRetry
@@ -2015,28 +2143,109 @@ export default function CalendarPage() {
           : '照片已保留，LINE 傳送尚待重試。')
       })
     }
+  }, [selectedEvent?.id, selectedEvent?.source, user?.uid])
 
-    setProductionLineStatusLoading(true)
+  useEffect(() => {
+    if (!salesOperationalEventId) {
+      setSendDetailAttachmentsToLine(false)
+      return
+    }
+    if (productionLineStatus) setSendDetailAttachmentsToLine(productionLineStatus.bound)
+  }, [productionLineStatus?.bound, salesOperationalEventId])
+
+  useEffect(() => {
+    if (unsafeActiveBackgroundUploads.length === 0) return
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', warnBeforeUnload)
+    return () => window.removeEventListener('beforeunload', warnBeforeUnload)
+  }, [unsafeActiveBackgroundUploads.length])
+
+  useEffect(() => {
+    if (!user?.uid) {
+      durableUploadLoadedUidRef.current = ''
+      return
+    }
+    if (durableUploadLoadedUidRef.current === user.uid) return
+    durableUploadLoadedUidRef.current = user.uid
+    let canceled = false
     void (async () => {
       try {
-        const result = await fetchProductionLineStatus(selectedEvent.id)
-        if (cancelled) return
-        setProductionLineStatus(result)
-        setSendDetailAttachmentsToLine(result.bound)
+        const rows = await loadDurableBackgroundAttachmentUploads(user.uid)
+        if (canceled || rows.length === 0) return
+        setDetailBackgroundUploads((items) => {
+          const existingIds = new Set(items.map((item) => item.id))
+          return [
+            ...items,
+            ...rows.filter((row) => !existingIds.has(row.id)).map((row) => ({
+              id: row.id,
+              jobId: row.jobId,
+              eventId: row.eventId,
+              name: row.name,
+              previewUrl: URL.createObjectURL(row.blob),
+              status: row.cloudSafe ? row.status : 'queued' as const,
+              progress: row.progress,
+              cloudSafe: row.cloudSafe,
+              createdAt: row.createdAt,
+              error: row.error,
+            })),
+          ]
+        })
+        await processDurableBackgroundUploads(rows)
       } catch (error) {
-        if (cancelled) return
-        setProductionLineStatus(null)
-        setSendDetailAttachmentsToLine(false)
-        setProductionLineStatusError(error instanceof Error ? error.message : 'LINE 綁定狀態讀取失敗')
-      } finally {
-        if (!cancelled) setProductionLineStatusLoading(false)
+        console.warn('[calendar] 離線照片佇列恢復失敗', error)
       }
     })()
+    return () => { canceled = true }
+  }, [user?.uid])
 
-    return () => {
-      cancelled = true
-    }
-  }, [selectedEvent?.id, selectedEvent?.source, user?.uid])
+  useEffect(() => {
+    if (!user?.uid) return
+    const recoveries = loadBackgroundAttachmentRecoveries().filter((recovery) => (
+      !backgroundAttachmentRecoveryIdsRef.current.has(recovery.jobId)
+    ))
+    const groups = new Map<string, typeof recoveries>()
+    recoveries.forEach((recovery) => {
+      backgroundAttachmentRecoveryIdsRef.current.add(recovery.jobId)
+      const key = `${recovery.eventId}:${recovery.completionMode}`
+      groups.set(key, [...(groups.get(key) ?? []), recovery])
+    })
+    groups.forEach((group) => {
+      void (async () => {
+        try {
+          const results = await Promise.all(group.map(async (recovery) => {
+            try {
+              return await resumeBackgroundAttachmentUpload(recovery)
+            } catch (error) {
+              console.warn('[calendar] 背景照片工作恢復失敗', recovery.jobId, error)
+              return null
+            }
+          }))
+          const completed = results.filter((result): result is NonNullable<typeof result> => Boolean(result))
+          if (completed.length > 0) {
+            await finishBackgroundDetailAttachments(
+              group[0].eventId,
+              completed.map((result) => result.attachment),
+              group[0].completionMode,
+            )
+          }
+        } finally {
+          group.forEach((recovery) => backgroundAttachmentRecoveryIdsRef.current.delete(recovery.jobId))
+        }
+      })()
+    })
+  }, [user?.uid])
+
+  useEffect(() => {
+    detailBackgroundUploadsRef.current = detailBackgroundUploads
+  }, [detailBackgroundUploads])
+
+  useEffect(() => () => {
+    detailBackgroundUploadsRef.current.forEach((upload) => URL.revokeObjectURL(upload.previewUrl))
+    detailBackgroundUploadsRef.current = []
+  }, [])
 
   useEffect(() => {
     const run = () => setBackgroundDataReady(true)
@@ -3921,7 +4130,7 @@ export default function CalendarPage() {
   async function uploadEventAttachments(
     eventId: string,
     files: File[],
-    context: { uploadKind?: 'comment', commentId?: string } = {}
+    context: { uploadKind?: 'comment', commentId?: string, clientUploadId?: string } = {}
   ) {
     if (!user) throw new Error('登入已失效，請重新登入')
     const token = await user.getIdToken()
@@ -3941,6 +4150,7 @@ export default function CalendarPage() {
         }
         if (context.uploadKind) formData.set('uploadKind', context.uploadKind)
         if (context.commentId) formData.set('commentId', context.commentId)
+        if (context.clientUploadId) formData.set('clientUploadId', context.clientUploadId)
         formData.append('files', prepared.file)
 
         const response = await fetch('/api/upload-drive', {
@@ -3990,23 +4200,7 @@ export default function CalendarPage() {
 
   async function fetchProductionLineStatus(eventId: string) {
     if (!user) throw new Error('登入已失效，請重新登入')
-    const token = await user.getIdToken()
-    const appCheckHeaders = await getAppCheckHeaders()
-    const response = await fetch('/api/upload-drive', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-        ...appCheckHeaders
-      },
-      body: JSON.stringify({ action: 'production-photo-status', eventId })
-    })
-    const result = await response.json().catch(() => null) as (ProductionLineStatus & { ok?: boolean, error?: ApiErrorPayload }) | null
-    if (!response.ok || result?.ok !== true) throw new Error(apiErrorMessage(result?.error, '訂單狀態讀取失敗'))
-    return {
-      ...result,
-      paymentPrompt: normalizeFulfillmentPaymentPrompt(result.paymentPrompt)
-    }
+    return fetchSalesOperationalStatus(user, eventId)
   }
 
   async function sendProductionPhotoAttachments(eventId: string, attachmentIds: string[]) {
@@ -4195,6 +4389,66 @@ export default function CalendarPage() {
     setProductionLineRetry((current) => current?.eventId === eventId ? null : current)
   }
 
+  async function finishBackgroundDetailAttachments(
+    eventId: string,
+    attachments: EventAttachment[],
+    completionMode: BackgroundAttachmentCompletionMode,
+  ) {
+    const attachmentIds = attachments.map((attachment) => attachment.path).filter(Boolean)
+    if (attachmentIds.length !== attachments.length) throw new Error('照片背景處理結果不完整')
+    const sourceEvent = events.find((item) => item.id === eventId)
+      ?? (selectedEvent?.id === eventId ? selectedEvent : null)
+    if (sourceEvent) {
+      const existing = sourceEvent.attachments ?? []
+      const additions = attachments.filter((attachment) => {
+        const uploadJobId = (attachment as EventAttachment & { uploadJobId?: string }).uploadJobId
+        return !existing.some((item) => item.path === attachment.path || Boolean(
+          uploadJobId && (item as EventAttachment & { uploadJobId?: string }).uploadJobId === uploadJobId
+        ))
+      })
+      const nextEvent = {
+        ...sourceEvent,
+        attachments: [...existing, ...additions],
+        updatedAt: new Date().toISOString(),
+      }
+      optimisticallyPatchCalendarEvents([nextEvent])
+      void syncCalendarEventViews(nextEvent).catch(() => undefined)
+    }
+
+    const retry = completionMode === 'fulfillment' || completionMode === 'production'
+      ? { eventId, attachmentIds, mode: completionMode }
+      : null
+    if (!retry) {
+      await refreshCalendarData()
+      return
+    }
+    setProductionLineRetry(retry)
+    try {
+      if (completionMode === 'fulfillment') {
+        const result = await completeOrderFulfillment(eventId, retry.attachmentIds)
+        await applyFulfillmentResult(eventId, result)
+        const warning = result.lineWarning
+        setProductionLineNotice({
+          variant: warning ? 'error' : result.lineSent ? 'success' : 'muted',
+          message: warning || result.message,
+        })
+        if (warning) await persistProductionLineRetry(retry, 'failed', warning)
+        else await clearProductionLineRetry(eventId)
+      } else {
+        const delivery = await sendProductionPhotoAttachments(eventId, retry.attachmentIds)
+        setProductionLineNotice({ variant: delivery.sent ? 'success' : 'muted', message: delivery.message })
+        if (delivery.sent || delivery.skipped) await clearProductionLineRetry(eventId)
+        else await persistProductionLineRetry(retry, 'failed', delivery.message)
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '照片已保留，但後續處理失敗'
+      setProductionLineNotice({ variant: 'error', message })
+      await persistProductionLineRetry(retry, 'failed', message).catch(() => undefined)
+    } finally {
+      void refreshCalendarData().catch(() => undefined)
+    }
+  }
+
   async function retryProductionPhotoDelivery() {
     if (!productionLineRetry || productionLineRetrying) return
     setProductionLineRetrying(true)
@@ -4294,6 +4548,168 @@ export default function CalendarPage() {
     })
   }
 
+  function removeFailedDetailBackgroundUpload(uploadId: string) {
+    void removeDurableBackgroundAttachmentUpload(uploadId).catch((error) => {
+      console.warn('[calendar] 移除離線照片失敗', error)
+    })
+    setDetailBackgroundUploads((items) => items.filter((item) => {
+      if (item.id !== uploadId || item.status !== 'failed') return true
+      URL.revokeObjectURL(item.previewUrl)
+      return false
+    }))
+  }
+
+  async function processDurableBackgroundUploads(rows: DurableBackgroundAttachmentUpload[]) {
+    const groups = new Map<string, DurableBackgroundAttachmentUpload[]>()
+    rows.forEach((row) => {
+      if (backgroundAttachmentRecoveryIdsRef.current.has(`durable:${row.id}`)) return
+      backgroundAttachmentRecoveryIdsRef.current.add(`durable:${row.id}`)
+      const key = `${row.eventId}:${row.completionMode}`
+      groups.set(key, [...(groups.get(key) ?? []), row])
+    })
+    await Promise.all(Array.from(groups.values()).map(async (group) => {
+      const completed: { id: string, attachment: EventAttachment }[] = []
+      try {
+        const latestStatus = await fetchProductionLineStatus(group[0].eventId)
+        if (selectedEvent?.id === group[0].eventId) {
+          setProductionLineStatus(latestStatus)
+          setSendDetailAttachmentsToLine(latestStatus.bound)
+        }
+        if (!['外送', '施工'].includes(latestStatus.shippingMethod || '')) {
+          throw new Error('此事件目前不是外送或施工訂單')
+        }
+        if (latestStatus.canCompleteOrder !== true) throw new Error('您沒有完成銷貨單的修改或特殊操作權限')
+
+        await runWithConcurrency(group, 3, async (row) => {
+          try {
+            const file = durableBackgroundAttachmentFile(row)
+            const capture = row.capture ?? await extractPhotoCaptureMetadata(file)
+            const result = await startBackgroundAttachmentUpload({
+              eventId: row.eventId,
+              file,
+              completionMode: row.completionMode,
+              durableUpload: row,
+              capture,
+              ...(import.meta.env.DEV ? {
+                // 本機沒有 Storage 觸發器，原檔仍先保存至 IndexedDB，再由既有 API 背景上傳。
+                localFallback: async (fallbackFile, clientUploadId) => {
+                  const [attachment] = await uploadEventAttachments(row.eventId, [fallbackFile], { clientUploadId })
+                  if (!attachment) throw new Error('本機照片上傳失敗')
+                  return attachment
+                },
+              } : {}),
+              onJobCreated: (jobId) => setDetailBackgroundUploads((items) => items.map((item) => (
+                item.id === row.id ? { ...item, jobId } : item
+              ))),
+              onCloudSafe: () => setDetailBackgroundUploads((items) => items.map((item) => (
+                item.id === row.id ? { ...item, cloudSafe: true } : item
+              ))),
+              onProgress: (status, ratio) => setDetailBackgroundUploads((items) => items.map((item) => (
+                item.id === row.id
+                  ? { ...item, status, progress: ratio ?? item.progress, error: undefined }
+                  : item
+              ))),
+            })
+            completed.push({ id: row.id, attachment: result.attachment })
+          } catch (error) {
+            const message = error instanceof Error ? error.message : '照片背景上傳失敗'
+            await updateDurableBackgroundAttachmentUpload(row.id, {
+              status: 'failed',
+              error: message,
+            }).catch(() => undefined)
+            setDetailBackgroundUploads((items) => items.map((item) => (
+              item.id === row.id ? { ...item, status: 'failed', error: message } : item
+            )))
+          }
+        })
+
+        if (completed.length === 0) return
+        const completedAttachments = completed.map((item) => item.attachment)
+        if (import.meta.env.DEV) {
+          const attachmentIds = completedAttachments.map((attachment) => attachment.path).filter(Boolean)
+          const updatedAt = new Date().toISOString()
+          await updateDoc(doc(db, 'calendarEvents', group[0].eventId), {
+            attachments: arrayUnion(...completedAttachments),
+            productionLineRetry: {
+              mode: 'fulfillment',
+              attachmentIds,
+              status: 'pending',
+              message: '照片已保留，訂單完成尚待確認。',
+              updatedAt,
+            },
+            updatedAt,
+          })
+        }
+        await finishBackgroundDetailAttachments(
+          group[0].eventId,
+          completedAttachments,
+          group[0].completionMode,
+        )
+        const completedIds = new Set(completed.map((item) => item.id))
+        await Promise.all(Array.from(completedIds).map((id) => removeDurableBackgroundAttachmentUpload(id)))
+        setDetailBackgroundUploads((items) => items.filter((item) => {
+          if (!completedIds.has(item.id)) return true
+          URL.revokeObjectURL(item.previewUrl)
+          return false
+        }))
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '照片背景上傳失敗'
+        await Promise.all(group.map((row) => updateDurableBackgroundAttachmentUpload(row.id, {
+          status: 'failed',
+          error: message,
+        }).catch(() => undefined)))
+        const groupIds = new Set(group.map((row) => row.id))
+        setDetailBackgroundUploads((items) => items.map((item) => (
+          groupIds.has(item.id) && item.status !== 'failed'
+            ? { ...item, status: 'failed', error: message }
+            : item
+        )))
+      } finally {
+        group.forEach((row) => backgroundAttachmentRecoveryIdsRef.current.delete(`durable:${row.id}`))
+      }
+    }))
+  }
+
+  function queueFulfillmentBackgroundUploads(eventSnapshot: CalendarEvent, files: File[]) {
+    void (async () => {
+      if (!user?.uid) return
+      const persistedRows: DurableBackgroundAttachmentUpload[] = []
+      for (const file of files) {
+        const id = createClientId()
+        const previewUrl = URL.createObjectURL(file)
+        setDetailBackgroundUploads((items) => [...items, {
+          id,
+          eventId: eventSnapshot.id,
+          name: file.name,
+          previewUrl,
+          status: 'queued',
+          progress: 0,
+          cloudSafe: false,
+          createdAt: new Date().toISOString(),
+        }])
+        try {
+          // IndexedDB 交易完成後才會進入任何權限查詢或網路上傳。
+          const row = await persistDurableBackgroundAttachmentUpload({
+            id,
+            uploaderUid: user.uid,
+            eventId: eventSnapshot.id,
+            completionMode: 'fulfillment',
+            file,
+          })
+          persistedRows.push(row)
+        } catch (error) {
+          const message = error instanceof Error ? error.message : '無法保存照片至此裝置'
+          setDetailBackgroundUploads((items) => items.map((item) => (
+            item.id === id
+              ? { ...item, status: 'failed', error: `${message}，尚未開始上傳` }
+              : item
+          )))
+        }
+      }
+      if (persistedRows.length > 0) await processDurableBackgroundUploads(persistedRows)
+    })()
+  }
+
   async function handleDetailAttachmentFileChange(event: ChangeEvent<HTMLInputElement>) {
     const files = Array.from(event.target.files ?? [])
     event.target.value = ''
@@ -4304,8 +4720,14 @@ export default function CalendarPage() {
     }
     let fulfillmentEvent = isErpOrderFulfillmentEvent(selectedEvent, productionLineStatus)
     let latestProductionLineStatus = productionLineStatus
-    if (fulfillmentEvent && files.some((file) => !file.type.startsWith('image/') || file.type === 'image/svg+xml')) {
+    if (fulfillmentEvent && files.some((file) => !canUseBackgroundImageUpload(file))) {
       alert('外送／施工完成只能上傳照片')
+      return
+    }
+    // 只切換事件詳情的外送／施工照片，事件編輯器、留言及其他附件仍沿用原流程。
+    if (fulfillmentEvent) {
+      openFulfillmentPaymentPrompt(selectedEvent.id, productionLineStatus?.paymentPrompt)
+      queueFulfillmentBackgroundUploads(selectedEvent, files)
       return
     }
 
@@ -4319,7 +4741,6 @@ export default function CalendarPage() {
       if (selectedEvent.source === 'erpSalesDelivery') {
         latestProductionLineStatus = await fetchProductionLineStatus(selectedEvent.id)
         setProductionLineStatus(latestProductionLineStatus)
-        setProductionLineStatusError('')
         setSendDetailAttachmentsToLine(latestProductionLineStatus.bound)
         const shippingMethod = fulfillmentShippingMethod(selectedEvent, latestProductionLineStatus)
         fulfillmentEvent = shippingMethod === '外送' || shippingMethod === '施工'
@@ -5576,7 +5997,11 @@ export default function CalendarPage() {
                   aria-label={orderFulfillmentEvent ? '上傳外送或施工完成照片' : '上傳檔案或照片'}
                 >
                   <span>＋</span>
-                  <b>{detailAttachmentUploading ? '上傳中' : orderFulfillmentEvent ? '外送／施工' : '上傳'}</b>
+                  <b>{detailAttachmentUploading
+                    ? '上傳中'
+                    : selectedEventBackgroundUploads.some((item) => item.status !== 'failed')
+                      ? `背景處理 ${selectedEventBackgroundUploads.filter((item) => item.status !== 'failed').length}`
+                      : orderFulfillmentEvent ? '外送／施工' : '上傳'}</b>
                 </button>
                 <input
                   ref={detailAttachmentInputRef}
@@ -5675,15 +6100,14 @@ export default function CalendarPage() {
               {orderFulfillmentEvent ? (
                 <div className="event-detail-fulfillment-status">
                   <strong>{productionLineStatus?.orderStatus || selectedEvent.orderStatus || '狀態讀取中'}</strong>
-                  <small className={productionLineStatusError ? 'error' : undefined}>
-                    {productionLineStatusError
-                      ? `官方 LINE：${productionLineStatusError}`
+                  <small>
+                    {productionLineStatus
+                      ? productionLineBindingDescription(productionLineStatus)
                       : productionLineStatusLoading
                         ? '官方 LINE：正在確認綁定狀態...'
-                        : productionLineStatus
-                          ? productionLineBindingDescription(productionLineStatus)
-                          : '官方 LINE：目前無法取得綁定資料'}
+                        : '官方 LINE：目前無法取得綁定資料'}
                   </small>
+                  {productionLineStatusError && <small className="error" role="status">{productionLineStatusError}</small>}
                   <small>上傳照片後會同步完成訂單、客戶附件與 LINE 通知。</small>
                 </div>
               ) : <label>
@@ -5695,13 +6119,14 @@ export default function CalendarPage() {
                 />
                 <span>
                   <strong>上傳照片時同步傳送官方 LINE</strong>
-                  <small className={productionLineStatusError ? 'error' : undefined}>
-                    {productionLineStatusError || (productionLineStatusLoading
-                      ? '正在確認客戶綁定...'
-                      : productionLineStatus
-                        ? productionLineBindingDescription(productionLineStatus, false)
-                        : '目前無法取得客戶 LINE 綁定資料')}
+                  <small>
+                    {productionLineStatus
+                      ? productionLineBindingDescription(productionLineStatus, false)
+                      : productionLineStatusLoading
+                        ? '正在確認客戶綁定...'
+                        : '目前無法取得客戶 LINE 綁定資料'}
                   </small>
+                  {productionLineStatusError && <small className="error" role="status">{productionLineStatusError}</small>}
                 </span>
               </label>}
               {productionLineNotice && (
@@ -5781,7 +6206,7 @@ export default function CalendarPage() {
                 productionLineStatus,
                 canManageEvent,
                 productionLineStatusLoading,
-                productionLineStatusError,
+                productionLineStatus ? '' : productionLineStatusError,
                 openSalesFormWithCalendarLogin,
               )}</p>
               {salesFormOpenError && <div className="form-error" role="alert">{salesFormOpenError}</div>}
@@ -5789,17 +6214,105 @@ export default function CalendarPage() {
           )}
           {canViewSalesAttachments && (
             eventDetailAttachments.length > 0
+            || selectedEventBackgroundUploads.length > 0
+            || salesCenterAttachmentsLoading
             || (selectedEvent.source === 'erpSalesDelivery' && Boolean(salesCenterAttachmentsError))
           ) && (
             <div className="event-detail-attachments">
               <strong>附件中心</strong>
-              {salesCenterAttachmentsError && eventDetailAttachments.length === 0 ? (
+              {salesCenterAttachmentsLoading && eventDetailAttachments.length === 0 && selectedEventBackgroundUploads.length === 0 ? (
+                <div className="event-detail-attachment-loading" role="status" aria-label="附件中心照片載入中">
+                  <span aria-hidden="true" />
+                  <span aria-hidden="true" />
+                  <span aria-hidden="true" />
+                </div>
+              ) : salesCenterAttachmentsError && eventDetailAttachments.length === 0 && selectedEventBackgroundUploads.length === 0 ? (
                 <div className="event-detail-attachment-error" role="alert">
                   <span>{salesCenterAttachmentsError}</span>
                   <button type="button" onClick={() => void salesCenterAttachmentsQuery.refetch()}>重試</button>
                 </div>
               ) : (
                 <div className="event-detail-attachment-grid">
+                {selectedEventBackgroundUploads.map((upload) => {
+                  const label = upload.status === 'queued'
+                    ? '已存此裝置，等待上傳；可關閉事件視窗，請勿關閉 PWA'
+                    : upload.status === 'uploading'
+                    ? `原檔上傳中 ${Math.round(upload.progress * 100)}%，請勿關閉 PWA`
+                    : upload.status === 'processing'
+                      ? '原檔已安全上雲，可放心離開；雲端轉檔中'
+                      : upload.status === 'finalizing'
+                        ? '原檔已安全上雲，可放心離開；完成處理中'
+                        : upload.cloudSafe
+                          ? `原檔已安全上雲，後續失敗：${upload.error || '稍後會自動重試'}`
+                          : `已存此裝置，上傳失敗：${upload.error || '重新開啟後會自動重試'}`
+                  if (upload.status === 'failed') {
+                    return (
+                      <div
+                        className="event-detail-attachment-thumb"
+                        aria-label={`${upload.name}，${label}`}
+                        title={label}
+                        key={upload.id}
+                        style={{ position: 'relative', overflow: 'hidden', opacity: 0.78 }}
+                      >
+                        <img src={upload.previewUrl} alt={upload.name} style={{ opacity: 0.45 }} />
+                        <span style={{
+                          position: 'absolute',
+                          inset: '4px 4px auto',
+                          padding: '4px 6px',
+                          borderRadius: 6,
+                          background: 'rgba(112, 17, 17, 0.82)',
+                          color: '#fff',
+                          fontSize: 11,
+                          lineHeight: 1.25,
+                        }}>
+                          {label}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => removeFailedDetailBackgroundUpload(upload.id)}
+                          aria-label={`移除失敗照片：${upload.name}`}
+                          style={{
+                            position: 'absolute',
+                            inset: 'auto 4px 4px',
+                            minHeight: 44,
+                            border: 0,
+                            borderRadius: 8,
+                            background: 'rgba(255, 255, 255, 0.94)',
+                            color: '#991b1b',
+                            fontWeight: 800,
+                          }}
+                        >
+                          移除
+                        </button>
+                      </div>
+                    )
+                  }
+                  return (
+                    <button
+                      type="button"
+                      className="event-detail-attachment-thumb"
+                      disabled
+                      aria-label={`${upload.name}，${label}`}
+                      title={label}
+                      key={upload.id}
+                      style={{ position: 'relative', overflow: 'hidden' }}
+                    >
+                      <img src={upload.previewUrl} alt={upload.name} style={{ opacity: 0.55 }} />
+                      <span style={{
+                        position: 'absolute',
+                        inset: 'auto 4px 4px',
+                        padding: '4px 6px',
+                        borderRadius: 6,
+                        background: 'rgba(0, 0, 0, 0.72)',
+                        color: '#fff',
+                        fontSize: 11,
+                        lineHeight: 1.25,
+                      }}>
+                        {label}
+                      </span>
+                    </button>
+                  )
+                })}
                 {eventDetailAttachments.map((attachment, attachmentIndex) => {
                   const previewUrl = attachmentPreviewUrl(attachment)
                   const attachmentName = attachment.originalName || attachment.name
@@ -5905,15 +6418,15 @@ export default function CalendarPage() {
                               {comment.attachments.map((attachment) => {
                                 const previewUrl = attachmentPreviewUrl(attachment)
                                 return previewUrl ? (
-                                  <a
+                                  <button
+                                    type="button"
                                     className="event-comment-image"
-                                    href={attachment.url}
-                                    target="_blank"
-                                    rel="noreferrer"
+                                    onClick={() => setEnlargedEventAttachment(attachment)}
                                     key={attachment.path || attachment.url}
+                                    aria-label={`全螢幕開啟圖片：${attachment.originalName || attachment.name}`}
                                   >
                                     <img src={previewUrl} alt={attachment.originalName || attachment.name} loading="lazy" referrerPolicy="no-referrer" />
-                                  </a>
+                                  </button>
                                 ) : (
                                   <a
                                     className="event-comment-file"
@@ -6252,7 +6765,17 @@ export default function CalendarPage() {
 
   function renderEventAttachmentLightbox() {
     if (!enlargedEventAttachment) return null
+    const attachmentKey = enlargedEventAttachment.path || enlargedEventAttachment.url
+    const attachmentIndex = eventDetailImageAttachments.findIndex(
+      (attachment) => (attachment.path || attachment.url) === attachmentKey,
+    )
+    const canShowPrevious = attachmentIndex > 0
+    const canShowNext = attachmentIndex >= 0 && attachmentIndex < eventDetailImageAttachments.length - 1
     const attachmentName = enlargedEventAttachment.originalName || enlargedEventAttachment.name
+    const showAttachmentAt = (index: number) => {
+      const attachment = eventDetailImageAttachments[index]
+      if (attachment) setEnlargedEventAttachment(attachment)
+    }
     return (
       <div
         className="event-attachment-lightbox-overlay"
@@ -6268,12 +6791,26 @@ export default function CalendarPage() {
       >
         <div className="event-attachment-lightbox">
           <div className="event-attachment-lightbox-header">
-            <strong title={attachmentName}>{attachmentName}</strong>
+            <div className="event-attachment-lightbox-title">
+              <strong title={attachmentName}>{attachmentName}</strong>
+              {attachmentIndex >= 0 && <span>{attachmentIndex + 1} / {eventDetailImageAttachments.length}</span>}
+            </div>
             <button type="button" onClick={() => setEnlargedEventAttachment(null)} aria-label="關閉圖片預覽">×</button>
           </div>
           <ZoomableAttachmentImage
+            key={attachmentKey}
             src={attachmentFullImageUrl(enlargedEventAttachment)}
+            previewSrc={attachmentPreviewUrl(enlargedEventAttachment)}
+            preloadSources={[
+              canShowPrevious ? attachmentFullImageUrl(eventDetailImageAttachments[attachmentIndex - 1]) : '',
+              canShowNext ? attachmentFullImageUrl(eventDetailImageAttachments[attachmentIndex + 1]) : '',
+            ]}
             alt={attachmentName}
+            onClose={() => setEnlargedEventAttachment(null)}
+            onPrevious={() => showAttachmentAt(attachmentIndex - 1)}
+            onNext={() => showAttachmentAt(attachmentIndex + 1)}
+            canPrevious={canShowPrevious}
+            canNext={canShowNext}
           />
         </div>
       </div>
@@ -6595,6 +7132,16 @@ export default function CalendarPage() {
           )}
         </div>
       </header>
+
+      {unsafeActiveBackgroundUploads.length > 0 ? (
+        <div className="durable-upload-banner unsafe" role="status" aria-live="polite">
+          尚有 {unsafeActiveBackgroundUploads.length} 張照片正在將原檔上傳至雲端；可關閉事件視窗，但完成前請勿關閉 PWA。
+        </div>
+      ) : safeProcessingBackgroundUploadCount > 0 ? (
+        <div className="durable-upload-banner safe" role="status" aria-live="polite">
+          {safeProcessingBackgroundUploadCount} 張照片原檔已安全上雲，轉檔會在背景繼續，可放心離開。
+        </div>
+      ) : null}
 
       {showPasswordModal && (
         <div

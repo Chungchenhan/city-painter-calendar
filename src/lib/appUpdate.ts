@@ -1,5 +1,5 @@
 import { registerSW } from 'virtual:pwa-register'
-import { clearLocalQueryCaches, ensureLocalQueryCacheSchema } from './localQueryCache'
+import { ensureLocalQueryCacheSchema } from './localQueryCache'
 
 const APP_VERSION_KEY = 'cityPainterCalendarAppVersion'
 const RELOAD_FLAG_KEY = 'cityPainterCalendarReloadingForUpdate'
@@ -11,7 +11,11 @@ type AppVersionPayload = {
 async function clearRuntimeCaches() {
   if (!('caches' in window)) return
   const keys = await caches.keys()
-  await Promise.all(keys.map((key) => caches.delete(key)))
+  await Promise.all(
+    keys
+      .filter((key) => key === 'pages' || key === 'firebase-api')
+      .map((key) => caches.delete(key))
+  )
 }
 
 async function checkAppVersion() {
@@ -35,7 +39,6 @@ async function checkAppVersion() {
 
     localStorage.setItem(APP_VERSION_KEY, version)
     sessionStorage.setItem(RELOAD_FLAG_KEY, version)
-    clearLocalQueryCaches()
     await clearRuntimeCaches()
     window.location.reload()
   } catch {
@@ -54,7 +57,6 @@ export function setupAppUpdateChecks() {
   registerSW({
     immediate: true,
     onNeedRefresh() {
-      clearLocalQueryCaches()
       void clearRuntimeCaches().finally(() => window.location.reload())
     },
     onRegisteredSW(_swUrl, registration) {
