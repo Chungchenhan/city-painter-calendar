@@ -675,6 +675,8 @@ export function parseAttachmentUploadJobRequest(body = {}) {
   const clientUploadId = text(body.clientUploadId)
   const uploadKind = text(body.uploadKind) || 'event'
   const commentId = text(body.commentId)
+  const fulfillmentBatchId = text(body.fulfillmentBatchId)
+  const fulfillmentBatchSize = Number(body.fulfillmentBatchSize)
   if (!eventId || eventId.includes('/') || eventId.length > 200) throw requestError('附件事件識別碼不正確', 400)
   if (!name || name.length > 500) throw requestError('照片檔名不正確', 400)
   if (!type.startsWith('image/') || type === 'image/svg+xml') throw requestError('外送／施工完成只能上傳照片', 400)
@@ -692,6 +694,16 @@ export function parseAttachmentUploadJobRequest(body = {}) {
   if (uploadKind === 'comment' && completionMode !== 'none') {
     throw requestError('留言照片完成模式不正確', 400)
   }
+  if (completionMode === 'fulfillment') {
+    if (!/^[A-Za-z0-9-]{8,120}$/.test(fulfillmentBatchId)) {
+      throw requestError('完工照片批次識別碼不正確', 400)
+    }
+    if (!Number.isSafeInteger(fulfillmentBatchSize) || fulfillmentBatchSize < 1 || fulfillmentBatchSize > 20) {
+      throw requestError('完工照片批次張數不正確', 400)
+    }
+  } else if (fulfillmentBatchId || Number.isFinite(fulfillmentBatchSize)) {
+    throw requestError('非完工照片不可指定完工批次', 400)
+  }
   const capture = parseUploadPhotoMetadata({
     capturedAt: body.capture?.capturedAt,
     capturedAtSource: body.capture?.capturedAtSource,
@@ -706,7 +718,9 @@ export function parseAttachmentUploadJobRequest(body = {}) {
     capture,
     clientUploadId,
     uploadKind,
-    commentId: uploadKind === 'comment' ? commentId : ''
+    commentId: uploadKind === 'comment' ? commentId : '',
+    fulfillmentBatchId: completionMode === 'fulfillment' ? fulfillmentBatchId : '',
+    fulfillmentBatchSize: completionMode === 'fulfillment' ? fulfillmentBatchSize : 0
   }
 }
 
@@ -779,6 +793,8 @@ async function createAttachmentUploadJob(db, actor, body) {
         || text(existing.target?.completionMode) !== request.completionMode
         || text(existing.target?.uploadKind) !== request.uploadKind
         || text(existing.target?.commentId) !== request.commentId
+        || text(existing.target?.fulfillmentBatchId) !== request.fulfillmentBatchId
+        || Number(existing.target?.fulfillmentBatchSize || 0) !== request.fulfillmentBatchSize
         || text(existing.original?.name) !== request.name
         || Number(existing.original?.size) !== request.size
         || text(existing.original?.type) !== request.type
@@ -807,7 +823,11 @@ async function createAttachmentUploadJob(db, actor, body) {
         eventId: request.eventId,
         uploadKind: request.uploadKind,
         ...(request.commentId ? { commentId: request.commentId } : {}),
-        completionMode: request.completionMode
+        completionMode: request.completionMode,
+        ...(request.fulfillmentBatchId ? {
+          fulfillmentBatchId: request.fulfillmentBatchId,
+          fulfillmentBatchSize: request.fulfillmentBatchSize
+        } : {})
       },
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
@@ -830,6 +850,9 @@ async function finalizeAttachmentUploadJob(db, actor, body) {
         ? job.attachment
         : attachmentFromUploadJob(jobId, job)
       return { ok: true, attachment, committed: true, completionMode: text(job.target?.completionMode) || 'none' }
+    }
+    if (text(job.target?.completionMode) === 'fulfillment' && text(job.target?.fulfillmentBatchId)) {
+      throw requestError('完工照片批次仍在背景處理中', 409)
     }
     if (text(job.status) !== 'ready') throw requestError('照片仍在背景處理中', 409)
     const uploadKind = text(job.target?.uploadKind)

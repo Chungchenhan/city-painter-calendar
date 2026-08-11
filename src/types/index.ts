@@ -127,7 +127,8 @@ export interface CalendarEvent {
   productionLineRetry?: {
     mode: 'production' | 'fulfillment'
     attachmentIds: string[]
-    status: 'pending' | 'failed'
+    status: 'processing' | 'pending' | 'failed'
+    fulfillmentBatchId?: string
     message?: string
     updatedAt?: string
   }

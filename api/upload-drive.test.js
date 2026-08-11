@@ -145,6 +145,38 @@ test('留言照片背景工作必須綁定留言且不允許完工模式', () =>
   }), /留言識別碼/)
 })
 
+test('完工照片背景工作必須帶入有效批次資料', () => {
+  const input = {
+    eventId: 'event-1',
+    originalName: 'delivery.jpg',
+    contentType: 'image/jpeg',
+    originalSize: 1024,
+    completionMode: 'fulfillment',
+    clientUploadId: 'delivery-photo-1',
+    fulfillmentBatchId: 'delivery-batch-1',
+    fulfillmentBatchSize: 3,
+  }
+  const request = parseAttachmentUploadJobRequest(input)
+  assert.equal(request.fulfillmentBatchId, 'delivery-batch-1')
+  assert.equal(request.fulfillmentBatchSize, 3)
+  assert.throws(() => parseAttachmentUploadJobRequest({
+    ...input,
+    fulfillmentBatchId: '',
+  }), /批次識別碼/)
+  assert.throws(() => parseAttachmentUploadJobRequest({
+    ...input,
+    fulfillmentBatchSize: 0,
+  }), /批次張數/)
+  assert.equal(parseAttachmentUploadJobRequest({
+    ...input,
+    fulfillmentBatchSize: 20,
+  }).fulfillmentBatchSize, 20)
+  assert.throws(() => parseAttachmentUploadJobRequest({
+    ...input,
+    fulfillmentBatchSize: 21,
+  }), /批次張數/)
+})
+
 test('現金付款 action 只轉送金額與冪等鍵', () => {
   assert.deepEqual(buildForwardedLineActionBody({
     action: 'record-fulfillment-cash-payment',

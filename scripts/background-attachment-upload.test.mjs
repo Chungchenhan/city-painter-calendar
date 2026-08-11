@@ -15,6 +15,8 @@ const parsed = parseAttachmentUploadJobRequest({
   contentType: 'image/jpeg',
   completionMode: 'fulfillment',
   clientUploadId: '019fbb0c-99fb-7770-8e29-a0a8709621f8',
+  fulfillmentBatchId: 'fulfillment-batch-1',
+  fulfillmentBatchSize: 1,
   capture: {
     capturedAt: '2026-08-01T01:02:03.000Z',
     capturedAtSource: 'exif',
@@ -23,6 +25,8 @@ const parsed = parseAttachmentUploadJobRequest({
 assert.equal(parsed.eventId, 'event-1')
 assert.equal(parsed.completionMode, 'fulfillment')
 assert.equal(parsed.clientUploadId, '019fbb0c-99fb-7770-8e29-a0a8709621f8')
+assert.equal(parsed.fulfillmentBatchId, 'fulfillment-batch-1')
+assert.equal(parsed.fulfillmentBatchSize, 1)
 assert.equal(parsed.capture.capturedAtSource, 'exif')
 
 const durableJobId = attachmentUploadJobDocumentId('user-1', parsed.clientUploadId)

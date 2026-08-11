@@ -11,15 +11,165 @@ const {
   CLEANUP_AGE_MS,
   assertDecodedImage,
   calendarAttachmentFromJobResult,
+  classifyFulfillmentBatchJobs,
   cleanupExpiredJobs,
   commitCalendarCommentAttachment,
+  exchangeCustomTokenForIdToken,
+  fulfillmentBatchDocumentId,
+  fulfillmentBatchId,
+  fulfillmentBatchLeaseDecision,
+  fulfillmentBatchSize,
+  fulfillmentFailureState,
+  fulfillmentLineResultDecision,
+  fulfillmentRetryDelayMs,
+  lineImageUrls,
   makeDriveFilePublic,
   parseStagingObjectPath,
   resultFileIds,
   shouldCleanupJob,
+  sendFulfillmentLineRequest,
   transformVariants,
   variantNames,
 } = require('./backgroundAttachmentWorker')
+
+test('只有新格式且完整的完工批次會交給背景 worker', () => {
+  const job = {
+    target: {
+      fulfillmentBatchId: 'batch-12345678',
+      fulfillmentBatchSize: 20,
+    },
+  }
+  assert.equal(fulfillmentBatchId(job), 'batch-12345678')
+  assert.equal(fulfillmentBatchSize(job), 20)
+  assert.equal(fulfillmentBatchId({ target: {} }), '')
+  assert.equal(fulfillmentBatchSize({ target: { fulfillmentBatchSize: 21 } }), 0)
+  assert.equal(fulfillmentBatchDocumentId('batch-12345678').length, 64)
+})
+
+test('LINE 圖片簽名保留金鑰尾端換行並相容既有固定向量', () => {
+  const urls = lineImageUrls('drive-file-1', 'test-secret\n', 'https://sch.city-painter.com/')
+  assert.equal(
+    urls.lineOriginalUrl,
+    'https://sch.city-painter.com/api/upload-drive?fileId=drive-file-1&variant=original&signature=19371d0305dc83e2989b1e16dbff51a015cef19b924751d06a4c5938e4aea45f',
+  )
+  assert.equal(
+    urls.linePreviewUrl,
+    'https://sch.city-painter.com/api/upload-drive?fileId=drive-file-1&variant=preview&signature=7e09206244a46f2632439f45a2f24589dbd6643c3c84392575b5d62f860413f6',
+  )
+})
+
+test('背景身分交換只回傳 ID token', async () => {
+  let request = null
+  const idToken = await exchangeCustomTokenForIdToken('custom-token', 'web-api-key', async (url, options) => {
+    request = { url, options }
+    return { ok: true, status: 200, json: async () => ({ idToken: 'firebase-id-token' }) }
+  })
+  assert.equal(idToken, 'firebase-id-token')
+  assert.match(request.url, /signInWithCustomToken\?key=web-api-key$/)
+  assert.deepEqual(JSON.parse(request.options.body), { token: 'custom-token', returnSecureToken: true })
+})
+
+test('背景完工呼叫既有 ERP API 並同時帶 Auth 與 App Check', async () => {
+  let request = null
+  const { payload } = await sendFulfillmentLineRequest({
+    eventId: 'event-1',
+    attachmentIds: ['image-1', 'image-2'],
+    idToken: 'firebase-id-token',
+    appCheckToken: 'limited-use-app-check-token',
+    fetchImpl: async (url, options) => {
+      request = { url, options }
+      return { ok: true, status: 200, json: async () => ({ ok: true }) }
+    },
+  })
+  assert.deepEqual(payload, { ok: true })
+  assert.equal(request.url, 'https://erp.city-painter.com/api/line')
+  assert.equal(request.options.headers.Authorization, 'Bearer firebase-id-token')
+  assert.equal(request.options.headers['X-Firebase-AppCheck'], 'limited-use-app-check-token')
+  assert.deepEqual(JSON.parse(request.options.body), {
+    action: 'complete-order-fulfillment',
+    eventId: 'event-1',
+    attachmentIds: ['image-1', 'image-2'],
+  })
+})
+
+test('完工重試採指數退避且最多一小時', () => {
+  assert.equal(fulfillmentRetryDelayMs(1), 60_000)
+  assert.equal(fulfillmentRetryDelayMs(3), 240_000)
+  assert.equal(fulfillmentRetryDelayMs(20), 3_600_000)
+})
+
+function fulfillmentJob(overrides = {}) {
+  return {
+    uploaderUid: 'user-1',
+    status: 'committed',
+    attachment: { path: 'image-1' },
+    target: {
+      kind: 'calendar-event',
+      uploadKind: 'event',
+      completionMode: 'fulfillment',
+      eventId: 'event-1',
+      fulfillmentBatchId: 'batch-12345678',
+      fulfillmentBatchSize: 2,
+    },
+    ...overrides,
+  }
+}
+
+test('完工批次未達 expected 時等待且不具備送出條件', () => {
+  assert.deepEqual(
+    classifyFulfillmentBatchJobs([fulfillmentJob()], 'batch-12345678'),
+    { state: 'waiting' },
+  )
+})
+
+test('完工批次只有全部 committed 才產生一次完整附件清單', () => {
+  const jobs = [
+    fulfillmentJob(),
+    fulfillmentJob({ attachment: { path: 'image-2' } }),
+  ]
+  assert.deepEqual(classifyFulfillmentBatchJobs(jobs, 'batch-12345678'), {
+    state: 'ready',
+    expectedSize: 2,
+    eventId: 'event-1',
+    uploaderUid: 'user-1',
+    attachmentIds: ['image-1', 'image-2'],
+  })
+  assert.deepEqual(
+    classifyFulfillmentBatchJobs([jobs[0], { ...jobs[1], status: 'ready' }], 'batch-12345678'),
+    { state: 'waiting' },
+  )
+})
+
+test('同批不同 event、uploader 或 size 一律拒絕', () => {
+  const base = fulfillmentJob()
+  const mismatches = [
+    { ...fulfillmentJob({ attachment: { path: 'image-2' } }), target: { ...base.target, eventId: 'event-2' } },
+    fulfillmentJob({ uploaderUid: 'user-2', attachment: { path: 'image-2' } }),
+    { ...fulfillmentJob({ attachment: { path: 'image-2' } }), target: { ...base.target, fulfillmentBatchSize: 3 } },
+  ]
+  mismatches.forEach((mismatch) => {
+    assert.deepEqual(classifyFulfillmentBatchJobs([base, mismatch], 'batch-12345678'), { state: 'invalid' })
+  })
+})
+
+test('completed 與有效 lease 都不會再次取得送出權', () => {
+  const now = Date.parse('2026-08-12T00:00:00.000Z')
+  assert.equal(fulfillmentBatchLeaseDecision({ status: 'completed' }, now), 'terminal')
+  assert.equal(fulfillmentBatchLeaseDecision({ status: 'processing', leaseUntil: new Date(now + 60_000) }, now), 'busy')
+  assert.equal(fulfillmentBatchLeaseDecision({ status: 'processing', leaseUntil: new Date(now - 1) }, now), 'acquire')
+})
+
+test('暫時錯誤進入 retry，LINE warning 則終止自動重試並保留人工處理', () => {
+  const now = Date.parse('2026-08-12T00:00:00.000Z')
+  assert.deepEqual(fulfillmentFailureState(2, now), {
+    status: 'retry',
+    exhausted: false,
+    nextAttemptAtMs: now + 120_000,
+  })
+  assert.equal(fulfillmentLineResultDecision({ sent: false, skipped: false }), 'retry')
+  assert.equal(fulfillmentLineResultDecision({ skipped: true, lineWarning: '客戶尚未綁定 LINE' }), 'manual')
+  assert.equal(fulfillmentLineResultDecision({ skipped: true, reason: 'notification_disabled' }), 'completed')
+})
 
 test('只接受完整的附件暫存路徑', () => {
   assert.deepEqual(

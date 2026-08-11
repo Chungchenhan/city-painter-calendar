@@ -16,6 +16,8 @@ export type DurableBackgroundAttachmentUpload = {
   uploadKind?: BackgroundAttachmentUploadKind
   commentId?: string
   completionMode: BackgroundAttachmentCompletionMode
+  fulfillmentBatchId?: string
+  fulfillmentBatchSize?: number
   blob: Blob
   name: string
   type: string
@@ -138,6 +140,8 @@ export async function persistDurableBackgroundAttachmentUpload(options: {
   uploaderUid: string
   eventId: string
   completionMode: BackgroundAttachmentCompletionMode
+  fulfillmentBatchId?: string
+  fulfillmentBatchSize?: number
   uploadKind?: BackgroundAttachmentUploadKind
   commentId?: string
   file: File
@@ -148,6 +152,8 @@ export async function persistDurableBackgroundAttachmentUpload(options: {
     uploaderUid: options.uploaderUid,
     eventId: options.eventId,
     completionMode: options.completionMode,
+    ...(options.fulfillmentBatchId ? { fulfillmentBatchId: options.fulfillmentBatchId } : {}),
+    ...(options.fulfillmentBatchSize ? { fulfillmentBatchSize: options.fulfillmentBatchSize } : {}),
     uploadKind: options.uploadKind ?? 'event',
     ...(options.commentId ? { commentId: options.commentId } : {}),
     blob: options.file,
@@ -278,7 +284,12 @@ export async function createBackgroundAttachmentJob(
   completionMode: BackgroundAttachmentCompletionMode,
   capture?: PhotoCaptureMetadata,
   clientUploadId?: string,
-  context: { uploadKind?: BackgroundAttachmentUploadKind, commentId?: string } = {},
+  context: {
+    uploadKind?: BackgroundAttachmentUploadKind
+    commentId?: string
+    fulfillmentBatchId?: string
+    fulfillmentBatchSize?: number
+  } = {},
 ) {
   const contentType = backgroundImageContentType(file)
   const payload = await callJobApi({
@@ -290,6 +301,8 @@ export async function createBackgroundAttachmentJob(
     completionMode,
     uploadKind: context.uploadKind ?? 'event',
     ...(context.commentId ? { commentId: context.commentId } : {}),
+    ...(context.fulfillmentBatchId ? { fulfillmentBatchId: context.fulfillmentBatchId } : {}),
+    ...(context.fulfillmentBatchSize ? { fulfillmentBatchSize: context.fulfillmentBatchSize } : {}),
     ...(clientUploadId ? { clientUploadId } : {}),
     ...(capture ? { capture } : {}),
   })
@@ -315,7 +328,11 @@ export function uploadBackgroundAttachment(
   })
 }
 
-export function waitForBackgroundAttachmentJob(jobId: string, timeoutMs = 15 * 60 * 1000) {
+export function waitForBackgroundAttachmentJob(
+  jobId: string,
+  timeoutMs = 15 * 60 * 1000,
+  committedOnly = false,
+) {
   return new Promise<'ready' | 'committed'>((resolve, reject) => {
     let unsubscribe: () => void = () => undefined
     const timeout = window.setTimeout(() => {
@@ -331,7 +348,7 @@ export function waitForBackgroundAttachmentJob(jobId: string, timeoutMs = 15 * 6
       if (!snapshot.exists()) return
       const data = snapshot.data()
       const status = typeof data.status === 'string' ? data.status : ''
-      if (status === 'ready' || status === 'committed') finish(() => resolve(status))
+      if (status === 'committed' || (!committedOnly && status === 'ready')) finish(() => resolve(status))
       if (status === 'failed' || status === 'error') {
         const message = typeof data.error === 'string'
           ? data.error
@@ -413,6 +430,8 @@ export async function startBackgroundAttachmentUpload(options: {
       {
         uploadKind: options.uploadKind ?? durableUpload.uploadKind ?? 'event',
         commentId: options.commentId ?? durableUpload.commentId,
+        fulfillmentBatchId: durableUpload.fulfillmentBatchId,
+        fulfillmentBatchSize: durableUpload.fulfillmentBatchSize,
       },
     )
     jobId = created.jobId
@@ -460,7 +479,11 @@ export async function startBackgroundAttachmentUpload(options: {
       error: undefined,
     })
   }
-  await waitForBackgroundAttachmentJob(jobId)
+  await waitForBackgroundAttachmentJob(
+    jobId,
+    15 * 60 * 1000,
+    options.completionMode === 'fulfillment' && Boolean(durableUpload.fulfillmentBatchId),
+  )
   options.onProgress?.('finalizing')
   const result = await finalizeBackgroundAttachmentJob(jobId)
   return keepRemoteUploadResult(

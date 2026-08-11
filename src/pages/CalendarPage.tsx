@@ -2414,6 +2414,8 @@ export default function CalendarPage() {
   useEffect(() => {
     if (!user?.uid) return
     const recoveries = loadBackgroundAttachmentRecoveries().filter((recovery) => (
+      recovery.completionMode !== 'fulfillment'
+      &&
       !backgroundAttachmentRecoveryIdsRef.current.has(recovery.jobId)
     ))
     const groups = new Map<string, typeof recoveries>()
@@ -4712,6 +4714,12 @@ export default function CalendarPage() {
       await refreshCalendarData()
       return
     }
+    if (!import.meta.env.DEV) {
+      setProductionLineRetry(null)
+      setProductionLineNotice(null)
+      await refreshCalendarData()
+      return
+    }
     setProductionLineRetry(retry)
     try {
       const result = await completeOrderFulfillment(eventId, retry.attachmentIds)
@@ -4976,7 +4984,7 @@ export default function CalendarPage() {
     rows.forEach((row) => {
       if (backgroundAttachmentRecoveryIdsRef.current.has(`durable:${row.id}`)) return
       backgroundAttachmentRecoveryIdsRef.current.add(`durable:${row.id}`)
-      const key = `${row.eventId}:${row.completionMode}`
+      const key = row.fulfillmentBatchId || `${row.eventId}:${row.completionMode}`
       groups.set(key, [...(groups.get(key) ?? []), row])
     })
     await Promise.all(Array.from(groups.values()).map(async (group) => {
@@ -5114,6 +5122,7 @@ export default function CalendarPage() {
     void (async () => {
       if (!user?.uid) return
       const persistedRows: DurableBackgroundAttachmentUpload[] = []
+      const fulfillmentBatchId = createClientId()
       for (const file of files) {
         const id = createClientId()
         const previewUrl = URL.createObjectURL(file)
@@ -5134,6 +5143,8 @@ export default function CalendarPage() {
             uploaderUid: user.uid,
             eventId: eventSnapshot.id,
             completionMode: 'fulfillment',
+            fulfillmentBatchId,
+            fulfillmentBatchSize: files.length,
             file,
           })
           persistedRows.push(row)
@@ -5146,7 +5157,16 @@ export default function CalendarPage() {
           )))
         }
       }
-      if (persistedRows.length > 0) await processDurableBackgroundUploads(persistedRows)
+      if (persistedRows.length > 0) {
+        const normalizedRows = await Promise.all(persistedRows.map((row) => (
+          row.fulfillmentBatchSize === persistedRows.length
+            ? Promise.resolve(row)
+            : updateDurableBackgroundAttachmentUpload(row.id, {
+                fulfillmentBatchSize: persistedRows.length,
+              })
+        )))
+        await processDurableBackgroundUploads(normalizedRows)
+      }
     })()
   }
 
@@ -5160,6 +5180,10 @@ export default function CalendarPage() {
     }
     let fulfillmentEvent = isErpOrderFulfillmentEvent(selectedEvent, productionLineStatus)
     let latestProductionLineStatus = productionLineStatus
+    if (fulfillmentEvent && files.length > 20) {
+      alert('外送／施工照片一次最多上傳 20 張')
+      return
+    }
     if (fulfillmentEvent && files.some((file) => !canUseBackgroundImageUpload(file))) {
       alert('外送／施工完成只能上傳照片')
       return
@@ -5189,6 +5213,11 @@ export default function CalendarPage() {
           throw new Error('外送／施工完成只能上傳照片')
         }
         openFulfillmentPaymentPrompt(selectedEvent.id, latestProductionLineStatus?.paymentPrompt)
+      }
+      if (fulfillmentEvent) {
+        setDetailAttachmentUploading(false)
+        queueFulfillmentBackgroundUploads(selectedEvent, files)
+        return
       }
       uploadedAttachments = await uploadEventAttachments(selectedEvent.id, files)
       if (!uploadedAttachments.length) throw new Error('附件上傳失敗')

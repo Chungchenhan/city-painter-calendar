@@ -6,6 +6,7 @@ const webpush = require('web-push')
 const {
   cleanupStagedAttachments,
   processPendingAttachments,
+  recoverPendingAttachmentFulfillments,
   processStagedAttachment,
 } = require('./backgroundAttachmentWorker')
 const { bumpCalendarSalesStatusRevision } = require('./calendarSalesStatusRevision')
@@ -489,4 +490,5 @@ exports.invalidateCalendarSalesStatusFromCustomers = salesStatusRevisionTrigger(
 
 exports.processStagedAttachment = processStagedAttachment
 exports.processPendingAttachments = processPendingAttachments
+exports.recoverPendingAttachmentFulfillments = recoverPendingAttachmentFulfillments
 exports.cleanupStagedAttachments = cleanupStagedAttachments
