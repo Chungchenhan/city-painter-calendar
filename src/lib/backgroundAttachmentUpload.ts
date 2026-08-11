@@ -3,6 +3,7 @@ import { ref, uploadBytesResumable } from 'firebase/storage'
 import type { PhotoCaptureMetadata } from './photoMetadata'
 import { auth, db, getAppCheckHeaders, storage } from './firebase'
 import type { CalendarEvent } from '../types'
+import { keepRemoteUploadResult, keepUploadFlowAfterLocalStateFailure } from './backgroundAttachmentUploadResult'
 
 export type BackgroundAttachmentCompletionMode = 'fulfillment' | 'production' | 'none'
 export type BackgroundAttachmentProgress = 'uploading' | 'processing' | 'finalizing'
@@ -118,7 +119,11 @@ async function runDurableUploadTransaction<T>(
     let value: T
     operation(store, (nextValue) => { value = nextValue })
     transaction.oncomplete = () => resolve(value)
-    transaction.onerror = () => reject(transaction.error || new Error('離線照片佇列操作失敗'))
+    transaction.onerror = (event) => reject(
+      transaction.error
+      || (event.target as IDBRequest | null)?.error
+      || new Error('離線照片佇列操作失敗')
+    )
     transaction.onabort = () => reject(transaction.error || new Error('離線照片佇列操作已取消'))
   })
 }
@@ -346,31 +351,36 @@ export async function startBackgroundAttachmentUpload(options: {
   const durableUpload = options.durableUpload
   if (!durableUpload) throw new Error('照片尚未存入離線佇列')
   const persistedCapture = options.capture ?? durableUpload.capture
-  if (options.capture && !durableUpload.capture) {
-    await updateDurableBackgroundAttachmentUpload(durableUpload.id, { capture: options.capture })
-  }
+  const persistLocalState = (
+    phase: string,
+    patch: Partial<Omit<DurableBackgroundAttachmentUpload, 'id' | 'blob' | 'createdAt'>>,
+  ) => keepUploadFlowAfterLocalStateFailure(
+    () => updateDurableBackgroundAttachmentUpload(durableUpload.id, patch),
+    (error) => console.warn('[calendar] 照片雲端流程繼續，本機佇列狀態更新失敗', {
+      phase,
+      uploadId: durableUpload.id,
+      name: durableUpload.name,
+      size: durableUpload.size,
+      error,
+    }),
+  )
   if (durableUpload.attachment) {
     options.onCloudSafe?.()
     options.onProgress?.('finalizing', 1)
     return { attachment: durableUpload.attachment, completionMode: durableUpload.completionMode }
   }
   if (options.localFallback) {
-    await updateDurableBackgroundAttachmentUpload(durableUpload.id, {
-      status: 'uploading',
-      progress: 0,
-      error: undefined,
-    })
     options.onProgress?.('uploading', 0)
     const attachment = await options.localFallback(options.file, durableUpload.id)
-    await updateDurableBackgroundAttachmentUpload(durableUpload.id, {
+    options.onCloudSafe?.()
+    options.onProgress?.('finalizing', 1)
+    await persistLocalState('local-fallback-completed', {
       status: 'finalizing',
       progress: 1,
       cloudSafe: true,
       attachment,
       error: undefined,
     })
-    options.onCloudSafe?.()
-    options.onProgress?.('finalizing', 1)
     return { attachment, completionMode: options.completionMode }
   }
   let jobId = durableUpload.jobId
@@ -385,7 +395,6 @@ export async function startBackgroundAttachmentUpload(options: {
     )
     jobId = created.jobId
     stagingPath = created.stagingPath
-    await updateDurableBackgroundAttachmentUpload(durableUpload.id, { jobId, stagingPath })
   }
   options.onJobCreated?.(jobId)
   const snapshot = await getDoc(doc(db, 'attachmentUploadJobs', jobId))
@@ -402,7 +411,9 @@ export async function startBackgroundAttachmentUpload(options: {
     throw new Error(message)
   }
   if (jobStatus === 'processing' || jobStatus === 'ready' || jobStatus === 'committed') {
-    await updateDurableBackgroundAttachmentUpload(durableUpload.id, {
+    options.onCloudSafe?.()
+    options.onProgress?.('processing', 1)
+    await persistLocalState('cloud-safe-resume', {
       status: 'processing',
       progress: 1,
       cloudSafe: true,
@@ -410,39 +421,37 @@ export async function startBackgroundAttachmentUpload(options: {
       stagingPath,
       error: undefined,
     })
-    options.onCloudSafe?.()
   } else {
-    await updateDurableBackgroundAttachmentUpload(durableUpload.id, {
-      status: 'uploading',
-      progress: 0,
-      jobId,
-      stagingPath,
-      error: undefined,
-    })
     options.onProgress?.('uploading', 0)
     await uploadBackgroundAttachment(stagingPath, jobId, options.file, (ratio) => {
       options.onProgress?.('uploading', ratio)
     })
-    await updateDurableBackgroundAttachmentUpload(durableUpload.id, {
+    options.onCloudSafe?.()
+    options.onProgress?.('processing', 1)
+    await persistLocalState('cloud-safe-upload', {
       status: 'processing',
       progress: 1,
       cloudSafe: true,
+      jobId,
+      stagingPath,
+      ...(persistedCapture && !durableUpload.capture ? { capture: persistedCapture } : {}),
       error: undefined,
     })
-    options.onCloudSafe?.()
   }
-  options.onProgress?.('processing')
   await waitForBackgroundAttachmentJob(jobId)
   options.onProgress?.('finalizing')
   const result = await finalizeBackgroundAttachmentJob(jobId)
-  await updateDurableBackgroundAttachmentUpload(durableUpload.id, {
-    status: 'finalizing',
-    progress: 1,
-    cloudSafe: true,
-    attachment: result.attachment,
-    error: undefined,
-  })
-  return result
+  return keepRemoteUploadResult(
+    result,
+    () => updateDurableBackgroundAttachmentUpload(durableUpload.id, {
+      status: 'finalizing',
+      progress: 1,
+      cloudSafe: true,
+      attachment: result.attachment,
+      error: undefined,
+    }),
+    (error) => console.warn('[calendar] 照片已完成雲端上傳，但本機佇列狀態更新失敗', error),
+  )
 }
 
 export async function resumeBackgroundAttachmentUpload(recovery: BackgroundAttachmentRecovery) {

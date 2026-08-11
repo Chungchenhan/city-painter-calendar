@@ -111,6 +111,20 @@ function createDriveClient() {
   return google.drive({ version: 'v3', auth })
 }
 
+async function makeDriveFilePublic(drive, fileId) {
+  try {
+    await drive.permissions.create({
+      fileId,
+      requestBody: { type: 'anyone', role: 'reader' },
+      supportsAllDrives: true,
+    })
+    return true
+  } catch {
+    // 部分共用雲端硬碟禁止公開連結，附件仍可由既有簽名代理安全讀取。
+    return false
+  }
+}
+
 async function findOrCreateSalesFolder(drive, rootFolderId, folderName) {
   const list = await drive.files.list({
     q: [
@@ -236,13 +250,7 @@ async function uploadVariant(drive, {
     })
     createdId = text(created.data.id)
     if (!createdId) throw new Error('Google Drive 未回傳檔案 ID')
-    if (makePublic) {
-      await drive.permissions.create({
-        fileId: createdId,
-        requestBody: { type: 'anyone', role: 'reader' },
-        supportsAllDrives: true,
-      })
-    }
+    if (makePublic) await makeDriveFilePublic(drive, createdId)
     const url = text(created.data.webViewLink) || `https://drive.google.com/file/d/${createdId}/view`
     const uploadedAt = text(created.data.createdTime) || now.toISOString()
     return {
@@ -585,6 +593,7 @@ module.exports = {
   CLEANUP_AGE_MS,
   assertDecodedImage,
   cleanupExpiredJobs,
+  makeDriveFilePublic,
   cleanupStagedAttachments,
   parseStagingObjectPath,
   processPendingAttachments,

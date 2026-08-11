@@ -3,6 +3,13 @@ let lastHeight = ''
 let lastOffsetTop = ''
 let lastKeyboardInset = ''
 
+function isTextKeyboardControl(element: Element | null) {
+  if (element instanceof HTMLTextAreaElement) return true
+  if (element instanceof HTMLElement && element.isContentEditable) return true
+  if (!(element instanceof HTMLInputElement)) return false
+  return ['text', 'search', 'email', 'tel', 'url', 'password', 'number'].includes(element.type)
+}
+
 function applyVisualViewportVars() {
   const viewport = window.visualViewport
   const height = Math.round(viewport?.height ?? window.innerHeight)
@@ -24,7 +31,10 @@ function applyVisualViewportVars() {
     document.documentElement.style.setProperty('--app-keyboard-inset', keyboardInsetValue)
     lastKeyboardInset = keyboardInsetValue
   }
-  document.documentElement.classList.toggle('keyboard-open', keyboardInset > 80)
+  document.documentElement.classList.toggle(
+    'keyboard-open',
+    keyboardInset > 80 && isTextKeyboardControl(document.activeElement),
+  )
 }
 
 function scrollFocusedControlIntoModal() {
@@ -57,13 +67,27 @@ function updateVisualViewportVars() {
   })
 }
 
+function settleVisualViewportVars() {
+  updateVisualViewportVars()
+  window.setTimeout(updateVisualViewportVars, 120)
+  window.setTimeout(updateVisualViewportVars, 360)
+}
+
 export function setupVisualViewportVars() {
   updateVisualViewportVars()
 
   const viewport = window.visualViewport
   window.addEventListener('resize', updateVisualViewportVars)
   window.addEventListener('orientationchange', updateVisualViewportVars)
-  window.addEventListener('focusin', scrollFocusedControlIntoModal)
+  window.addEventListener('focusin', (event) => {
+    scrollFocusedControlIntoModal()
+    if (isTextKeyboardControl(event.target as Element | null)) settleVisualViewportVars()
+  })
+  window.addEventListener('focusout', settleVisualViewportVars)
+  window.addEventListener('pageshow', settleVisualViewportVars)
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') settleVisualViewportVars()
+  })
   viewport?.addEventListener('resize', updateVisualViewportVars)
   viewport?.addEventListener('scroll', updateVisualViewportVars)
 }

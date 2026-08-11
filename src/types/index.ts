@@ -113,6 +113,7 @@ export interface CalendarEvent {
     }
     lineOriginalUrl?: string
     linePreviewUrl?: string
+    uploadJobId?: string
   }[]
   done: boolean
   source?: string

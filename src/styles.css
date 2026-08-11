@@ -90,7 +90,7 @@ textarea {
 
 .durable-upload-banner {
   position: fixed;
-  z-index: 120;
+  z-index: 44;
   left: 50%;
   bottom: 18px;
   width: min(680px, calc(100vw - 32px));
@@ -3753,6 +3753,17 @@ p {
   cursor: pointer;
 }
 
+.time-row .calendar-date-trigger {
+  min-height: 40px;
+  width: 100%;
+  border: 0;
+  border-radius: 8px;
+  padding: 0 12px 0 42px;
+  background: transparent;
+  color: #222;
+  text-align: left;
+}
+
 .time-row input[type="time"] {
   width: 100%;
   min-width: 96px;
@@ -4242,6 +4253,151 @@ p {
   width: 16px;
   min-height: 16px;
   accent-color: #2fca7a;
+}
+
+.repeat-until-date-trigger {
+  min-height: 42px;
+  width: 100%;
+  border: 0;
+  border-radius: 8px;
+  padding: 8px;
+  background: #fafafa;
+  color: #222;
+  text-align: center;
+}
+
+.calendar-date-picker-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 190;
+  display: grid;
+  place-items: center;
+  padding: max(8px, env(safe-area-inset-top, 0px)) 12px max(8px, env(safe-area-inset-bottom, 0px));
+  background: rgba(17, 24, 39, 0.42);
+}
+
+.calendar-date-picker {
+  width: min(420px, 100%);
+  max-height: calc(var(--app-visual-viewport-height) - 16px);
+  overflow: auto;
+  border: 1px solid #e5e7eb;
+  border-radius: 20px;
+  padding: 18px;
+  background: #fff;
+  box-shadow: 0 20px 54px rgba(0, 0, 0, 0.24);
+  outline: none;
+}
+
+.calendar-date-picker-header,
+.calendar-date-picker-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.calendar-date-picker-header {
+  min-height: 48px;
+  margin-bottom: 10px;
+}
+
+.calendar-date-picker-header strong {
+  color: #1f2937;
+  font-size: 20px;
+}
+
+.calendar-date-picker-header > div {
+  display: flex;
+  gap: 8px;
+}
+
+.calendar-date-picker-header button,
+.calendar-date-picker-footer button {
+  min-height: 44px;
+  border: 0;
+}
+
+.calendar-date-picker-header button {
+  width: 44px;
+  border-radius: 50%;
+  background: #f3f4f6;
+  color: #1f2937;
+  font-size: 30px;
+  line-height: 1;
+}
+
+.calendar-date-picker-weekdays,
+.calendar-date-picker-days {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.calendar-date-picker-weekdays span {
+  padding: 6px 0;
+  color: #7b8492;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.calendar-date-picker-days button {
+  min-height: 44px;
+  border: 2px solid transparent;
+  border-radius: 12px;
+  padding: 0;
+  background: transparent;
+  color: #20242a;
+  font-weight: 700;
+}
+
+.calendar-date-picker-days button.outside-month {
+  color: #b8bec7;
+}
+
+.calendar-date-picker-days button.today {
+  border-color: #f59e0b;
+  background: #fff6d8;
+  color: #9a5200;
+  font-weight: 900;
+}
+
+.calendar-date-picker-days button.selected {
+  border-color: #159455;
+  background: #20ae68;
+  color: #fff;
+}
+
+.calendar-date-picker-days button.today.selected {
+  outline: 3px solid #f59e0b;
+  outline-offset: 1px;
+}
+
+.calendar-date-picker-days button:disabled,
+.calendar-date-picker-footer button:disabled {
+  cursor: default;
+  opacity: 0.28;
+}
+
+.calendar-date-picker-footer {
+  margin-top: 14px;
+}
+
+.calendar-date-picker-footer .today-button {
+  min-width: 96px;
+  border: 2px solid #f59e0b;
+  border-radius: 999px;
+  padding: 0 20px;
+  background: #fff6d8;
+  color: #8a4b00;
+  font-weight: 900;
+}
+
+.calendar-date-picker-footer .confirm-button {
+  width: 52px;
+  border-radius: 50%;
+  background: #20ae68;
+  color: #fff;
+  font-size: 26px;
 }
 
 .repeat-end-group input:disabled {
@@ -5091,7 +5247,7 @@ p {
     transition: none;
   }
 
-  .keyboard-open .event-detail-panel {
+  .keyboard-open .event-detail-panel:has(.event-comment-composer textarea:focus) {
     top: calc(var(--app-visual-viewport-offset-top) + 8px);
     bottom: auto;
     height: calc(var(--app-visual-viewport-height) - 16px);
@@ -5410,6 +5566,13 @@ p {
     padding-left: 26px;
     padding-right: 4px;
     text-align: left;
+  }
+
+  .time-row .calendar-date-trigger {
+    min-width: 0;
+    padding-left: 26px;
+    padding-right: 4px;
+    font-size: 16px;
   }
 
   .time-row input[type="time"] {

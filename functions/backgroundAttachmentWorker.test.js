@@ -11,6 +11,7 @@ const {
   CLEANUP_AGE_MS,
   assertDecodedImage,
   cleanupExpiredJobs,
+  makeDriveFilePublic,
   parseStagingObjectPath,
   resultFileIds,
   shouldCleanupJob,
@@ -70,6 +71,15 @@ test('Drive 結果 ID 去重並兼容主要與舊欄位', () => {
     webp: { id: 'image-1' },
     thumbnail: { path: 'thumb-1' },
   }), ['image-1', 'thumb-1'])
+})
+
+test('雲端硬碟禁止公開連結時仍保留已上傳檔案', async () => {
+  const result = await makeDriveFilePublic({
+    permissions: {
+      create: async () => { throw new Error('公開權限遭政策拒絕') },
+    },
+  }, 'image-1')
+  assert.equal(result, false)
 })
 
 test('只有逾期且未 committed 的工作需要清理', () => {

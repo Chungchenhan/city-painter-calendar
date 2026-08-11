@@ -12,6 +12,21 @@ const DEFAULT_PUBLIC_BASE_URL = 'https://sch.city-painter.com'
 const PROJECT_ID = 'city-painter-erp'
 const MAX_DIRECT_SALES_THUMBNAIL_BYTES = 2 * 1024 * 1024
 const DIRECT_SALES_THUMBNAIL_MIME_TYPES = new Set(['image/webp', 'image/jpeg', 'image/png'])
+const FORWARDED_LINE_ACTIONS = new Set([
+  'production-photo-status',
+  'complete-order-fulfillment',
+  'record-fulfillment-cash-payment'
+])
+const SALES_DELIVERY_EVENT_SYNC_ACTION = 'sync-sales-delivery-event-fields'
+const SALES_DELIVERY_EVENT_SYNC_FIELDS = [
+  'title',
+  'date',
+  'endDate',
+  'startTime',
+  'endTime',
+  'allDay',
+  'location',
+]
 
 export const config = {
   api: {
@@ -168,6 +183,234 @@ async function canManageEvent(db, actor, event, eventId) {
     if (await actorDepartmentMatches(db, actor, departmentId)) return true
   }
   return false
+}
+
+function canonicalSalesDeliveryDate(value, label) {
+  const normalized = text(value).replaceAll('/', '-')
+  const match = normalized.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (!match) throw requestError(`${label}格式錯誤`, 400)
+  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])))
+  if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== normalized) {
+    throw requestError(`${label}格式錯誤`, 400)
+  }
+  return normalized
+}
+
+function canonicalSalesDeliveryTime(value, label) {
+  const normalized = text(value)
+  const match = normalized.match(/^(\d{2}):(\d{2})$/)
+  if (!match || Number(match[1]) > 23 || Number(match[2]) > 59) {
+    throw requestError(`${label}格式錯誤`, 400)
+  }
+  return normalized
+}
+
+function salesDeliveryTimeMinutes(value) {
+  const [hour, minute] = value.split(':').map(Number)
+  return hour * 60 + minute
+}
+
+function normalizeSalesDeliveryEventFields(value, labelPrefix) {
+  const source = value && typeof value === 'object' ? value : {}
+  const title = text(source.title)
+  const date = canonicalSalesDeliveryDate(source.date, `${labelPrefix}日期`)
+  const endDate = canonicalSalesDeliveryDate(source.endDate || source.date, `${labelPrefix}結束日期`)
+  const startTime = canonicalSalesDeliveryTime(source.startTime, `${labelPrefix}開始時間`)
+  const endTime = canonicalSalesDeliveryTime(source.endTime, `${labelPrefix}結束時間`)
+  const location = text(source.location)
+  if (!title) throw requestError('事件標題不可空白', 400)
+  if (title.length > 300) throw requestError('事件標題不可超過 300 字', 400)
+  if (date !== endDate) throw requestError('銷貨配送事件只支援單日日期，開始與結束日期必須相同', 400)
+  if (source.allDay === true) throw requestError('銷貨配送事件必須指定開始與結束時間', 400)
+  if (salesDeliveryTimeMinutes(endTime) <= salesDeliveryTimeMinutes(startTime)) {
+    throw requestError('收貨結束時間必須晚於開始時間', 400)
+  }
+  if (location.length > 1000) throw requestError('地點不可超過 1000 字', 400)
+  return { title, date, endDate, startTime, endTime, allDay: false, location }
+}
+
+function normalizeExpectedSalesDeliveryEventFields(value) {
+  const source = value && typeof value === 'object' ? value : {}
+  const title = text(source.title)
+  const date = canonicalSalesDeliveryDate(source.date, '原日期')
+  const endDate = canonicalSalesDeliveryDate(source.endDate || source.date, '原結束日期')
+  const startTime = text(source.startTime)
+  const endTime = text(source.endTime)
+  const location = text(source.location)
+  if (!title) throw requestError('原事件標題不可空白', 400)
+  if (title.length > 300) throw requestError('原事件標題不可超過 300 字', 400)
+  if (location.length > 1000) throw requestError('原地點不可超過 1000 字', 400)
+  return { title, date, endDate, startTime, endTime, allDay: source.allDay === true, location }
+}
+
+export function normalizeSalesDeliveryEventSyncInput(body) {
+  const eventId = text(body?.eventId)
+  if (!eventId || eventId.includes('/') || eventId.length > 200) {
+    throw requestError('事件識別碼不正確', 400)
+  }
+  const calendarTitle = text(body?.calendarTitle)
+  if (!calendarTitle) throw requestError('行事曆標題不可只有圖示', 400)
+  if (calendarTitle.length > 300) throw requestError('行事曆標題不可超過 300 字', 400)
+  const event = normalizeSalesDeliveryEventFields(body?.event, '')
+  const expected = normalizeExpectedSalesDeliveryEventFields(body?.expected)
+  return {
+    eventId,
+    calendarTitle,
+    event,
+    expected,
+    sales: {
+      calendarTitle,
+      deliveryDate: event.date.replaceAll('-', '/'),
+      deliveryStartTime: event.startTime,
+      deliveryEndTime: event.endTime,
+      deliveryTime: '指定時間',
+      deliveryScheduleSource: 'manual',
+      recipientAddress: event.location,
+    },
+  }
+}
+
+function comparableSalesDeliveryEventFields(event) {
+  return {
+    title: text(event?.title),
+    date: text(event?.date).replaceAll('/', '-'),
+    endDate: text(event?.endDate || event?.date).replaceAll('/', '-'),
+    startTime: text(event?.startTime),
+    endTime: text(event?.endTime),
+    allDay: event?.allDay === true,
+    location: text(event?.location),
+  }
+}
+
+export function salesDeliveryEventFieldsMatch(event, expected) {
+  const current = comparableSalesDeliveryEventFields(event)
+  return SALES_DELIVERY_EVENT_SYNC_FIELDS.every((field) => current[field] === expected[field])
+}
+
+function normalizeStoredSalesDeliveryField(field, value) {
+  if (field === 'deliveryDate') return text(value).replaceAll('-', '/')
+  return text(value)
+}
+
+export function changedSalesDeliveryFields(sales, nextSales) {
+  const labels = {
+    calendarTitle: '行事曆標題',
+    deliveryDate: '收貨日期',
+    deliveryStartTime: '收貨開始時間',
+    deliveryEndTime: '收貨結束時間',
+    deliveryTime: '收貨時間',
+    deliveryScheduleSource: '收貨排程來源',
+    recipientAddress: '收件地址',
+  }
+  return Object.keys(nextSales)
+    .filter((field) => normalizeStoredSalesDeliveryField(field, sales?.[field]) !== nextSales[field])
+    .map((field) => labels[field])
+}
+
+export function salesDeliveryPatchForEventChanges(expected, next, mappedSales) {
+  const patch = {}
+  if (expected.title !== next.title) patch.calendarTitle = mappedSales.calendarTitle
+  if (expected.location !== next.location) patch.recipientAddress = mappedSales.recipientAddress
+  if (['date', 'endDate', 'startTime', 'endTime', 'allDay'].some((field) => expected[field] !== next[field])) {
+    patch.deliveryDate = mappedSales.deliveryDate
+    patch.deliveryStartTime = mappedSales.deliveryStartTime
+    patch.deliveryEndTime = mappedSales.deliveryEndTime
+    patch.deliveryTime = mappedSales.deliveryTime
+    patch.deliveryScheduleSource = mappedSales.deliveryScheduleSource
+  }
+  return patch
+}
+
+function taipeiDateTimeText(date = new Date()) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Taipei',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(date).map((part) => [part.type, part.value]))
+  return `${parts.year}/${parts.month}/${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`
+}
+
+export async function syncSalesDeliveryEventFields(db, actor, body) {
+  const input = normalizeSalesDeliveryEventSyncInput(body)
+  const authorizedEvent = await loadEvent(db, input.eventId)
+  if (!authorizedEvent || text(authorizedEvent.source) !== 'erpSalesDelivery') {
+    throw requestError('找不到對應的銷貨單事件', 404)
+  }
+  if (!await canManageEvent(db, actor, authorizedEvent, input.eventId)) {
+    throw requestError('沒有此銷貨單事件的編輯權限', 403)
+  }
+
+  const sourceId = text(authorizedEvent.sourceId)
+  if (!sourceId || sourceId.includes('/') || sourceId.length > 200) {
+    throw requestError('事件未綁定有效的銷貨單', 409)
+  }
+  const eventRef = db.collection('calendarEvents').doc(input.eventId)
+  const salesRef = db.collection('sales').doc(sourceId)
+  const now = new Date()
+  const nowIso = now.toISOString()
+  const updatedAtText = taipeiDateTimeText(now)
+  const updatedBy = text(actor.employee.name)
+    || text(actor.employee.nickname)
+    || text(actor.decoded?.name)
+    || text(actor.decoded?.email)
+    || actor.employeeId
+
+  return db.runTransaction(async (transaction) => {
+    const [eventSnapshot, salesSnapshot] = await Promise.all([
+      transaction.get(eventRef),
+      transaction.get(salesRef),
+    ])
+    if (!eventSnapshot.exists) throw requestError('行事曆事件已不存在', 404)
+    if (!salesSnapshot.exists) throw requestError('對應的銷貨單已不存在', 404)
+    const event = eventSnapshot.data() || {}
+    const sales = salesSnapshot.data() || {}
+    if (text(event.source) !== 'erpSalesDelivery' || text(event.sourceId) !== sourceId) {
+      throw requestError('事件與銷貨單的綁定已變更，請重新開啟後再試', 409)
+    }
+    if (text(event.sourceSalesNo) && text(sales.salesNo) !== text(event.sourceSalesNo)) {
+      throw requestError('事件與銷貨單號不一致，已停止同步', 409)
+    }
+    const primaryEventId = text(sales.deliveryCalendarEventId)
+    if (primaryEventId && primaryEventId !== input.eventId) {
+      throw requestError('此事件不是銷貨單目前綁定的主要事件，已停止同步', 409)
+    }
+    if (!['外送', '施工'].includes(text(sales.shippingMethod))) {
+      throw requestError('此銷貨單已不是外送或施工，請重新整理行事曆', 409)
+    }
+    if (!salesDeliveryEventFieldsMatch(event, input.expected)) {
+      throw requestError('事件已由其他畫面更新，請重新開啟後再修改', 409)
+    }
+
+    const salesPatch = salesDeliveryPatchForEventChanges(input.expected, input.event, input.sales)
+    const changedFields = changedSalesDeliveryFields(sales, salesPatch)
+    transaction.update(eventRef, { ...input.event, updatedAt: nowIso })
+    if (changedFields.length > 0) {
+      transaction.update(salesRef, {
+        ...salesPatch,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAtText,
+        updatedBy,
+      })
+      const auditRef = db.collection('sales_audit_logs').doc()
+      transaction.set(auditRef, {
+        salesId: salesSnapshot.id,
+        salesNo: text(sales.salesNo),
+        action: '行事曆同步',
+        actorCode: text(actor.employee.empNo) || actor.employeeId,
+        actorName: updatedBy,
+        changedFields,
+        detail: `由行事曆同步：${changedFields.join('、')}`,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        createdAtText: updatedAtText,
+      })
+    }
+    return { ok: true, eventId: input.eventId, salesId: salesSnapshot.id, changedFields }
+  })
 }
 
 export function canOpenSalesAttachmentCenterFromAccess(access, actor) {
@@ -443,7 +686,15 @@ export function parseAttachmentUploadJobRequest(body = {}) {
     capturedAtSource: body.capture?.capturedAtSource,
     location: body.capture?.location ? JSON.stringify(body.capture.location) : ''
   })
-  return { eventId, name, type, size, completionMode, capture, clientUploadId }
+  return {
+    eventId,
+    name,
+    type,
+    size,
+    completionMode: completionMode === 'production' ? 'none' : completionMode,
+    capture,
+    clientUploadId
+  }
 }
 
 export function attachmentUploadJobDocumentId(uploaderUid, clientUploadId) {
@@ -576,7 +827,7 @@ async function finalizeAttachmentUploadJob(db, actor, body) {
       attachments: alreadyAttached ? existingAttachments : [...existingAttachments, attachment],
       updatedAt: now
     }
-    if (completionMode === 'fulfillment' || completionMode === 'production') {
+    if (completionMode === 'fulfillment') {
       const previousRetry = event.productionLineRetry && typeof event.productionLineRetry === 'object'
         ? event.productionLineRetry
         : null
@@ -801,6 +1052,10 @@ export function buildForwardedLineActionBody(body) {
       }
 }
 
+export function isForwardedLineAction(action) {
+  return FORWARDED_LINE_ACTIONS.has(text(action))
+}
+
 export function buildForwardedLineActionResponse(action, result, authorization) {
   return {
     ...result,
@@ -990,12 +1245,11 @@ export default async function handler(req, res) {
         res.status(200).json(await salesAttachmentCenterResponse(db, actor, body))
         return
       }
-      if (![
-        'production-photo-status',
-        'send-production-photos',
-        'complete-order-fulfillment',
-        'record-fulfillment-cash-payment'
-      ].includes(body.action)) {
+      if (body.action === SALES_DELIVERY_EVENT_SYNC_ACTION) {
+        res.status(200).json(await syncSalesDeliveryEventFields(db, actor, body))
+        return
+      }
+      if (!isForwardedLineAction(body.action)) {
         res.status(400).json({ error: 'Unsupported action' })
         return
       }
