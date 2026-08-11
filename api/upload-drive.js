@@ -495,7 +495,9 @@ export function canServeDirectSalesAttachmentThumbnail(sales, { fileId, variant,
 }
 
 function attachmentBelongsToEvent(event, fileId) {
-  return Array.isArray(event?.attachments) && event.attachments.some((attachment) => text(attachment?.path) === fileId)
+  return Array.isArray(event?.attachments) && event.attachments.some((attachment) => (
+    text(attachment?.path) === fileId || text(attachment?.thumbnailPath) === fileId
+  ))
 }
 
 function lineImageSigningSecret() {
@@ -671,6 +673,8 @@ export function parseAttachmentUploadJobRequest(body = {}) {
   const size = Number(body.originalSize)
   const completionMode = text(body.completionMode)
   const clientUploadId = text(body.clientUploadId)
+  const uploadKind = text(body.uploadKind) || 'event'
+  const commentId = text(body.commentId)
   if (!eventId || eventId.includes('/') || eventId.length > 200) throw requestError('附件事件識別碼不正確', 400)
   if (!name || name.length > 500) throw requestError('照片檔名不正確', 400)
   if (!type.startsWith('image/') || type === 'image/svg+xml') throw requestError('外送／施工完成只能上傳照片', 400)
@@ -680,6 +684,13 @@ export function parseAttachmentUploadJobRequest(body = {}) {
   if (!BACKGROUND_COMPLETION_MODES.has(completionMode)) throw requestError('照片完成模式不正確', 400)
   if (clientUploadId && !/^[A-Za-z0-9-]{8,120}$/.test(clientUploadId)) {
     throw requestError('照片佇列識別碼不正確', 400)
+  }
+  if (!['event', 'comment'].includes(uploadKind)) throw requestError('照片上傳目標不正確', 400)
+  if (uploadKind === 'comment' && (!commentId || commentId.includes('/') || commentId.length > 200)) {
+    throw requestError('留言識別碼不正確', 400)
+  }
+  if (uploadKind === 'comment' && completionMode !== 'none') {
+    throw requestError('留言照片完成模式不正確', 400)
   }
   const capture = parseUploadPhotoMetadata({
     capturedAt: body.capture?.capturedAt,
@@ -693,7 +704,9 @@ export function parseAttachmentUploadJobRequest(body = {}) {
     size,
     completionMode: completionMode === 'production' ? 'none' : completionMode,
     capture,
-    clientUploadId
+    clientUploadId,
+    uploadKind,
+    commentId: uploadKind === 'comment' ? commentId : ''
   }
 }
 
@@ -737,7 +750,20 @@ export function mergeProductionLineRetryAttachmentIds(previousRetry, completionM
 
 async function createAttachmentUploadJob(db, actor, body) {
   const request = parseAttachmentUploadJobRequest(body)
-  await authorizeUpload(db, actor, { eventId: request.eventId, uploadKind: 'event' })
+  await authorizeUpload(db, actor, {
+    eventId: request.eventId,
+    uploadKind: request.uploadKind,
+    commentId: request.commentId,
+  })
+  if (request.uploadKind === 'comment') {
+    const commentSnapshot = await db.collection('calendarEvents')
+      .doc(request.eventId)
+      .collection('comments')
+      .doc(request.commentId)
+      .get()
+    if (!commentSnapshot.exists) throw requestError('找不到附件對應的留言', 404)
+    if (text(commentSnapshot.data()?.authorUid) !== actor.uid) throw requestError('沒有此留言的附件上傳權限', 403)
+  }
   const jobRef = request.clientUploadId
     ? db.collection('attachmentUploadJobs').doc(attachmentUploadJobDocumentId(actor.uid, request.clientUploadId))
     : db.collection('attachmentUploadJobs').doc()
@@ -751,6 +777,8 @@ async function createAttachmentUploadJob(db, actor, body) {
         || text(existing.clientUploadId) !== request.clientUploadId
         || text(existing.target?.eventId) !== request.eventId
         || text(existing.target?.completionMode) !== request.completionMode
+        || text(existing.target?.uploadKind) !== request.uploadKind
+        || text(existing.target?.commentId) !== request.commentId
         || text(existing.original?.name) !== request.name
         || Number(existing.original?.size) !== request.size
         || text(existing.original?.type) !== request.type
@@ -777,7 +805,8 @@ async function createAttachmentUploadJob(db, actor, body) {
       target: {
         kind: 'calendar-event',
         eventId: request.eventId,
-        uploadKind: 'event',
+        uploadKind: request.uploadKind,
+        ...(request.commentId ? { commentId: request.commentId } : {}),
         completionMode: request.completionMode
       },
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -803,20 +832,48 @@ async function finalizeAttachmentUploadJob(db, actor, body) {
       return { ok: true, attachment, committed: true, completionMode: text(job.target?.completionMode) || 'none' }
     }
     if (text(job.status) !== 'ready') throw requestError('照片仍在背景處理中', 409)
-    if (text(job.target?.kind) !== 'calendar-event' || text(job.target?.uploadKind) !== 'event') {
+    const uploadKind = text(job.target?.uploadKind)
+    if (text(job.target?.kind) !== 'calendar-event' || !['event', 'comment'].includes(uploadKind)) {
       throw requestError('背景照片目標不正確', 409)
     }
     const eventId = text(job.target?.eventId)
     const eventRef = db.collection('calendarEvents').doc(eventId)
     const eventSnapshot = await transaction.get(eventRef)
     if (!eventSnapshot.exists) throw requestError('找不到附件對應的行事曆事件', 404)
+    const attachment = attachmentFromUploadJob(jobId, job)
     const event = { id: eventSnapshot.id, ...eventSnapshot.data() }
+    if (uploadKind === 'comment') {
+      if (!await canViewEvent(db, actor, event)) throw requestError('沒有此事件的附件上傳權限', 403)
+      const commentId = text(job.target?.commentId)
+      if (!commentId || commentId.includes('/') || commentId.length > 200) {
+        throw requestError('留言識別碼不正確', 409)
+      }
+      const commentRef = eventRef.collection('comments').doc(commentId)
+      const commentSnapshot = await transaction.get(commentRef)
+      if (!commentSnapshot.exists) throw requestError('找不到附件對應的留言', 404)
+      const comment = commentSnapshot.data() || {}
+      const existingAttachments = Array.isArray(comment.attachments) ? comment.attachments : []
+      const alreadyAttached = existingAttachments.some((item) => text(item?.uploadJobId) === jobId)
+      const nextAttachments = alreadyAttached ? existingAttachments : [...existingAttachments, attachment]
+      const pendingAttachmentCount = Math.max(0, (Number(comment.pendingAttachmentCount) || 0) - (alreadyAttached ? 0 : 1))
+      transaction.update(commentRef, {
+        attachments: nextAttachments,
+        pendingAttachmentCount,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      })
+      transaction.update(jobRef, {
+        status: 'committed',
+        attachment,
+        committedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      })
+      return { ok: true, attachment, committed: true, completionMode: 'none' }
+    }
     if (
       !await canManageEvent(db, actor, event, eventId)
       && !await canOperateErpOrderFulfillment(db, actor, event)
     ) throw requestError('沒有此事件的附件上傳權限', 403)
 
-    const attachment = attachmentFromUploadJob(jobId, job)
     const existingAttachments = Array.isArray(event.attachments) ? event.attachments : []
     const alreadyAttached = existingAttachments.some((item) => text(item?.uploadJobId) === jobId)
     const completionMode = BACKGROUND_COMPLETION_MODES.has(text(job.target?.completionMode))
@@ -1119,6 +1176,51 @@ async function authorizeUpload(db, actor, fields) {
   return { eventId, uploadKind: 'event', commentId: '' }
 }
 
+async function createBackgroundComment(db, actor, body) {
+  const eventId = text(body.eventId)
+  const commentId = text(body.commentId)
+  const commentText = typeof body.text === 'string' ? body.text.trim() : ''
+  const pendingAttachmentCount = Number(body.pendingAttachmentCount)
+  if (!eventId || eventId.includes('/') || eventId.length > 200) throw requestError('留言事件識別碼不正確', 400)
+  if (!commentId || commentId.includes('/') || commentId.length > 200) throw requestError('留言識別碼不正確', 400)
+  if (commentText.length > 5000) throw requestError('留言文字最多 5000 字', 400)
+  if (!Number.isSafeInteger(pendingAttachmentCount) || pendingAttachmentCount < 1 || pendingAttachmentCount > 10) {
+    throw requestError('每則留言最多可附加 10 張照片', 400)
+  }
+  const event = await loadEvent(db, eventId)
+  if (!event) throw requestError('找不到附件對應的行事曆事件', 404)
+  if (!await canViewEvent(db, actor, event)) throw requestError('沒有此事件的留言權限', 403)
+  const authorName = text(actor.employee.name)
+    || text(actor.employee.nickname)
+    || text(actor.decoded?.name)
+    || text(actor.decoded?.email)
+    || actor.employeeId
+  const commentRef = db.collection('calendarEvents').doc(eventId).collection('comments').doc(commentId)
+  await db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(commentRef)
+    if (snapshot.exists) {
+      const existing = snapshot.data() || {}
+      if (
+        text(existing.authorUid) !== actor.uid
+        || text(existing.text) !== commentText
+        || Number(existing.pendingAttachmentCount) !== pendingAttachmentCount
+      ) throw requestError('留言識別碼衝突', 409)
+      return
+    }
+    transaction.create(commentRef, {
+      authorUid: actor.uid,
+      authorEmployeeId: actor.employeeId,
+      authorName,
+      text: commentText,
+      attachments: [],
+      pendingAttachmentCount,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    })
+  })
+  return { ok: true, commentId }
+}
+
 async function authorizeDelete(db, actor, fileId, requestedEventId, appProperties) {
   if (actor.role === 'admin') return
   const uploadKind = text(appProperties.calendarUploadKind)
@@ -1234,6 +1336,10 @@ export default async function handler(req, res) {
       const body = await parseJsonBody(req)
       if (body.action === 'create-attachment-upload-job') {
         res.status(201).json(await createAttachmentUploadJob(db, actor, body))
+        return
+      }
+      if (body.action === 'create-background-comment') {
+        res.status(201).json(await createBackgroundComment(db, actor, body))
         return
       }
       if (body.action === 'finalize-attachment-upload-job') {

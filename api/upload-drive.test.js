@@ -121,6 +121,30 @@ test('舊版活動照片背景工作只保留附件，不再建立 LINE 傳送�
   assert.equal(request.completionMode, 'none')
 })
 
+test('留言照片背景工作必須綁定留言且不允許完工模式', () => {
+  const input = {
+    eventId: 'event-1',
+    commentId: 'comment-1',
+    uploadKind: 'comment',
+    originalName: '留言照片.jpg',
+    contentType: 'image/jpeg',
+    originalSize: 1024,
+    completionMode: 'none',
+    clientUploadId: 'comment-photo-1',
+  }
+  const request = parseAttachmentUploadJobRequest(input)
+  assert.equal(request.uploadKind, 'comment')
+  assert.equal(request.commentId, 'comment-1')
+  assert.throws(() => parseAttachmentUploadJobRequest({
+    ...input,
+    completionMode: 'fulfillment',
+  }), /留言照片完成模式/)
+  assert.throws(() => parseAttachmentUploadJobRequest({
+    ...input,
+    commentId: '',
+  }), /留言識別碼/)
+})
+
 test('現金付款 action 只轉送金額與冪等鍵', () => {
   assert.deepEqual(buildForwardedLineActionBody({
     action: 'record-fulfillment-cash-payment',

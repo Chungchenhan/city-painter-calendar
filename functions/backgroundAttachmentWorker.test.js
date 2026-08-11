@@ -10,7 +10,9 @@ process.env.FIREBASE_CONFIG ||= JSON.stringify({
 const {
   CLEANUP_AGE_MS,
   assertDecodedImage,
+  calendarAttachmentFromJobResult,
   cleanupExpiredJobs,
+  commitCalendarCommentAttachment,
   makeDriveFilePublic,
   parseStagingObjectPath,
   resultFileIds,
@@ -71,6 +73,57 @@ test('Drive 結果 ID 去重並兼容主要與舊欄位', () => {
     webp: { id: 'image-1' },
     thumbnail: { path: 'thumb-1' },
   }), ['image-1', 'thumb-1'])
+})
+
+test('留言附件結果包含 WebP、縮圖與冪等工作識別碼', () => {
+  const attachment = calendarAttachmentFromJobResult('job-1', {
+    original: { name: '留言照片.jpg', size: 4096 },
+    capture: { capturedAtSource: 'unknown' },
+  }, {
+    image: { path: 'image-1', name: '留言照片.webp', size: 2048, type: 'image/webp' },
+    thumbnail: { path: 'thumb-1' },
+  })
+  assert.equal(attachment.path, 'image-1')
+  assert.equal(attachment.thumbnailPath, 'thumb-1')
+  assert.equal(attachment.uploadJobId, 'job-1')
+})
+
+test('留言附件提交會在同一交易去重並完成工作', async () => {
+  const jobRef = { path: 'attachmentUploadJobs/job-1' }
+  const commentRef = { path: 'calendarEvents/event-1/comments/comment-1' }
+  const records = new Map([
+    [jobRef.path, {
+      status: 'ready',
+      uploaderUid: 'user-1',
+      original: { name: '留言照片.jpg', size: 4096 },
+      target: { kind: 'calendar-event', uploadKind: 'comment', eventId: 'event-1', commentId: 'comment-1' },
+      result: {
+        image: { path: 'image-1', name: '留言照片.webp', size: 2048, type: 'image/webp' },
+        thumbnail: { path: 'thumb-1' },
+      },
+    }],
+    [commentRef.path, { authorUid: 'user-1', attachments: [], pendingAttachmentCount: 1 }],
+  ])
+  const snapshot = ref => ({ exists: records.has(ref.path), data: () => records.get(ref.path) })
+  const db = {
+    collection: name => ({
+      doc: id => ({
+        path: `${name}/${id}`,
+        collection: child => ({ doc: childId => ({ path: `${name}/${id}/${child}/${childId}` }) }),
+      }),
+    }),
+    runTransaction: async callback => callback({
+      get: async ref => snapshot(ref),
+      update: (ref, patch) => records.set(ref.path, { ...records.get(ref.path), ...patch }),
+    }),
+  }
+
+  await commitCalendarCommentAttachment(db, jobRef, 'job-1', records.get(jobRef.path))
+  await commitCalendarCommentAttachment(db, jobRef, 'job-1', records.get(jobRef.path))
+
+  assert.equal(records.get(commentRef.path).attachments.length, 1)
+  assert.equal(records.get(commentRef.path).pendingAttachmentCount, 0)
+  assert.equal(records.get(jobRef.path).status, 'committed')
 })
 
 test('雲端硬碟禁止公開連結時仍保留已上傳檔案', async () => {

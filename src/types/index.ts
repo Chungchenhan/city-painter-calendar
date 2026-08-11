@@ -113,6 +113,7 @@ export interface CalendarEvent {
     }
     lineOriginalUrl?: string
     linePreviewUrl?: string
+    thumbnailPath?: string
     uploadJobId?: string
   }[]
   done: boolean
@@ -143,6 +144,7 @@ export interface CalendarEventComment {
   authorName: string
   text: string
   attachments: NonNullable<CalendarEvent['attachments']>
+  pendingAttachmentCount?: number
   createdAt: string
 }
 

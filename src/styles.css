@@ -2869,6 +2869,7 @@ html.calendar-event-touch-dragging ::selection {
 }
 
 .event-comment-image {
+  position: relative;
   min-width: 0;
   display: block;
   overflow: hidden;
@@ -2877,6 +2878,25 @@ html.calendar-event-touch-dragging ::selection {
   padding: 0;
   background: #f3f3f3;
   cursor: pointer;
+}
+
+.event-comment-image.pending > span {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  left: 5px;
+  border-radius: 7px;
+  padding: 4px 6px;
+  background: rgba(27, 128, 70, 0.9);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.2;
+  text-align: center;
+}
+
+.event-comment-image.pending.failed > span {
+  background: rgba(166, 40, 40, 0.9);
 }
 
 .event-comment-image:only-child {

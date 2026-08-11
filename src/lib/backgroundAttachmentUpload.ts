@@ -6,12 +6,15 @@ import type { CalendarEvent } from '../types'
 import { keepRemoteUploadResult, keepUploadFlowAfterLocalStateFailure } from './backgroundAttachmentUploadResult'
 
 export type BackgroundAttachmentCompletionMode = 'fulfillment' | 'production' | 'none'
+export type BackgroundAttachmentUploadKind = 'event' | 'comment'
 export type BackgroundAttachmentProgress = 'uploading' | 'processing' | 'finalizing'
 export type DurableBackgroundAttachmentStatus = 'queued' | BackgroundAttachmentProgress | 'failed'
 export type DurableBackgroundAttachmentUpload = {
   id: string
   uploaderUid: string
   eventId: string
+  uploadKind?: BackgroundAttachmentUploadKind
+  commentId?: string
   completionMode: BackgroundAttachmentCompletionMode
   blob: Blob
   name: string
@@ -33,6 +36,8 @@ export type BackgroundAttachmentRecovery = {
   jobId: string
   eventId: string
   completionMode: BackgroundAttachmentCompletionMode
+  uploadKind?: BackgroundAttachmentUploadKind
+  commentId?: string
 }
 
 type EventAttachment = NonNullable<CalendarEvent['attachments']>[number]
@@ -133,6 +138,8 @@ export async function persistDurableBackgroundAttachmentUpload(options: {
   uploaderUid: string
   eventId: string
   completionMode: BackgroundAttachmentCompletionMode
+  uploadKind?: BackgroundAttachmentUploadKind
+  commentId?: string
   file: File
 }) {
   const now = new Date().toISOString()
@@ -141,6 +148,8 @@ export async function persistDurableBackgroundAttachmentUpload(options: {
     uploaderUid: options.uploaderUid,
     eventId: options.eventId,
     completionMode: options.completionMode,
+    uploadKind: options.uploadKind ?? 'event',
+    ...(options.commentId ? { commentId: options.commentId } : {}),
     blob: options.file,
     name: options.file.name,
     type: backgroundImageContentType(options.file),
@@ -188,6 +197,8 @@ export async function loadDurableBackgroundAttachmentUploads(uploaderUid: string
         && typeof row.eventId === 'string'
         && row.blob instanceof Blob
         && ['fulfillment', 'production', 'none'].includes(row.completionMode)
+        && (!row.uploadKind || ['event', 'comment'].includes(row.uploadKind))
+        && (row.uploadKind !== 'comment' || typeof row.commentId === 'string')
       ))
       setValue(rows.sort((a, b) => a.createdAt.localeCompare(b.createdAt)))
     }
@@ -240,6 +251,8 @@ export function loadBackgroundAttachmentRecoveries(): BackgroundAttachmentRecove
       typeof row?.jobId === 'string'
       && typeof row?.eventId === 'string'
       && ['fulfillment', 'production', 'none'].includes(row?.completionMode)
+      && (!row?.uploadKind || ['event', 'comment'].includes(row.uploadKind))
+      && (row?.uploadKind !== 'comment' || typeof row?.commentId === 'string')
     ))
   } catch {
     return []
@@ -265,6 +278,7 @@ export async function createBackgroundAttachmentJob(
   completionMode: BackgroundAttachmentCompletionMode,
   capture?: PhotoCaptureMetadata,
   clientUploadId?: string,
+  context: { uploadKind?: BackgroundAttachmentUploadKind, commentId?: string } = {},
 ) {
   const contentType = backgroundImageContentType(file)
   const payload = await callJobApi({
@@ -274,6 +288,8 @@ export async function createBackgroundAttachmentJob(
     originalSize: file.size,
     contentType,
     completionMode,
+    uploadKind: context.uploadKind ?? 'event',
+    ...(context.commentId ? { commentId: context.commentId } : {}),
     ...(clientUploadId ? { clientUploadId } : {}),
     ...(capture ? { capture } : {}),
   })
@@ -341,6 +357,8 @@ export async function startBackgroundAttachmentUpload(options: {
   eventId: string
   file: File
   completionMode: BackgroundAttachmentCompletionMode
+  uploadKind?: BackgroundAttachmentUploadKind
+  commentId?: string
   durableUpload?: DurableBackgroundAttachmentUpload
   capture?: PhotoCaptureMetadata
   localFallback?: (file: File, clientUploadId: string) => Promise<EventAttachment>
@@ -392,6 +410,10 @@ export async function startBackgroundAttachmentUpload(options: {
       options.completionMode,
       persistedCapture,
       durableUpload.id,
+      {
+        uploadKind: options.uploadKind ?? durableUpload.uploadKind ?? 'event',
+        commentId: options.commentId ?? durableUpload.commentId,
+      },
     )
     jobId = created.jobId
     stagingPath = created.stagingPath

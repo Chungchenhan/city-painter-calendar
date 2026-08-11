@@ -239,6 +239,12 @@ async function uploadVariant(drive, {
           attachmentUploadVariant: variant,
           attachmentUploaderUid: text(job.uploaderUid).slice(0, 120),
           attachmentTargetKind: text(job.target?.kind).slice(0, 40),
+          ...(job.target?.kind === 'calendar-event' ? {
+            calendarUploadKind: text(job.target?.uploadKind) || 'event',
+            calendarUploaderUid: text(job.uploaderUid).slice(0, 120),
+            calendarEventId: text(job.target?.eventId).slice(0, 200),
+            ...(text(job.target?.commentId) ? { calendarCommentId: text(job.target.commentId).slice(0, 200) } : {}),
+          } : {}),
         },
       },
       media: {
@@ -269,6 +275,65 @@ async function uploadVariant(drive, {
   }
 }
 
+function calendarAttachmentFromJobResult(jobId, job, result) {
+  const image = result?.image || result?.webp || {}
+  const thumbnail = result?.thumbnail || result?.thumb || {}
+  const fileId = text(image.path || image.id)
+  if (!fileId) throw permanentError('附件轉檔結果不完整')
+  const originalName = text(job.original?.name) || text(image.name) || '照片'
+  return {
+    name: text(image.name) || variantNames(originalName).image,
+    url: text(image.url) || `https://drive.google.com/file/d/${fileId}/view`,
+    path: fileId,
+    type: text(image.type) || WEBP_MIME_TYPE,
+    size: Number(image.size) || 0,
+    provider: 'google-drive',
+    originalName,
+    originalSize: Number(job.original?.size) || 0,
+    optimized: true,
+    ...(text(thumbnail.path || thumbnail.id) ? { thumbnailPath: text(thumbnail.path || thumbnail.id) } : {}),
+    ...(text(image.uploadedAt) ? { uploadedAt: text(image.uploadedAt) } : {}),
+    ...(text(job.capture?.capturedAt) ? { capturedAt: text(job.capture.capturedAt) } : {}),
+    ...(text(job.capture?.capturedAtSource) ? { capturedAtSource: text(job.capture.capturedAtSource) } : {}),
+    ...(job.capture?.location && typeof job.capture.location === 'object' ? { location: job.capture.location } : {}),
+    uploadJobId: jobId,
+  }
+}
+
+async function commitCalendarCommentAttachment(db, jobRef, jobId, job) {
+  if (job.target?.kind !== 'calendar-event' || job.target?.uploadKind !== 'comment') return null
+  const eventId = text(job.target?.eventId)
+  const commentId = text(job.target?.commentId)
+  if (!eventId || !commentId) throw permanentError('留言附件目標不完整')
+  return db.runTransaction(async (transaction) => {
+    const currentSnapshot = await transaction.get(jobRef)
+    if (!currentSnapshot.exists) throw permanentError('找不到附件上傳工作')
+    const currentJob = currentSnapshot.data()
+    if (currentJob.status === 'committed') return currentJob.attachment || null
+    if (currentJob.status !== 'ready') throw new Error('留言附件尚未完成轉檔')
+    const commentRef = db.collection('calendarEvents').doc(eventId).collection('comments').doc(commentId)
+    const commentSnapshot = await transaction.get(commentRef)
+    if (!commentSnapshot.exists) throw permanentError('找不到附件對應的留言')
+    const comment = commentSnapshot.data() || {}
+    if (text(comment.authorUid) !== text(currentJob.uploaderUid)) throw permanentError('留言附件上傳者不一致')
+    const attachment = calendarAttachmentFromJobResult(jobId, currentJob, currentJob.result)
+    const existingAttachments = Array.isArray(comment.attachments) ? comment.attachments : []
+    const alreadyAttached = existingAttachments.some((item) => text(item?.uploadJobId) === jobId)
+    transaction.update(commentRef, {
+      attachments: alreadyAttached ? existingAttachments : [...existingAttachments, attachment],
+      pendingAttachmentCount: Math.max(0, (Number(comment.pendingAttachmentCount) || 0) - (alreadyAttached ? 0 : 1)),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    })
+    transaction.update(jobRef, {
+      status: 'committed',
+      attachment,
+      committedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    })
+    return attachment
+  })
+}
+
 function validateJob(job, parsedPath, objectData) {
   if (!job) throw permanentError('找不到附件上傳工作')
   if (text(job.uploaderUid) !== parsedPath.uid) throw permanentError('附件上傳者不一致')
@@ -291,6 +356,7 @@ async function acquireJob(db, jobRef, parsedPath, objectData, eventId, now) {
     validateJob(job, parsedPath, objectData)
     if (['ready', 'committed'].includes(job.status)) {
       terminalStatus = job.status
+      acquiredJob = job
       return
     }
     if (!['created', 'failed', 'processing'].includes(job.status)) throw permanentError('附件上傳工作狀態不正確')
@@ -324,6 +390,9 @@ function publicErrorMessage(error) {
     '附件大小不符合限制',
     '附件內容不是有效圖片',
     '附件上傳工作狀態不正確',
+    '留言附件目標不完整',
+    '找不到附件對應的留言',
+    '留言附件上傳者不一致',
     '銷貨附件缺少銷貨單號',
     '不支援的附件目標',
   ]
@@ -341,8 +410,11 @@ async function processAttachmentUpload({ db, bucket, drive, objectData, eventId,
   try {
     const acquired = await acquireJob(db, jobRef, parsedPath, objectData, eventId, now)
     if (acquired.terminalStatus) {
+      if (acquired.terminalStatus === 'ready' && acquired.job?.target?.uploadKind === 'comment') {
+        await commitCalendarCommentAttachment(db, jobRef, parsedPath.jobId, acquired.job)
+      }
       await bucket.file(objectData.name).delete({ ignoreNotFound: true })
-      return { terminalStatus: acquired.terminalStatus }
+      return { terminalStatus: acquired.job?.target?.uploadKind === 'comment' ? 'committed' : acquired.terminalStatus }
     }
     job = acquired.job
     const [input] = await bucket.file(objectData.name).download()
@@ -418,11 +490,13 @@ async function processAttachmentUpload({ db, bucket, drive, objectData, eventId,
       error: admin.firestore.FieldValue.delete(),
     }, { merge: true })
     readyWritten = true
+    if (job.target?.uploadKind === 'comment') {
+      await commitCalendarCommentAttachment(db, jobRef, parsedPath.jobId, job)
+    }
     await bucket.file(objectData.name).delete({ ignoreNotFound: true })
-    return { status: 'ready', result: nextResult }
+    return { status: job.target?.uploadKind === 'comment' ? 'committed' : 'ready', result: nextResult }
   } catch (error) {
     if (error?.code === 'JOB_BUSY') throw error
-    if (readyWritten) throw error
     if (!partialResultWritten && newlyUploadedIds.length > 0) {
       await Promise.allSettled(newlyUploadedIds.map(fileId => deleteDriveFile(drive, fileId)))
     }
@@ -436,6 +510,8 @@ async function processAttachmentUpload({ db, bucket, drive, objectData, eventId,
         processingEventId: admin.firestore.FieldValue.delete(),
         retrying: admin.firestore.FieldValue.delete(),
       }, { merge: true }).catch(() => {})
+    } else if (readyWritten) {
+      throw error
     } else if (job) {
       await jobRef.set({
         status: 'processing',
@@ -593,6 +669,8 @@ module.exports = {
   CLEANUP_AGE_MS,
   assertDecodedImage,
   cleanupExpiredJobs,
+  commitCalendarCommentAttachment,
+  calendarAttachmentFromJobResult,
   makeDriveFilePublic,
   cleanupStagedAttachments,
   parseStagingObjectPath,

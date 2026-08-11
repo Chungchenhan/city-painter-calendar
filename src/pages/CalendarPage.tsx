@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, ChangeEvent, ClipboardEvent as ReactClipboardEvent, DragEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode, TouchEvent as ReactTouchEvent } from 'react'
 import dayjs from 'dayjs'
-import { addDoc, arrayUnion, collection, deleteDoc, deleteField, doc, getDoc, getDocs, limitToLast, onSnapshot, orderBy, query, serverTimestamp, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore'
+import { addDoc, arrayUnion, collection, deleteDoc, deleteField, doc, getDoc, getDocs, limitToLast, onSnapshot, orderBy, query, runTransaction, serverTimestamp, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore'
 import { signOut, type User } from 'firebase/auth'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { auth, db, getAppCheckHeaders } from '../lib/firebase'
@@ -160,6 +160,29 @@ function preloadSalesAttachmentPreview(source: string) {
   return promise
 }
 
+function loadCommentAttachmentPreview(source: string) {
+  return new Promise<boolean>((resolve) => {
+    const image = new Image()
+    let settled = false
+    const finish = (loaded: boolean) => {
+      if (settled) return
+      settled = true
+      window.clearTimeout(timeout)
+      image.onload = null
+      image.onerror = null
+      resolve(loaded)
+    }
+    const timeout = window.setTimeout(() => finish(false), 12_000)
+    image.onload = () => {
+      void image.decode().catch(() => undefined).finally(() => finish(true))
+    }
+    image.onerror = () => finish(false)
+    image.decoding = 'async'
+    image.referrerPolicy = 'no-referrer'
+    image.src = source
+  })
+}
+
 function preloadErpOrderScannerModule() {
   return loadErpOrderScanner().then((module) => module.preloadErpOrderScanner())
 }
@@ -259,6 +282,9 @@ type DetailBackgroundUpload = {
   cloudSafe: boolean
   createdAt: string
   error?: string
+}
+type CommentBackgroundUpload = DetailBackgroundUpload & {
+  commentId: string
 }
 const MAX_DIRECT_ATTACHMENT_BYTES = 3.5 * 1024 * 1024
 
@@ -1234,6 +1260,7 @@ export default function CalendarPage() {
   const [detailAttachmentUploading, setDetailAttachmentUploading] = useState(false)
   const [detailAttachmentUploadNotice, setDetailAttachmentUploadNotice] = useState<{ id: number; message: string } | null>(null)
   const [detailBackgroundUploads, setDetailBackgroundUploads] = useState<DetailBackgroundUpload[]>([])
+  const [commentBackgroundUploads, setCommentBackgroundUploads] = useState<CommentBackgroundUpload[]>([])
   const [eventCommentsState, setEventCommentsState] = useState<EventCommentsState>({ cacheKey: '', rows: [] })
   const [eventCommentsErrorState, setEventCommentsErrorState] = useState<EventCommentsErrorState>({ cacheKey: '', message: '' })
   const [eventCommentsReloadKey, setEventCommentsReloadKey] = useState(0)
@@ -1254,6 +1281,7 @@ export default function CalendarPage() {
   const backgroundAttachmentRecoveryIdsRef = useRef(new Set<string>())
   const durableUploadLoadedUidRef = useRef('')
   const detailBackgroundUploadsRef = useRef<DetailBackgroundUpload[]>([])
+  const commentBackgroundUploadsRef = useRef<CommentBackgroundUpload[]>([])
   const commentAttachmentInputRef = useRef<HTMLInputElement | null>(null)
   const commentThreadEndRef = useRef<HTMLDivElement | null>(null)
   const activeCommentThreadIdRef = useRef('')
@@ -2067,8 +2095,8 @@ export default function CalendarPage() {
     [eventDetailAttachments],
   )
   const unsafeActiveBackgroundUploads = useMemo(
-    () => detailBackgroundUploads.filter(blocksBackgroundAttachmentUnload),
-    [detailBackgroundUploads],
+    () => [...detailBackgroundUploads, ...commentBackgroundUploads].filter(blocksBackgroundAttachmentUnload),
+    [commentBackgroundUploads, detailBackgroundUploads],
   )
   useEffect(() => {
     if (
@@ -2228,6 +2256,7 @@ export default function CalendarPage() {
           authorName: typeof data.authorName === 'string' ? data.authorName : '未命名使用者',
           text: typeof data.text === 'string' ? data.text : '',
           attachments: Array.isArray(data.attachments) ? data.attachments as EventAttachment[] : [],
+          pendingAttachmentCount: Math.max(0, Number(data.pendingAttachmentCount) || 0),
           createdAt: firestoreDateIso(data.createdAt)
         } satisfies CalendarEventComment
       }).sort((a, b) => `${a.createdAt}-${a.id}`.localeCompare(`${b.createdAt}-${b.id}`))
@@ -2239,6 +2268,33 @@ export default function CalendarPage() {
       setEventCommentsErrorState({ cacheKey: eventCommentsCacheKey, message: '留言載入失敗，請稍後重試' })
     })
   }, [commentThreadId, eventCommentsCacheKey, eventCommentsReloadKey])
+
+  useEffect(() => {
+    const remoteByCommentId = new Map(eventComments.map((comment) => [comment.id, comment.attachments]))
+    const matched = commentBackgroundUploads.flatMap((upload) => {
+      const attachment = (remoteByCommentId.get(upload.commentId) ?? []).find((item) => (
+        Boolean(upload.jobId && item.uploadJobId === upload.jobId)
+        || Boolean(upload.attachmentPath && item.path === upload.attachmentPath)
+      ))
+      const previewUrl = attachment ? attachmentPreviewUrl(attachment) : ''
+      return attachment && previewUrl ? [{ upload, previewUrl }] : []
+    })
+    if (matched.length === 0) return
+    let canceled = false
+    void Promise.all(matched.map(async ({ upload, previewUrl }) => (
+      await loadCommentAttachmentPreview(previewUrl) ? upload.id : ''
+    ))).then((loadedIds) => {
+      if (canceled) return
+      const completedIds = new Set(loadedIds.filter(Boolean))
+      if (completedIds.size === 0) return
+      setCommentBackgroundUploads((items) => items.filter((item) => {
+        if (!completedIds.has(item.id)) return true
+        URL.revokeObjectURL(item.previewUrl)
+        return false
+      }))
+    })
+    return () => { canceled = true }
+  }, [commentBackgroundUploads, eventComments])
 
   useEffect(() => {
     setFulfillmentPaymentModal(null)
@@ -2303,11 +2359,13 @@ export default function CalendarPage() {
       try {
         const rows = await loadDurableBackgroundAttachmentUploads(user.uid)
         if (canceled || rows.length === 0) return
+        const eventRows = rows.filter((row) => (row.uploadKind ?? 'event') === 'event')
+        const commentRows = rows.filter((row) => row.uploadKind === 'comment' && row.commentId)
         setDetailBackgroundUploads((items) => {
           const existingIds = new Set(items.map((item) => item.id))
           return [
             ...items,
-            ...rows.filter((row) => !existingIds.has(row.id)).map((row) => ({
+            ...eventRows.filter((row) => !existingIds.has(row.id)).map((row) => ({
               id: row.id,
               jobId: row.jobId || row.attachment?.uploadJobId,
               attachmentPath: row.attachment?.path,
@@ -2322,7 +2380,30 @@ export default function CalendarPage() {
             })),
           ]
         })
-        await processDurableBackgroundUploads(rows)
+        setCommentBackgroundUploads((items) => {
+          const existingIds = new Set(items.map((item) => item.id))
+          return [
+            ...items,
+            ...commentRows.filter((row) => !existingIds.has(row.id)).map((row) => ({
+              id: row.id,
+              jobId: row.jobId || row.attachment?.uploadJobId,
+              attachmentPath: row.attachment?.path,
+              eventId: row.eventId,
+              commentId: row.commentId as string,
+              name: row.name,
+              previewUrl: URL.createObjectURL(row.blob),
+              status: row.cloudSafe ? row.status : 'queued' as const,
+              progress: row.progress,
+              cloudSafe: row.cloudSafe,
+              createdAt: row.createdAt,
+              error: row.error,
+            })),
+          ]
+        })
+        await Promise.all([
+          processDurableBackgroundUploads(eventRows),
+          processCommentBackgroundUploads(commentRows),
+        ])
       } catch (error) {
         console.warn('[calendar] 離線照片佇列恢復失敗', error)
       }
@@ -2371,9 +2452,15 @@ export default function CalendarPage() {
     detailBackgroundUploadsRef.current = detailBackgroundUploads
   }, [detailBackgroundUploads])
 
+  useEffect(() => {
+    commentBackgroundUploadsRef.current = commentBackgroundUploads
+  }, [commentBackgroundUploads])
+
   useEffect(() => () => {
     detailBackgroundUploadsRef.current.forEach((upload) => URL.revokeObjectURL(upload.previewUrl))
     detailBackgroundUploadsRef.current = []
+    commentBackgroundUploadsRef.current.forEach((upload) => URL.revokeObjectURL(upload.previewUrl))
+    commentBackgroundUploadsRef.current = []
   }, [])
 
   useEffect(() => {
@@ -4365,6 +4452,35 @@ export default function CalendarPage() {
     }
   }
 
+  async function createBackgroundCommentShell(
+    eventId: string,
+    commentId: string,
+    text: string,
+    pendingAttachmentCount: number,
+  ) {
+    if (!user) throw new Error('登入已失效，請重新登入')
+    const [token, appCheckHeaders] = await Promise.all([user.getIdToken(), getAppCheckHeaders()])
+    const response = await fetch('/api/upload-drive', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        ...appCheckHeaders,
+      },
+      body: JSON.stringify({
+        action: 'create-background-comment',
+        eventId,
+        commentId,
+        text,
+        pendingAttachmentCount,
+      }),
+    })
+    const result = await response.json().catch(() => ({})) as { ok?: boolean, error?: ApiErrorPayload }
+    if (!response.ok || result.ok !== true) {
+      throw new Error(apiErrorMessage(result.error, `留言建立失敗（HTTP ${response.status}）`))
+    }
+  }
+
   async function fetchSalesCenterAttachments(eventId: string) {
     if (!user) throw new Error('登入已失效，請重新登入')
     const token = await user.getIdToken()
@@ -4725,6 +4841,134 @@ export default function CalendarPage() {
       path: `local-preview:${upload.id}`,
       type: 'image/*',
     })
+  }
+
+  async function commitDevelopmentCommentAttachment(
+    eventId: string,
+    commentId: string,
+    attachment: EventAttachment,
+  ) {
+    const commentRef = doc(db, 'calendarEvents', eventId, 'comments', commentId)
+    await runTransaction(db, async (transaction) => {
+      const snapshot = await transaction.get(commentRef)
+      if (!snapshot.exists()) throw new Error('找不到附件對應的留言')
+      const data = snapshot.data()
+      const attachments = Array.isArray(data.attachments) ? data.attachments as EventAttachment[] : []
+      const alreadyAttached = attachments.some((item) => (
+        (attachment.uploadJobId && item.uploadJobId === attachment.uploadJobId)
+        || item.path === attachment.path
+      ))
+      transaction.update(commentRef, {
+        attachments: alreadyAttached ? attachments : [...attachments, attachment],
+        pendingAttachmentCount: Math.max(0, (Number(data.pendingAttachmentCount) || 0) - (alreadyAttached ? 0 : 1)),
+        updatedAt: serverTimestamp(),
+      })
+    })
+  }
+
+  async function processCommentBackgroundUploads(rows: DurableBackgroundAttachmentUpload[]) {
+    const validRows = rows.filter((row) => row.uploadKind === 'comment' && row.commentId)
+    const groups = new Map<string, DurableBackgroundAttachmentUpload[]>()
+    validRows.forEach((row) => {
+      if (backgroundAttachmentRecoveryIdsRef.current.has(`durable:${row.id}`)) return
+      backgroundAttachmentRecoveryIdsRef.current.add(`durable:${row.id}`)
+      const key = `${row.eventId}:${row.commentId}`
+      groups.set(key, [...(groups.get(key) ?? []), row])
+    })
+    await Promise.all(Array.from(groups.values()).map(async (group) => {
+      const cloudSafeIds = new Set(group.filter((row) => row.cloudSafe).map((row) => row.id))
+      const showCloudSafeNotice = () => {
+        if (cloudSafeIds.size !== group.length) return
+        setDetailAttachmentUploadNotice({
+          id: Date.now(),
+          message: group.length > 1 ? `${group.length} 張照片上傳成功` : '上傳成功',
+        })
+      }
+      try {
+        await runWithConcurrency(group, 3, async (row) => {
+          let cloudSafeReached = row.cloudSafe
+          try {
+            const commentId = row.commentId as string
+            const file = durableBackgroundAttachmentFile(row)
+            const capture = row.capture ?? await extractPhotoCaptureMetadata(file)
+            const result = await startBackgroundAttachmentUpload({
+              eventId: row.eventId,
+              file,
+              completionMode: 'none',
+              uploadKind: 'comment',
+              commentId,
+              durableUpload: row,
+              capture,
+              ...(import.meta.env.DEV ? {
+                localFallback: async (fallbackFile, clientUploadId) => {
+                  const [attachment] = await uploadEventAttachments(row.eventId, [fallbackFile], {
+                    uploadKind: 'comment',
+                    commentId,
+                    clientUploadId,
+                  })
+                  if (!attachment) throw new Error('本機留言照片上傳失敗')
+                  return attachment
+                },
+              } : {}),
+              onJobCreated: (jobId) => setCommentBackgroundUploads((items) => items.map((item) => (
+                item.id === row.id ? { ...item, jobId } : item
+              ))),
+              onCloudSafe: () => {
+                cloudSafeReached = true
+                cloudSafeIds.add(row.id)
+                setCommentBackgroundUploads((items) => items.map((item) => (
+                  item.id === row.id ? { ...item, cloudSafe: true } : item
+                )))
+                showCloudSafeNotice()
+              },
+              onProgress: (status, ratio) => setCommentBackgroundUploads((items) => items.map((item) => (
+                item.id === row.id
+                  ? { ...item, status, progress: ratio ?? item.progress, error: undefined }
+                  : item
+              ))),
+            })
+            if (import.meta.env.DEV) {
+              await commitDevelopmentCommentAttachment(row.eventId, commentId, result.attachment)
+            }
+            setCommentBackgroundUploads((items) => items.map((item) => (
+              item.id === row.id
+                ? {
+                    ...item,
+                    jobId: result.attachment.uploadJobId || item.jobId,
+                    attachmentPath: result.attachment.path,
+                    status: 'finalizing',
+                    progress: 1,
+                    cloudSafe: true,
+                  }
+                : item
+            )))
+            void removeDurableBackgroundAttachmentUpload(row.id).catch((error) => {
+              console.warn('[calendar] 留言照片本機佇列清理失敗', error)
+            })
+          } catch (error) {
+            const message = error instanceof Error ? error.message : '留言照片背景上傳失敗'
+            if (cloudSafeReached && message.includes('仍在背景處理')) {
+              setCommentBackgroundUploads((items) => items.map((item) => (
+                item.id === row.id
+                  ? { ...item, status: 'finalizing', cloudSafe: true, error: undefined }
+                  : item
+              )))
+              return
+            }
+            await updateDurableBackgroundAttachmentUpload(row.id, {
+              status: 'failed',
+              error: message,
+            }).catch(() => undefined)
+            setCommentBackgroundUploads((items) => items.map((item) => (
+              item.id === row.id ? { ...item, status: 'failed', error: message } : item
+            )))
+          }
+        })
+        showCloudSafeNotice()
+      } finally {
+        group.forEach((row) => backgroundAttachmentRecoveryIdsRef.current.delete(`durable:${row.id}`))
+      }
+    }))
   }
 
   async function processDurableBackgroundUploads(rows: DurableBackgroundAttachmentUpload[]) {
@@ -5098,11 +5342,50 @@ export default function CalendarPage() {
       return
     }
 
-    const pendingFiles = commentFiles.map((item) => item.file)
+    const pendingItems = [...commentFiles]
+    const pendingFiles = pendingItems.map((item) => item.file)
     const commentRef = doc(collection(db, 'calendarEvents', threadId, 'comments'))
     let uploadedAttachments: EventAttachment[] = []
+    const durableRows: DurableBackgroundAttachmentUpload[] = []
+    const useBackgroundPhotoUpload = pendingItems.length > 0
+      && pendingItems.every((item) => canUseBackgroundImageUpload(item.file))
     setCommentSending(true)
     try {
+      if (useBackgroundPhotoUpload) {
+        for (const item of pendingItems) {
+          durableRows.push(await persistDurableBackgroundAttachmentUpload({
+            id: item.id,
+            uploaderUid: user.uid,
+            eventId: threadId,
+            uploadKind: 'comment',
+            commentId: commentRef.id,
+            completionMode: 'none',
+            file: item.file,
+          }))
+        }
+        await createBackgroundCommentShell(threadId, commentRef.id, text, durableRows.length)
+        setCommentBackgroundUploads((items) => [
+          ...items,
+          ...durableRows.map((row) => ({
+            id: row.id,
+            eventId: row.eventId,
+            commentId: commentRef.id,
+            name: row.name,
+            previewUrl: URL.createObjectURL(row.blob),
+            status: 'queued' as const,
+            progress: 0,
+            cloudSafe: false,
+            createdAt: row.createdAt,
+          })),
+        ])
+        if (activeCommentThreadIdRef.current === threadId) {
+          setCommentDraft('')
+          setCommentFiles([])
+          window.setTimeout(() => commentThreadEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }), 80)
+        }
+        void processCommentBackgroundUploads(durableRows)
+        return
+      }
       if (pendingFiles.length) {
         uploadedAttachments = await uploadEventAttachments(threadId, pendingFiles, {
           uploadKind: 'comment',
@@ -5124,6 +5407,9 @@ export default function CalendarPage() {
       }
     } catch (error) {
       if (uploadedAttachments.length) await deleteRemovedEventAttachments(uploadedAttachments, threadId).catch(() => 0)
+      if (durableRows.length) {
+        await Promise.allSettled(durableRows.map((row) => removeDurableBackgroundAttachmentUpload(row.id)))
+      }
       const message = error instanceof Error ? error.message : '留言送出失敗，請稍後再試'
       alert(message)
     } finally {
@@ -5141,6 +5427,13 @@ export default function CalendarPage() {
     try {
       await deleteDoc(doc(db, 'calendarEvents', threadId, 'comments', comment.id))
       const deleteFailures = await deleteRemovedEventAttachments(comment.attachments, threadId)
+      const localUploads = commentBackgroundUploads.filter((upload) => upload.commentId === comment.id)
+      await Promise.allSettled(localUploads.map((upload) => removeDurableBackgroundAttachmentUpload(upload.id)))
+      setCommentBackgroundUploads((items) => items.filter((item) => {
+        if (item.commentId !== comment.id) return true
+        URL.revokeObjectURL(item.previewUrl)
+        return false
+      }))
       if (deleteFailures > 0) alert('留言已刪除，但部分雲端附件清除失敗')
     } catch (error) {
       const message = error instanceof Error ? error.message : '留言刪除失敗，請稍後再試'
@@ -5228,13 +5521,16 @@ export default function CalendarPage() {
   }
 
   async function deleteRemovedEventAttachments(files: EventAttachment[], eventId = '') {
-    const driveFiles = files.filter((file) => file.provider === 'google-drive' && file.path)
-    if (!driveFiles.length) return 0
-    if (!user) return driveFiles.length
+    const driveFileIds = Array.from(new Set(files
+      .filter((file) => file.provider === 'google-drive')
+      .flatMap((file) => [file.path, file.thumbnailPath])
+      .filter(Boolean)))
+    if (!driveFileIds.length) return 0
+    if (!user) return driveFileIds.length
     const token = await user.getIdToken()
     const appCheckHeaders = await getAppCheckHeaders()
 
-    const results = await Promise.allSettled(driveFiles.map(async (file) => {
+    const results = await Promise.allSettled(driveFileIds.map(async (fileId) => {
       const response = await fetch('/api/upload-drive', {
         method: 'DELETE',
         headers: {
@@ -5242,7 +5538,7 @@ export default function CalendarPage() {
           'Content-Type': 'application/json',
           ...appCheckHeaders
         },
-        body: JSON.stringify({ fileId: file.path, eventId })
+        body: JSON.stringify({ fileId, eventId })
       })
       if (!response.ok) {
         const result = await response.json().catch(() => ({}))
@@ -6495,6 +6791,15 @@ export default function CalendarPage() {
                 {group.comments.map((comment) => {
                   const isOwnComment = comment.authorUid === user?.uid
                   const canDeleteComment = isAdmin || isOwnComment
+                  const remoteJobIds = new Set(comment.attachments.map((attachment) => attachment.uploadJobId).filter(Boolean))
+                  const remotePaths = new Set(comment.attachments.map((attachment) => attachment.path).filter(Boolean))
+                  const localCommentUploads = commentBackgroundUploads.filter((upload) => (
+                    upload.eventId === commentThreadId
+                    && upload.commentId === comment.id
+                    && !(upload.jobId && remoteJobIds.has(upload.jobId))
+                    && !(upload.attachmentPath && remotePaths.has(upload.attachmentPath))
+                  ))
+                  const hasActiveCommentUpload = localCommentUploads.some((upload) => upload.status !== 'failed')
                   return (
                     <article className={`event-comment${isOwnComment ? ' own' : ''}`} key={comment.id}>
                       <div className="event-comment-content">
@@ -6507,7 +6812,7 @@ export default function CalendarPage() {
                             <button
                               type="button"
                               onClick={() => deleteEventComment(comment)}
-                              disabled={deletingCommentId === comment.id}
+                              disabled={deletingCommentId === comment.id || hasActiveCommentUpload}
                               aria-label={`刪除 ${eventCommentAuthorName(comment)} 的留言`}
                             >
                               {deletingCommentId === comment.id ? '刪除中' : '刪除'}
@@ -6516,7 +6821,7 @@ export default function CalendarPage() {
                         </div>
                         <div className="event-comment-bubble">
                           {comment.text && <p>{comment.text}</p>}
-                          {comment.attachments.length > 0 && (
+                          {(comment.attachments.length > 0 || localCommentUploads.length > 0) && (
                             <div className="event-comment-attachments">
                               {comment.attachments.map((attachment) => {
                                 const previewUrl = attachmentPreviewUrl(attachment)
@@ -6546,6 +6851,18 @@ export default function CalendarPage() {
                                   </a>
                                 )
                               })}
+                              {localCommentUploads.map((upload) => (
+                                <button
+                                  type="button"
+                                  className={`event-comment-image pending${upload.status === 'failed' ? ' failed' : ''}`}
+                                  onClick={() => openPendingDetailAttachment(upload)}
+                                  key={`local:${upload.id}`}
+                                  aria-label={`開啟剛上傳的照片：${upload.name}`}
+                                >
+                                  <img src={upload.previewUrl} alt={upload.name} />
+                                  <span>{upload.status === 'failed' ? '轉檔失敗' : upload.cloudSafe ? '上傳成功' : '上傳中'}</span>
+                                </button>
+                              ))}
                             </div>
                           )}
                         </div>
