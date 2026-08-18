@@ -41,6 +41,7 @@ import {
 import { ensurePushSubscription, isPushSupported } from '../lib/pushNotifications'
 import CalendarDatePicker from '../components/CalendarDatePicker'
 import ZoomableAttachmentImage from '../components/ZoomableAttachmentImage'
+import CalendarRoutePending from '../components/shared/CalendarRoutePending'
 import { useAuth } from '../contexts/AuthContext'
 import { useCalendarActivityLogs, useCalendarEvents, useCalendarGroups, useCalendarSearchEvents } from '../hooks/useCalendarData'
 import { useDepartments, useEmployees, useShifts } from '../hooks/useHrData'
@@ -1288,6 +1289,7 @@ export default function CalendarPage() {
   const monthInputRef = useRef<HTMLInputElement | null>(null)
   const monthGridRef = useRef<HTMLDivElement | null>(null)
   const calendarSurfaceRef = useRef<HTMLElement | null>(null)
+  const eventDetailReturnDayListDateRef = useRef<string | null>(null)
   const eventDragPreviewRef = useRef<HTMLDivElement | null>(null)
   const dragOverDateRef = useRef<string | null>(null)
   const dragPreviewFrameRef = useRef<number | null>(null)
@@ -3527,6 +3529,7 @@ export default function CalendarPage() {
 
   function openEventDetail(event: CalendarEvent, options: { preserveMonth?: boolean } = {}) {
     setDragActionMenu(null)
+    eventDetailReturnDayListDateRef.current = dayListDate
     setDayListDate(null)
     setSelectedDeliveryGroupKey(null)
     setShowEventActionMenu(false)
@@ -6520,8 +6523,11 @@ export default function CalendarPage() {
             )}
             <button
               onClick={() => {
+                const returnDayListDate = eventDetailReturnDayListDateRef.current
+                eventDetailReturnDayListDateRef.current = null
                 setShowEventActionMenu(false)
                 setSelectedEventId(null)
+                if (returnDayListDate) setDayListDate(returnDayListDate)
               }}
               aria-label="關閉事件詳情"
             >
@@ -7744,7 +7750,7 @@ export default function CalendarPage() {
           onContextMenu={(event) => event.preventDefault()}
         >
           {loading ? (
-            <div className="calendar-skeleton" />
+            <CalendarRoutePending />
           ) : (
             <>
             <div className="weekday-grid">

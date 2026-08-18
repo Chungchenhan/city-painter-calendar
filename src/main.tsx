@@ -5,6 +5,8 @@ import { createBrowserRouter, Navigate, RouterProvider } from 'react-router-dom'
 import { AuthProvider } from './contexts/AuthContext'
 import { useAuth } from './contexts/AuthContext'
 import AppShell from './components/AppShell'
+import CalendarRoutePending from './components/shared/CalendarRoutePending'
+import CalendarStartupGate from './components/shared/CalendarStartupGate'
 import LoginPage from './pages/LoginPage'
 import { setupAppUpdateChecks } from './lib/appUpdate'
 import { setupVisualViewportVars } from './lib/visualViewport'
@@ -49,31 +51,7 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
 }
 
 function CalendarLoadingShell() {
-  return (
-    <div className="calendar-startup-shell" aria-label="行事曆載入中" aria-busy="true">
-      <header className="calendar-startup-topbar">
-        <strong><span>✣</span> Citypainter</strong>
-        <i />
-        <i />
-        <i className="calendar-startup-title" />
-      </header>
-      <main className="calendar-startup-main">
-        <aside>
-          <i />
-          <i />
-          <i />
-        </aside>
-        <section>
-          <div className="calendar-startup-weekdays">
-            {['日', '一', '二', '三', '四', '五', '六'].map((day) => <span key={day}>{day}</span>)}
-          </div>
-          <div className="calendar-startup-grid">
-            {Array.from({ length: 42 }, (_, index) => <i key={index} />)}
-          </div>
-        </section>
-      </main>
-    </div>
-  )
+  return <CalendarRoutePending />
 }
 
 function CalendarRoutePage() {
@@ -106,6 +84,7 @@ rootElement.cityPainterCalendarRoot = appRoot
 appRoot.render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
+      <CalendarStartupGate />
       <AuthProvider>
         <RouterProvider router={router} />
       </AuthProvider>

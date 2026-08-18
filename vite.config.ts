@@ -1,10 +1,17 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
 const appCacheVersion = process.env.VERCEL_GIT_COMMIT_SHA || process.env.VERCEL_DEPLOYMENT_ID || `${Date.now()}`
+
+export function localApiModuleUrl(handlerPath: string) {
+  const moduleUrl = pathToFileURL(handlerPath)
+  moduleUrl.searchParams.set('mtime', String(fs.statSync(handlerPath).mtimeMs))
+  return moduleUrl.href
+}
 
 function loadLocalServerEnv() {
   const envPath = path.resolve(process.cwd(), '.env.vercel.local')
@@ -55,7 +62,8 @@ function localApiPlugin(): Plugin {
           }
 
           try {
-            const { default: handler } = await import(path.resolve(process.cwd(), handlerPath))
+            const resolvedHandlerPath = path.resolve(process.cwd(), handlerPath)
+            const { default: handler } = await import(localApiModuleUrl(resolvedHandlerPath))
             await handler(req, apiRes)
           } catch (error) {
             const message = error instanceof Error ? error.message : 'Local API failed'
@@ -71,6 +79,17 @@ function localApiPlugin(): Plugin {
 function appVersionPlugin(): Plugin {
   return {
     name: 'app-version',
+    configureServer(server) {
+      server.middlewares.use('/app-version.json', (req, res, next) => {
+        if (req.method !== 'GET' && req.method !== 'HEAD') {
+          next()
+          return
+        }
+        res.setHeader('Content-Type', 'application/json; charset=utf-8')
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate')
+        res.end(req.method === 'HEAD' ? undefined : JSON.stringify({ version: appCacheVersion }))
+      })
+    },
     generateBundle() {
       this.emitFile({
         type: 'asset',
@@ -94,6 +113,9 @@ function htmlIconVersionPlugin(): Plugin {
 }
 
 export default defineConfig({
+  define: {
+    __APP_VERSION__: JSON.stringify(appCacheVersion)
+  },
   plugins: [
     react(),
     localApiPlugin(),
@@ -126,12 +148,13 @@ export default defineConfig({
         skipWaiting: true,
         clientsClaim: true,
         importScripts: ['push-handler.js'],
-        globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+        globPatterns: ['**/*.{js,css,ico,png,svg,woff2}'],
+        navigateFallback: null,
         navigateFallbackDenylist: [/^\/__\/auth\//, /^\/api\//],
         runtimeCaching: [
           {
             urlPattern: ({ request, url }) => request.mode === 'navigate' && !url.pathname.startsWith('/__/auth/') && !url.pathname.startsWith('/api/'),
-            handler: 'StaleWhileRevalidate',
+            handler: 'NetworkFirst',
             options: {
               cacheName: 'pages',
               expiration: { maxEntries: 20, maxAgeSeconds: 24 * 60 * 60 }
