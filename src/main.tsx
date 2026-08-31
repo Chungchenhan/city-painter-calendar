@@ -9,6 +9,7 @@ import CalendarRoutePending from './components/shared/CalendarRoutePending'
 import CalendarStartupGate from './components/shared/CalendarStartupGate'
 import LoginPage from './pages/LoginPage'
 import { setupAppUpdateChecks } from './lib/appUpdate'
+import { setupFirebaseSessionRefresh } from './lib/firebase'
 import { setupVisualViewportVars } from './lib/visualViewport'
 import './styles.css'
 
@@ -25,6 +26,7 @@ if (import.meta.env.DEV && window.location.hostname === '127.0.0.1') {
 }
 
 setupAppUpdateChecks()
+setupFirebaseSessionRefresh()
 setupVisualViewportVars()
 
 if ('serviceWorker' in navigator) {

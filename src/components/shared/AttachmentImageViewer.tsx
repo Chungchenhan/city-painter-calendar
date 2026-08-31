@@ -3,7 +3,6 @@ import {
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
-  type WheelEvent as ReactWheelEvent,
 } from 'react'
 
 type Point = {
@@ -233,6 +232,29 @@ export default function AttachmentImageViewer({
     return () => window.removeEventListener('resize', handleResize)
   }, [])
 
+  useEffect(() => {
+    const viewport = viewportRef.current
+    if (!viewport) return
+
+    function handleWheel(event: WheelEvent) {
+      event.preventDefault()
+      if (event.deltaY === 0 || !(event.target instanceof Node) || !viewport?.contains(event.target)) return
+      const viewportRect = viewport?.getBoundingClientRect()
+      if (!viewportRect) return
+      const currentTransform = transformRef.current
+      const nextScale = Math.min(MAX_SCALE, Math.max(1, currentTransform.scale * Math.exp(-event.deltaY * 0.002)))
+      const scaleRatio = nextScale / currentTransform.scale
+      applyTransform({
+        scale: nextScale,
+        x: currentTransform.x + (event.clientX - viewportRect.left - viewportRect.width / 2) * (1 - scaleRatio),
+        y: currentTransform.y + (event.clientY - viewportRect.top - viewportRect.height / 2) * (1 - scaleRatio),
+      })
+    }
+
+    window.addEventListener('wheel', handleWheel, { capture: true, passive: false })
+    return () => window.removeEventListener('wheel', handleWheel, true)
+  }, [])
+
   function updateDismissOffset(offset: number) {
     dismissOffsetRef.current = offset
     setDismissOffset(offset)
@@ -391,21 +413,6 @@ export default function AttachmentImageViewer({
     })
   }
 
-  function handleWheel(event: ReactWheelEvent<HTMLDivElement>) {
-    if (event.deltaY === 0) return
-    event.preventDefault()
-    const viewportRect = viewportRef.current?.getBoundingClientRect()
-    if (!viewportRect) return
-    const currentTransform = transformRef.current
-    const nextScale = Math.min(MAX_SCALE, Math.max(1, currentTransform.scale * Math.exp(-event.deltaY * 0.002)))
-    const scaleRatio = nextScale / currentTransform.scale
-    applyTransform({
-      scale: nextScale,
-      x: currentTransform.x + (event.clientX - viewportRect.left - viewportRect.width / 2) * (1 - scaleRatio),
-      y: currentTransform.y + (event.clientY - viewportRect.top - viewportRect.height / 2) * (1 - scaleRatio),
-    })
-  }
-
   if (!displaySrc) return null
 
   const fullImageLoading = !fullImageReady && !fullImageFailed
@@ -476,7 +483,6 @@ export default function AttachmentImageViewer({
         onPointerUp={finishPointer}
         onPointerCancel={(event) => finishPointer(event, true)}
         onDoubleClick={toggleZoom}
-        onWheel={handleWheel}
       >
         <img
           ref={imageRef}

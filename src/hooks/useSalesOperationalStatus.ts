@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { User } from 'firebase/auth'
 import { doc, onSnapshot } from 'firebase/firestore'
-import { db } from '../lib/firebase'
+import { db, refreshFirebaseSession } from '../lib/firebase'
 import { readLocalQueryCache, removeLocalQueryCache, writeLocalQueryCache } from '../lib/localQueryCache'
 import {
   fetchSalesOperationalStatus,
@@ -210,12 +210,16 @@ export function useSalesOperationalStatus({
       },
     ) : () => undefined
 
-    const revalidate = () => {
+    const revalidate = (refreshSession = false): Promise<void> => {
       if (!active) return Promise.resolve()
-      if (revalidateInFlightRef.current?.key === key) return revalidateInFlightRef.current.request
+      if (revalidateInFlightRef.current?.key === key) {
+        const inFlightRequest = revalidateInFlightRef.current.request
+        return refreshSession ? inFlightRequest.then(() => revalidate(true)) : inFlightRequest
+      }
       let request: Promise<void> | null = null
       request = (async () => {
         try {
+          if (refreshSession) await refreshFirebaseSession()
           const nextStatus = await fetchSalesOperationalStatus(user, eventId)
           if (!active || activeKeyRef.current !== key) return
           listenerErrors.api = ''
@@ -258,9 +262,9 @@ export function useSalesOperationalStatus({
       },
     )
 
-    const handleFocus = () => void revalidate()
+    const handleFocus = () => void revalidate(true)
     const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') void revalidate()
+      if (document.visibilityState === 'visible') void revalidate(true)
     }
     window.addEventListener('focus', handleFocus)
     document.addEventListener('visibilitychange', handleVisibilityChange)

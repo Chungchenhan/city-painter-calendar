@@ -2907,7 +2907,7 @@ html.calendar-event-touch-dragging ::selection {
   width: 100%;
   aspect-ratio: 4 / 3;
   display: block;
-  object-fit: cover;
+  object-fit: contain;
 }
 
 .event-comment-file {

@@ -19,3 +19,7 @@ test('點擊銷貨單共用已預熱的單次票據並可直接開啟目標網�
 test('預熱票據在九十秒後不再重用', () => {
   assert.match(calendarSource, /Date\.now\(\) - cached\.createdAt < 90_000/u)
 })
+
+test('拖曳 ERP 配送事件會透過受保護同步端點更新銷售單', () => {
+  assert.match(calendarSource, /if \(sourceEvent\.source === 'erpSalesDelivery'\) \{\s*await syncSalesDeliveryEventFields\(\s*sourceEvent,\s*movedEvent,/u)
+})

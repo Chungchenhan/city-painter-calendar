@@ -205,28 +205,30 @@ function canonicalSalesDeliveryTime(value, label) {
   return normalized
 }
 
-function salesDeliveryTimeMinutes(value) {
-  const [hour, minute] = value.split(':').map(Number)
-  return hour * 60 + minute
+function salesDeliveryDateTimeMinutes(date, time) {
+  return Date.parse(`${date}T${time}:00Z`) / 60000
 }
 
-function normalizeSalesDeliveryEventFields(value, labelPrefix) {
+function normalizeSalesDeliveryEventFields(value, labelPrefix, { allowAllDay = false } = {}) {
   const source = value && typeof value === 'object' ? value : {}
   const title = text(source.title)
   const date = canonicalSalesDeliveryDate(source.date, `${labelPrefix}日期`)
   const endDate = canonicalSalesDeliveryDate(source.endDate || source.date, `${labelPrefix}結束日期`)
-  const startTime = canonicalSalesDeliveryTime(source.startTime, `${labelPrefix}開始時間`)
-  const endTime = canonicalSalesDeliveryTime(source.endTime, `${labelPrefix}結束時間`)
+  const allDay = source.allDay === true
+  const startTime = allDay ? text(source.startTime) : canonicalSalesDeliveryTime(source.startTime, `${labelPrefix}開始時間`)
+  const endTime = allDay ? text(source.endTime) : canonicalSalesDeliveryTime(source.endTime, `${labelPrefix}結束時間`)
   const location = text(source.location)
   if (!title) throw requestError('事件標題不可空白', 400)
   if (title.length > 300) throw requestError('事件標題不可超過 300 字', 400)
-  if (date !== endDate) throw requestError('銷貨配送事件只支援單日日期，開始與結束日期必須相同', 400)
-  if (source.allDay === true) throw requestError('銷貨配送事件必須指定開始與結束時間', 400)
-  if (salesDeliveryTimeMinutes(endTime) <= salesDeliveryTimeMinutes(startTime)) {
+  if (endDate < date) throw requestError('結束日期不得早於開始日期', 400)
+  if (allDay && (!allowAllDay || startTime || endTime)) {
+    throw requestError('銷貨配送事件必須指定開始與結束時間', 400)
+  }
+  if (!allDay && salesDeliveryDateTimeMinutes(endDate, endTime) <= salesDeliveryDateTimeMinutes(date, startTime)) {
     throw requestError('收貨結束時間必須晚於開始時間', 400)
   }
   if (location.length > 1000) throw requestError('地點不可超過 1000 字', 400)
-  return { title, date, endDate, startTime, endTime, allDay: false, location }
+  return { title, date, endDate, startTime, endTime, allDay, location }
 }
 
 function normalizeExpectedSalesDeliveryEventFields(value) {
@@ -251,8 +253,8 @@ export function normalizeSalesDeliveryEventSyncInput(body) {
   const calendarTitle = text(body?.calendarTitle)
   if (!calendarTitle) throw requestError('行事曆標題不可只有圖示', 400)
   if (calendarTitle.length > 300) throw requestError('行事曆標題不可超過 300 字', 400)
-  const event = normalizeSalesDeliveryEventFields(body?.event, '')
   const expected = normalizeExpectedSalesDeliveryEventFields(body?.expected)
+  const event = normalizeSalesDeliveryEventFields(body?.event, '', { allowAllDay: expected.allDay })
   return {
     eventId,
     calendarTitle,
@@ -263,7 +265,7 @@ export function normalizeSalesDeliveryEventSyncInput(body) {
       deliveryDate: event.date.replaceAll('-', '/'),
       deliveryStartTime: event.startTime,
       deliveryEndTime: event.endTime,
-      deliveryTime: '指定時間',
+      deliveryTime: event.allDay ? '' : '指定時間',
       deliveryScheduleSource: 'manual',
       recipientAddress: event.location,
     },
@@ -379,8 +381,8 @@ export async function syncSalesDeliveryEventFields(db, actor, body) {
     if (primaryEventId && primaryEventId !== input.eventId) {
       throw requestError('此事件不是銷貨單目前綁定的主要事件，已停止同步', 409)
     }
-    if (!['外送', '施工'].includes(text(sales.shippingMethod))) {
-      throw requestError('此銷貨單已不是外送或施工，請重新整理行事曆', 409)
+    if (!['外送', '施工', '活動'].includes(text(sales.shippingMethod))) {
+      throw requestError('此銷貨單已不是外送、施工或活動，請重新整理行事曆', 409)
     }
     if (!salesDeliveryEventFieldsMatch(event, input.expected)) {
       throw requestError('事件已由其他畫面更新，請重新開啟後再修改', 409)
@@ -446,7 +448,7 @@ export function canUseErpOrderFulfillmentPermission(event, canScanSalesOrder) {
   if (!canScanSalesOrder) return false
   if (text(event?.source) !== 'erpSalesDelivery') return false
   const shippingMethod = text(event?.sourceShippingMethod)
-  return shippingMethod === '外送' || shippingMethod === '施工'
+  return shippingMethod === '外送' || shippingMethod === '施工' || shippingMethod === '活動'
 }
 
 async function canOperateErpOrderFulfillment(db, actor, event) {
@@ -679,7 +681,7 @@ export function parseAttachmentUploadJobRequest(body = {}) {
   const fulfillmentBatchSize = Number(body.fulfillmentBatchSize)
   if (!eventId || eventId.includes('/') || eventId.length > 200) throw requestError('附件事件識別碼不正確', 400)
   if (!name || name.length > 500) throw requestError('照片檔名不正確', 400)
-  if (!type.startsWith('image/') || type === 'image/svg+xml') throw requestError('外送／施工完成只能上傳照片', 400)
+  if (!type.startsWith('image/') || type === 'image/svg+xml') throw requestError('外送／施工／活動完成只能上傳照片', 400)
   if (!Number.isSafeInteger(size) || size <= 0 || size > MAX_BACKGROUND_IMAGE_BYTES) {
     throw requestError('照片不可超過 50 MB', 400)
   }

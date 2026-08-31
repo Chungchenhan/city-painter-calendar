@@ -47,6 +47,7 @@ import { useCalendarActivityLogs, useCalendarEvents, useCalendarGroups, useCalen
 import { useDepartments, useEmployees, useShifts } from '../hooks/useHrData'
 import { useSalesOperationalStatus } from '../hooks/useSalesOperationalStatus'
 import { fetchSalesOperationalStatus, type SalesOperationalStatus } from '../lib/salesOperationalStatus'
+import { dismissActiveKeyboard, isVisualViewportReducedByKeyboard } from '../lib/visualViewport'
 import type { CalendarActivityLog, CalendarEvent, CalendarEventComment, CalendarGroup, Employee, FulfillmentPaymentPrompt, UserNotificationSettings } from '../types'
 
 const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六']
@@ -70,6 +71,7 @@ const NOTIFIED_TAG_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
 const SALES_ATTACHMENT_PREFETCH_DAYS = 7
 const SALES_ATTACHMENT_PREFETCH_EVENT_LIMIT = 14
 const SALES_ATTACHMENT_PREFETCH_DELAY_MS = 2500
+const SALES_ATTACHMENT_URL_REFRESH_INTERVAL_MS = 4 * 60 * 1000
 const TOUCH_DRAG_LONG_PRESS_MS = 360
 const TOUCH_DRAG_START_TOLERANCE = 48
 const SALES_DELIVERY_EVENT_SYNC_ACTION = 'sync-sales-delivery-event-fields'
@@ -666,14 +668,14 @@ function normalizeFulfillmentPaymentPrompt(value: unknown): FulfillmentPaymentPr
 }
 
 function fulfillmentShippingMethod(event: CalendarEvent, status: ProductionLineStatus | null) {
-  const legacyNoteMethod = event.note.match(/(?:送貨|取件)方式[：:]\s*(外送|施工)/)?.[1] || ''
+  const legacyNoteMethod = event.note.match(/(?:送貨|取件)方式[：:]\s*(外送|施工|活動)/)?.[1] || ''
   return (status?.shippingMethod || event.sourceShippingMethod || legacyNoteMethod).trim()
 }
 
 function isErpOrderFulfillmentEvent(event: CalendarEvent, status: ProductionLineStatus | null) {
   if (event.source !== 'erpSalesDelivery' || !event.sourceId) return false
   const shippingMethod = fulfillmentShippingMethod(event, status)
-  return shippingMethod === '外送' || shippingMethod === '施工'
+  return shippingMethod === '外送' || shippingMethod === '施工' || shippingMethod === '活動'
 }
 
 function erpSalesFormUrl(salesId: string) {
@@ -2050,6 +2052,8 @@ export default function CalendarPage() {
     queryFn: () => fetchSalesCenterAttachments(salesAttachmentEventId),
     staleTime: 7 * 60 * 1000,
     gcTime: 9 * 60 * 1000,
+    refetchInterval: SALES_ATTACHMENT_URL_REFRESH_INTERVAL_MS,
+    refetchOnWindowFocus: 'always',
     retry: 1,
   })
   const salesCenterAttachments = salesCenterAttachmentsQuery.data ?? []
@@ -2508,13 +2512,14 @@ export default function CalendarPage() {
   }, [])
 
   useEffect(() => {
-    if (viewMode !== 'month' || loading) return
+    if (viewMode !== 'month' || loading || showEventModal) return
     const grid = monthGridRef.current
     if (!grid) return
     const currentGrid = grid
     let frame = 0
 
     function calculateMonthDayEventLimit() {
+      if (isVisualViewportReducedByKeyboard()) return
       const cell = currentGrid.querySelector<HTMLElement>('.day-cell')
       if (!cell) return
       const dayEvents = cell.querySelector<HTMLElement>('.day-events')
@@ -2538,6 +2543,9 @@ export default function CalendarPage() {
     }
 
     scheduleMonthDayEventLimitCalculation()
+    const settleTimers = [120, 360, 720].map((delay) => (
+      window.setTimeout(scheduleMonthDayEventLimitCalculation, delay)
+    ))
     const resizeObserver = new ResizeObserver(calculateMonthDayEventLimit)
     resizeObserver.observe(currentGrid)
     if (calendarSurfaceRef.current) resizeObserver.observe(calendarSurfaceRef.current)
@@ -2547,11 +2555,12 @@ export default function CalendarPage() {
     window.visualViewport?.addEventListener('resize', scheduleMonthDayEventLimitCalculation)
     return () => {
       if (frame) window.cancelAnimationFrame(frame)
+      settleTimers.forEach((timer) => window.clearTimeout(timer))
       resizeObserver.disconnect()
       window.removeEventListener('resize', scheduleMonthDayEventLimitCalculation)
       window.visualViewport?.removeEventListener('resize', scheduleMonthDayEventLimitCalculation)
     }
-  }, [loading, month, viewMode])
+  }, [loading, month, showEventModal, viewMode])
 
   const selectedDay = dayjs(selectedDate)
   const currentTitle = viewMode === 'week'
@@ -4157,10 +4166,6 @@ export default function CalendarPage() {
       return
     }
     if (editingEvent?.source === 'erpSalesDelivery') {
-      if (eventForm.date !== normalizedEndDate) {
-        alert('銷貨配送事件只支援單日日期，開始與結束日期必須相同')
-        return
-      }
       if (eventForm.allDay) {
         alert('銷貨配送事件必須指定開始與結束時間')
         return
@@ -4383,6 +4388,7 @@ export default function CalendarPage() {
       }
 
       optimisticallyPatchCalendarEvents(optimisticPatches)
+      dismissActiveKeyboard()
       setShowEventModal(false)
       resetAttachmentUploadState()
       setDeletedAttachments([])
@@ -4787,6 +4793,7 @@ export default function CalendarPage() {
 
   function closeEventModal() {
     discardAttachmentUploadState()
+    dismissActiveKeyboard()
     setShowEventModal(false)
   }
 
@@ -4999,8 +5006,8 @@ export default function CalendarPage() {
           openFulfillmentPaymentPrompt(group[0].eventId, latestStatus.paymentPrompt)
         }
         if (group[0].completionMode === 'fulfillment') {
-          if (!['外送', '施工'].includes(latestStatus.shippingMethod || '')) {
-            throw new Error('此事件目前不是外送或施工訂單')
+          if (!['外送', '施工', '活動'].includes(latestStatus.shippingMethod || '')) {
+            throw new Error('此事件目前不是外送、施工或活動訂單')
           }
           if (latestStatus.canCompleteOrder !== true) throw new Error('您沒有完成銷貨單的修改或特殊操作權限')
         }
@@ -5184,14 +5191,14 @@ export default function CalendarPage() {
     let fulfillmentEvent = isErpOrderFulfillmentEvent(selectedEvent, productionLineStatus)
     let latestProductionLineStatus = productionLineStatus
     if (fulfillmentEvent && files.length > 20) {
-      alert('外送／施工照片一次最多上傳 20 張')
+      alert('外送／施工／活動照片一次最多上傳 20 張')
       return
     }
     if (fulfillmentEvent && files.some((file) => !canUseBackgroundImageUpload(file))) {
-      alert('外送／施工完成只能上傳照片')
+      alert('外送／施工／活動完成只能上傳照片')
       return
     }
-    // 只切換事件詳情的外送／施工照片，事件編輯器、留言及其他附件仍沿用原流程。
+    // 只切換事件詳情的完成照片，事件編輯器、留言及其他附件仍沿用原流程。
     if (fulfillmentEvent) {
       queueFulfillmentBackgroundUploads(selectedEvent, files)
       return
@@ -5208,12 +5215,12 @@ export default function CalendarPage() {
         latestProductionLineStatus = await fetchProductionLineStatus(selectedEvent.id)
         setProductionLineStatus(latestProductionLineStatus)
         const shippingMethod = fulfillmentShippingMethod(selectedEvent, latestProductionLineStatus)
-        fulfillmentEvent = shippingMethod === '外送' || shippingMethod === '施工'
+        fulfillmentEvent = shippingMethod === '外送' || shippingMethod === '施工' || shippingMethod === '活動'
         if (fulfillmentEvent && latestProductionLineStatus.canCompleteOrder !== true) {
           throw new Error('您沒有完成銷貨單的修改或特殊操作權限')
         }
         if (fulfillmentEvent && files.some((file) => !file.type.startsWith('image/') || file.type === 'image/svg+xml')) {
-          throw new Error('外送／施工完成只能上傳照片')
+          throw new Error('外送／施工／活動完成只能上傳照片')
         }
         openFulfillmentPaymentPrompt(selectedEvent.id, latestProductionLineStatus?.paymentPrompt)
       }
@@ -5250,7 +5257,7 @@ export default function CalendarPage() {
       if (pendingRetry) setProductionLineRetry(pendingRetry)
       if (fulfillmentEvent) {
         if (lineAttachmentIds.length !== uploadedAttachments.length) {
-          throw new Error('外送／施工照片處理不完整，請稍後重試')
+          throw new Error('外送／施工／活動照片處理不完整，請稍後重試')
         }
         const result = await completeOrderFulfillment(selectedEvent.id, lineAttachmentIds)
         completedOrderStatus = result.orderStatus
@@ -6064,10 +6071,18 @@ export default function CalendarPage() {
           ...nextDateRange,
           updatedAt
         }
-        await updateDoc(doc(db, 'calendarEvents', sourceEvent.id), {
-          ...nextDateRange,
-          updatedAt
-        })
+        if (sourceEvent.source === 'erpSalesDelivery') {
+          await syncSalesDeliveryEventFields(
+            sourceEvent,
+            movedEvent,
+            titleWithoutKnownIcon(sourceEvent.title, titleIconOptions).trim(),
+          )
+        } else {
+          await updateDoc(doc(db, 'calendarEvents', sourceEvent.id), {
+            ...nextDateRange,
+            updatedAt
+          })
+        }
         const followUpResults = await Promise.allSettled([
           syncCalendarEventViews(movedEvent),
           writeActivityLog({
@@ -6094,8 +6109,10 @@ export default function CalendarPage() {
       setDragActionMenu(null)
       setDragOverDateIfChanged(null)
       await refreshCalendarData()
-    } catch {
-      alert(action === 'move' ? '事件移動失敗，請稍後再試' : '事件複製失敗，請稍後再試')
+    } catch (error) {
+      alert(error instanceof Error
+        ? error.message
+        : (action === 'move' ? '事件移動失敗，請稍後再試' : '事件複製失敗，請稍後再試'))
     } finally {
       setSaving(false)
     }
@@ -6461,12 +6478,12 @@ export default function CalendarPage() {
                   className="event-detail-upload-btn"
                   onClick={() => detailAttachmentInputRef.current?.click()}
                   disabled={detailAttachmentUploading}
-                  aria-label={orderFulfillmentEvent ? '上傳外送或施工完成照片' : '上傳檔案或照片'}
+                  aria-label={orderFulfillmentEvent ? '上傳外送、施工或活動完成照片' : '上傳檔案或照片'}
                 >
                   <span>＋</span>
                   <b>{detailAttachmentUploading
                     ? '上傳中'
-                    : orderFulfillmentEvent ? '外送／施工' : '上傳'}</b>
+                    : orderFulfillmentEvent ? '完成照片' : '上傳'}</b>
                 </button>
                 <input
                   ref={detailAttachmentInputRef}
@@ -8000,8 +8017,7 @@ export default function CalendarPage() {
                       onChange={(nextDate) => {
                         setEventForm((form) => ({
                           ...form,
-                          ...shiftEventEndByStartChange(form, nextDate, form.startTime),
-                          ...(editingSalesDeliveryEvent ? { endDate: nextDate } : {})
+                          ...shiftEventEndByStartChange(form, nextDate, form.startTime)
                         }))
                       }}
                     />
@@ -8021,10 +8037,7 @@ export default function CalendarPage() {
                       value={eventForm.endDate}
                       min={eventForm.date}
                       ariaLabel="選擇結束日期"
-                      onChange={(nextDate) => setEventForm((form) => editingSalesDeliveryEvent
-                        ? { ...form, date: nextDate, endDate: nextDate }
-                        : { ...form, endDate: nextDate })}
-                      title={editingSalesDeliveryEvent ? '銷貨單只有一個收貨日期，開始與結束日期會同步調整' : undefined}
+                      onChange={(nextDate) => setEventForm((form) => ({ ...form, endDate: nextDate }))}
                     />
                   </div>
                   {!eventForm.allDay && (

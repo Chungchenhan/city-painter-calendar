@@ -3,6 +3,16 @@ let lastHeight = ''
 let lastOffsetTop = ''
 let lastKeyboardInset = ''
 
+export function visualViewportKeyboardInset(innerHeight: number, viewportHeight: number, offsetTop: number) {
+  return Math.max(0, Math.round(innerHeight - viewportHeight - offsetTop))
+}
+
+export function isVisualViewportReducedByKeyboard() {
+  const viewport = window.visualViewport
+  if (!viewport) return false
+  return visualViewportKeyboardInset(window.innerHeight, viewport.height, viewport.offsetTop) > 80
+}
+
 function isTextKeyboardControl(element: Element | null) {
   if (element instanceof HTMLTextAreaElement) return true
   if (element instanceof HTMLElement && element.isContentEditable) return true
@@ -14,7 +24,7 @@ function applyVisualViewportVars() {
   const viewport = window.visualViewport
   const height = Math.round(viewport?.height ?? window.innerHeight)
   const offsetTop = Math.round(viewport?.offsetTop ?? 0)
-  const keyboardInset = Math.max(0, Math.round(window.innerHeight - height - offsetTop))
+  const keyboardInset = visualViewportKeyboardInset(window.innerHeight, height, offsetTop)
   const heightValue = `${height}px`
   const offsetTopValue = `${offsetTop}px`
   const keyboardInsetValue = `${keyboardInset}px`
@@ -71,6 +81,12 @@ function settleVisualViewportVars() {
   updateVisualViewportVars()
   window.setTimeout(updateVisualViewportVars, 120)
   window.setTimeout(updateVisualViewportVars, 360)
+}
+
+export function dismissActiveKeyboard() {
+  const active = document.activeElement
+  if (active instanceof HTMLElement) active.blur()
+  settleVisualViewportVars()
 }
 
 export function setupVisualViewportVars() {

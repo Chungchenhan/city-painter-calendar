@@ -14,6 +14,7 @@ const firebaseConfig = {
 }
 
 const app = initializeApp(firebaseConfig)
+export const auth = getAuth(app)
 const appCheckSiteKey = import.meta.env.VITE_FIREBASE_APPCHECK_SITE_KEY?.trim()
 const appCheckDebugToken = import.meta.env.VITE_FIREBASE_APPCHECK_DEBUG_TOKEN?.trim()
 if (import.meta.env.DEV && appCheckDebugToken) {
@@ -25,6 +26,71 @@ export const appCheck: AppCheck | null = appCheckSiteKey
       isTokenAutoRefreshEnabled: true,
     })
   : null
+
+let firebaseSessionRefreshPromise: Promise<void> | null = null
+let lastFirebaseSessionRefreshAt = 0
+
+function appCheckThrottleRetryDelay(error: unknown) {
+  const code = typeof error === 'object' && error !== null && 'code' in error
+    ? String(error.code)
+    : ''
+  if (code !== 'appCheck/throttled' && code !== 'appCheck/initial-throttle') return 0
+
+  const message = error instanceof Error ? error.message : String(error)
+  const time = message.match(/(?:(\d+)d:)?(?:(\d+)h:)?(\d+)m:(\d+)s/i)
+  if (!time) return 1_250
+  const remainingMs = (
+    Number(time[1] || 0) * 86_400
+    + Number(time[2] || 0) * 3_600
+    + Number(time[3] || 0) * 60
+    + Number(time[4] || 0)
+  ) * 1_000
+  return Math.min(Math.max(remainingMs + 250, 500), 5_000)
+}
+
+async function refreshAppCheckToken() {
+  if (!appCheck) {
+    if (import.meta.env.DEV) return
+    throw new Error('網站安全驗證尚未啟用。')
+  }
+
+  try {
+    await getToken(appCheck, true)
+  } catch (error) {
+    const retryDelay = appCheckThrottleRetryDelay(error)
+    if (!retryDelay) throw error
+    await new Promise((resolve) => window.setTimeout(resolve, retryDelay))
+    await getToken(appCheck, true)
+  }
+}
+
+export function refreshFirebaseSession(): Promise<void> {
+  const currentUser = auth.currentUser
+  if (!currentUser) return Promise.resolve()
+  if (firebaseSessionRefreshPromise) return firebaseSessionRefreshPromise
+  if (Date.now() - lastFirebaseSessionRefreshAt < 5_000) return Promise.resolve()
+
+  firebaseSessionRefreshPromise = Promise.all([
+    currentUser.getIdToken(true),
+    refreshAppCheckToken(),
+  ]).then(() => {
+    lastFirebaseSessionRefreshAt = Date.now()
+  }).finally(() => {
+    firebaseSessionRefreshPromise = null
+  })
+  return firebaseSessionRefreshPromise
+}
+
+export function setupFirebaseSessionRefresh() {
+  const refresh = () => {
+    if (document.visibilityState !== 'visible') return
+    void refreshFirebaseSession().catch((error) => {
+      console.warn('[calendar] 前景驗證更新失敗', error)
+    })
+  }
+  window.addEventListener('focus', refresh)
+  document.addEventListener('visibilitychange', refresh)
+}
 
 export async function getAppCheckHeaders(): Promise<Record<string, string>> {
   if (!appCheck) {
@@ -42,7 +108,6 @@ export async function getAppCheckHeaders(): Promise<Record<string, string>> {
   }
 }
 
-export const auth = getAuth(app)
 export const storage = getStorage(app)
 export const db = (() => {
   try {

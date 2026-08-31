@@ -102,14 +102,14 @@ test('舊的完工 action 只轉送事件與附件資料', () => {
   })
 })
 
-test('活動事件照片不再提供 LINE 傳送 action', () => {
+test('舊版獨立活動照片 action 不再提供 LINE 傳送', () => {
   assert.equal(isForwardedLineAction('production-photo-status'), true)
   assert.equal(isForwardedLineAction('complete-order-fulfillment'), true)
   assert.equal(isForwardedLineAction('record-fulfillment-cash-payment'), true)
   assert.equal(isForwardedLineAction('send-production-photos'), false)
 })
 
-test('舊版活動照片背景工作只保留附件，不再建立 LINE 傳送流程', () => {
+test('舊版 production 模式只保留活動附件，不建立另一套 LINE 傳送流程', () => {
   const request = parseAttachmentUploadJobRequest({
     eventId: 'event-1',
     originalName: 'activity.jpg',
@@ -253,7 +253,7 @@ test('銷貨單掃描權限可查看附件中心，但不會放行缺少更新�
   }, actor), false)
 })
 
-test('銷貨完成權限只套用於 ERP 外送或施工事件', () => {
+test('銷貨完成權限套用於 ERP 外送、施工或活動事件', () => {
   assert.equal(canUseErpOrderFulfillmentPermission({
     source: 'erpSalesDelivery',
     sourceShippingMethod: '外送',
@@ -261,6 +261,10 @@ test('銷貨完成權限只套用於 ERP 外送或施工事件', () => {
   assert.equal(canUseErpOrderFulfillmentPermission({
     source: 'erpSalesDelivery',
     sourceShippingMethod: '施工',
+  }, true), true)
+  assert.equal(canUseErpOrderFulfillmentPermission({
+    source: 'erpSalesDelivery',
+    sourceShippingMethod: '活動',
   }, true), true)
   assert.equal(canUseErpOrderFulfillmentPermission({
     source: 'erpSalesDelivery',
@@ -292,9 +296,9 @@ test('行事曆配送欄位會正規化成銷貨單欄位', () => {
     event: {
       title: '👷 鄭光峰(瑞豐國中)-進場',
       date: '2026-08-08',
-      endDate: '2026-08-08',
+      endDate: '2026-08-09',
       startTime: '13:30',
-      endTime: '15:00',
+      endTime: '10:00',
       allDay: false,
       location: '瑞豐國中',
     },
@@ -303,14 +307,14 @@ test('行事曆配送欄位會正規化成銷貨單欄位', () => {
     calendarTitle: '鄭光峰(瑞豐國中)-進場',
     deliveryDate: '2026/08/08',
     deliveryStartTime: '13:30',
-    deliveryEndTime: '15:00',
+    deliveryEndTime: '10:00',
     deliveryTime: '指定時間',
     deliveryScheduleSource: 'manual',
     recipientAddress: '瑞豐國中',
   })
 })
 
-test('行事曆配送同步拒絕跨日、全天與倒置時間', () => {
+test('行事曆配送同步允許跨日，並拒絕倒置日期、全天與倒置時間', () => {
   const base = {
     eventId: 'erpSalesDelivery_sales-1',
     calendarTitle: '測試配送',
@@ -324,10 +328,14 @@ test('行事曆配送同步拒絕跨日、全天與倒置時間', () => {
       location: '民族路',
     },
   }
-  assert.throws(() => normalizeSalesDeliveryEventSyncInput({
+  assert.doesNotThrow(() => normalizeSalesDeliveryEventSyncInput({
     ...base,
     event: { ...base.expected, endDate: '2026-08-09' },
-  }), /只支援單日日期/)
+  }))
+  assert.throws(() => normalizeSalesDeliveryEventSyncInput({
+    ...base,
+    event: { ...base.expected, date: '2026-08-09', endDate: '2026-08-08' },
+  }), /結束日期不得早於開始日期/)
   assert.throws(() => normalizeSalesDeliveryEventSyncInput({
     ...base,
     event: { ...base.expected, allDay: true },
@@ -338,7 +346,7 @@ test('行事曆配送同步拒絕跨日、全天與倒置時間', () => {
   }), /結束時間必須晚於開始時間/)
 })
 
-test('舊的跨日或全天配送事件可被修正成單日指定時間', () => {
+test('舊的全天配送事件可被修正成跨日指定時間', () => {
   assert.doesNotThrow(() => normalizeSalesDeliveryEventSyncInput({
     eventId: 'erpSalesDelivery_sales-1',
     calendarTitle: '修正後配送',
@@ -354,13 +362,40 @@ test('舊的跨日或全天配送事件可被修正成單日指定時間', () =>
     event: {
       title: '📦 修正後配送',
       date: '2026-08-08',
-      endDate: '2026-08-08',
+      endDate: '2026-08-09',
       startTime: '11:00',
-      endTime: '12:00',
+      endTime: '10:00',
       allDay: false,
       location: '民族路',
     },
   }))
+})
+
+test('原本就是全天的活動事件可保持全天並移動日期', () => {
+  const input = normalizeSalesDeliveryEventSyncInput({
+    eventId: 'erpSalesDelivery_sales-activity',
+    calendarTitle: '全天活動',
+    expected: {
+      title: '🎪 全天活動',
+      date: '2026-08-08',
+      endDate: '2026-08-09',
+      startTime: '',
+      endTime: '',
+      allDay: true,
+      location: '中央公園',
+    },
+    event: {
+      title: '🎪 全天活動',
+      date: '2026-08-10',
+      endDate: '2026-08-11',
+      startTime: '',
+      endTime: '',
+      allDay: true,
+      location: '中央公園',
+    },
+  })
+  assert.equal(input.sales.deliveryDate, '2026/08/10')
+  assert.equal(input.sales.deliveryTime, '')
 })
 
 test('行事曆配送同步可偵測並行更新與實際銷貨差異', () => {
@@ -469,9 +504,9 @@ test('既有 API action 會在同一交易更新事件、銷貨單與稽核紀�
     event: {
       title: '👷 新標題',
       date: '2026-08-08',
-      endDate: '2026-08-08',
+      endDate: '2026-08-10',
       startTime: '13:00',
-      endTime: '14:30',
+      endTime: '10:00',
       allDay: false,
       location: '新地址',
     },
@@ -480,10 +515,12 @@ test('既有 API action 會在同一交易更新事件、銷貨單與稽核紀�
   assert.deepEqual({
     title: records.get(`calendarEvents/${eventId}`).title,
     date: records.get(`calendarEvents/${eventId}`).date,
+    endDate: records.get(`calendarEvents/${eventId}`).endDate,
     location: records.get(`calendarEvents/${eventId}`).location,
   }, {
     title: '👷 新標題',
     date: '2026-08-08',
+    endDate: '2026-08-10',
     location: '新地址',
   })
   assert.deepEqual({
@@ -497,9 +534,73 @@ test('既有 API action 會在同一交易更新事件、銷貨單與稽核紀�
     calendarTitle: '新標題',
     deliveryDate: '2026/08/08',
     deliveryStartTime: '13:00',
-    deliveryEndTime: '14:30',
+    deliveryEndTime: '10:00',
     deliveryScheduleSource: 'manual',
     recipientAddress: '新地址',
   })
   assert.equal(Array.from(records.keys()).filter((path) => path.startsWith('sales_audit_logs/')).length, 1)
+})
+
+test('拖曳全天活動事件會同步銷售單日期並保留跨日範圍', async () => {
+  const eventId = 'erpSalesDelivery_sales-activity'
+  const { db, records } = memoryDb({
+    [`calendarEvents/${eventId}`]: {
+      source: 'erpSalesDelivery',
+      sourceId: 'sales-activity',
+      sourceSalesNo: '263500',
+      title: '🎪 全天活動',
+      date: '2026-08-08',
+      endDate: '2026-08-09',
+      startTime: '',
+      endTime: '',
+      allDay: true,
+      location: '中央公園',
+    },
+    'sales/sales-activity': {
+      salesNo: '263500',
+      shippingMethod: '活動',
+      deliveryCalendarEventId: eventId,
+      calendarTitle: '全天活動',
+      deliveryDate: '2026/08/08',
+      deliveryStartTime: '',
+      deliveryEndTime: '',
+      deliveryTime: '',
+      deliveryScheduleSource: 'manual',
+      recipientAddress: '中央公園',
+    },
+  })
+
+  await syncSalesDeliveryEventFields(db, {
+    uid: 'admin-uid',
+    role: 'admin',
+    employeeId: 'employee-1',
+    employee: { name: '測試主管', empNo: 'c100001' },
+    decoded: {},
+  }, {
+    eventId,
+    calendarTitle: '全天活動',
+    expected: {
+      title: '🎪 全天活動',
+      date: '2026-08-08',
+      endDate: '2026-08-09',
+      startTime: '',
+      endTime: '',
+      allDay: true,
+      location: '中央公園',
+    },
+    event: {
+      title: '🎪 全天活動',
+      date: '2026-08-10',
+      endDate: '2026-08-11',
+      startTime: '',
+      endTime: '',
+      allDay: true,
+      location: '中央公園',
+    },
+  })
+
+  assert.equal(records.get(`calendarEvents/${eventId}`).date, '2026-08-10')
+  assert.equal(records.get(`calendarEvents/${eventId}`).endDate, '2026-08-11')
+  assert.equal(records.get('sales/sales-activity').deliveryDate, '2026/08/10')
+  assert.equal(records.get('sales/sales-activity').deliveryTime, '')
 })
