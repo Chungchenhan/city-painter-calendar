@@ -29,6 +29,8 @@ struct WidgetEvent: Decodable, Identifiable {
 }
 
 extension WidgetMonth {
+    static let signedOut = WidgetMonth(month: "", title: "請開啟 App 登入", generatedAt: "", days: [])
+
     static let placeholder = WidgetMonth(
         month: "2026-05",
         title: "5月",

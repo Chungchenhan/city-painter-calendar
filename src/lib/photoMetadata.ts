@@ -3,7 +3,8 @@ export type PhotoCapturedAtSource = 'exif' | 'manual' | 'unknown'
 export interface PhotoLocation {
   latitude: number
   longitude: number
-  source: 'exif' | 'manual'
+  source: 'exif' | 'manual' | 'device'
+  accuracy?: number
   label?: string
 }
 
@@ -66,4 +67,3 @@ export async function extractPhotoCaptureMetadata(file: File): Promise<PhotoCapt
     return { capturedAtSource: 'unknown' }
   }
 }
-

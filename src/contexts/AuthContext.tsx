@@ -1,3 +1,4 @@
+import { setLocalQueryCacheUid } from '../lib/localQueryCache'
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import { onAuthStateChanged, signOut, type User } from 'firebase/auth'
 import { doc, getDoc, onSnapshot } from 'firebase/firestore'
@@ -104,6 +105,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (nextUser) => {
+      setLocalQueryCacheUid(nextUser?.uid || '')
       setLoading(true)
       setCanOpenSalesForm(false)
       setCanScanSalesOrder(false)

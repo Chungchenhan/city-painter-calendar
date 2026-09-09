@@ -69,15 +69,15 @@ function fulfillmentBatchDocumentId(batchId) {
   return crypto.createHash('sha256').update(batchId).digest('hex')
 }
 
-function lineImageUrls(fileId, signingSecret, baseUrl = DEFAULT_CALENDAR_PUBLIC_BASE_URL) {
+function lineImageUrls(fileId, signingSecret, baseUrl = DEFAULT_CALENDAR_PUBLIC_BASE_URL, expires = Math.floor(Date.now() / 1000) + 86400) {
   const secret = String(signingSecret || '')
   if (!secret) throw new Error('LINE 圖片簽名金鑰尚未設定')
   const root = (text(baseUrl) || DEFAULT_CALENDAR_PUBLIC_BASE_URL).replace(/\/$/, '')
   const url = (variant) => {
     const signature = crypto.createHmac('sha256', secret)
-      .update(`${fileId}:${variant}`)
+      .update(`${fileId}:${variant}:${expires}`)
       .digest('hex')
-    return `${root}/api/upload-drive?fileId=${encodeURIComponent(fileId)}&variant=${variant}&signature=${signature}`
+    return `${root}/api/upload-drive?fileId=${encodeURIComponent(fileId)}&variant=${variant}&expires=${expires}&signature=${signature}`
   }
   return {
     lineOriginalUrl: url('original'),
@@ -143,7 +143,27 @@ function cleanupReferenceTime(job) {
   return timestampMillis(job.createdAt) || timestampMillis(job.updatedAt)
 }
 
+function isAutomaticSalesAttachment(job) {
+  return job?.autoCommitSalesAttachment === true && job?.target?.kind === 'sales'
+}
+
+function isAutomaticCalendarAttachment(job) {
+  const eventId = text(job?.target?.eventId)
+  return job?.autoCommitCalendarAttachment === true
+    && job?.target?.kind === 'calendar-event'
+    && job?.target?.uploadKind === 'event'
+    && ['none', 'production'].includes(text(job.target.completionMode) || 'none')
+    && Boolean(eventId) && !eventId.includes('/')
+}
+
+function hasDurableCalendarCommit(job) {
+  return isAutomaticCalendarAttachment(job)
+    || (job?.target?.kind === 'calendar-event' && job?.target?.uploadKind === 'comment')
+    || Boolean(fulfillmentBatchId(job))
+}
+
 function shouldCleanupJob(job, nowMs = Date.now()) {
+  if (isAutomaticSalesAttachment(job) || hasDurableCalendarCommit(job)) return false
   if (!['created', 'failed', 'processing', 'ready'].includes(job?.status)) return false
   if (job.status === 'processing' && timestampMillis(job.processingLeaseUntil) > nowMs) return false
   const referenceTime = cleanupReferenceTime(job)
@@ -158,20 +178,6 @@ function createDriveClient() {
   const auth = new google.auth.OAuth2(clientId, clientSecret)
   auth.setCredentials({ refresh_token: refreshToken })
   return google.drive({ version: 'v3', auth })
-}
-
-async function makeDriveFilePublic(drive, fileId) {
-  try {
-    await drive.permissions.create({
-      fileId,
-      requestBody: { type: 'anyone', role: 'reader' },
-      supportsAllDrives: true,
-    })
-    return true
-  } catch {
-    // 部分共用雲端硬碟禁止公開連結，附件仍可由既有簽名代理安全讀取。
-    return false
-  }
 }
 
 async function findOrCreateSalesFolder(drive, rootFolderId, folderName) {
@@ -266,6 +272,26 @@ async function deleteDriveFile(drive, fileId) {
   }
 }
 
+async function assertPrivateDriveFolder(drive, folderId, fallbackFactory) {
+  const inspect = async (reader) => {
+    let pageToken
+    do {
+      const response = await reader.permissions.list({ fileId: folderId, supportsAllDrives: true, pageSize: 100,
+        fields: 'nextPageToken,permissions(type)', ...(pageToken ? { pageToken } : {}) })
+      if ((response.data.permissions || []).some((permission) => permission.type === 'anyone')) {
+        throw new Error('附件資料夾具有公開繼承權限，請先由管理員處理')
+      }
+      pageToken = response.data.nextPageToken
+    } while (pageToken)
+  }
+  try { await inspect(drive) } catch (error) {
+    if (![403, 404].includes(Number(error?.code || error?.response?.status))) throw error
+    // Drive OAuth 的 drive.file 範圍可操作子檔卻看不到父目錄，改用已授權的伺服器身分完整驗證。
+    const reader = fallbackFactory ? fallbackFactory() : google.drive({ version: 'v3', auth: new google.auth.GoogleAuth({ scopes: ['https://www.googleapis.com/auth/drive'] }) })
+    await inspect(reader)
+  }
+}
+
 async function uploadVariant(drive, {
   buffer,
   fileName,
@@ -273,7 +299,6 @@ async function uploadVariant(drive, {
   job,
   jobId,
   variant,
-  makePublic,
   now,
 }) {
   let createdId = ''
@@ -292,6 +317,10 @@ async function uploadVariant(drive, {
             calendarUploadKind: text(job.target?.uploadKind) || 'event',
             calendarUploaderUid: text(job.uploaderUid).slice(0, 120),
             calendarEventId: text(job.target?.eventId).slice(0, 200),
+            ...(job.target?.fulfillmentOrders ? {
+              fulfillmentBatchId: text(job.target.fulfillmentRequestId).slice(0, 120),
+              fulfillmentSourceEventId: text(job.target.eventId).slice(0, 120),
+            } : {}),
             ...(text(job.target?.commentId) ? { calendarCommentId: text(job.target.commentId).slice(0, 200) } : {}),
           } : {}),
         },
@@ -305,7 +334,6 @@ async function uploadVariant(drive, {
     })
     createdId = text(created.data.id)
     if (!createdId) throw new Error('Google Drive 未回傳檔案 ID')
-    if (makePublic) await makeDriveFilePublic(drive, createdId)
     const url = text(created.data.webViewLink) || `https://drive.google.com/file/d/${createdId}/view`
     const uploadedAt = text(created.data.createdTime) || now.toISOString()
     return {
@@ -345,6 +373,9 @@ function calendarAttachmentFromJobResult(jobId, job, result, options = {}) {
     ...(text(job.capture?.capturedAt) ? { capturedAt: text(job.capture.capturedAt) } : {}),
     ...(text(job.capture?.capturedAtSource) ? { capturedAtSource: text(job.capture.capturedAtSource) } : {}),
     ...(job.capture?.location && typeof job.capture.location === 'object' ? { location: job.capture.location } : {}),
+    ...(text(job.uploadedByUid) ? { uploadedByUid: text(job.uploadedByUid) } : {}),
+    ...(text(job.uploadedByEmployeeNo) ? { uploadedByEmployeeNo: text(job.uploadedByEmployeeNo) } : {}),
+    ...(text(job.uploadedByName) ? { uploadedByName: text(job.uploadedByName) } : {}),
     ...(options.lineImageSigningSecret ? lineImageUrls(
       fileId,
       options.lineImageSigningSecret,
@@ -419,6 +450,8 @@ async function commitCalendarEventFulfillmentAttachment(db, jobRef, jobId, optio
       || text(currentBatch.eventId) !== eventId
       || text(currentBatch.uploaderUid) !== text(job.uploaderUid)
       || Number(currentBatch.expectedSize) !== batchSize
+      || text(currentBatch.fulfillmentRequestId) !== text(job.target?.fulfillmentRequestId)
+      || JSON.stringify(currentBatch.fulfillmentOrders || []) !== JSON.stringify(job.target?.fulfillmentOrders || [])
     )) throw permanentError('完工附件批次資料不一致')
 
     const attachment = job.status === 'committed' && job.attachment
@@ -443,6 +476,13 @@ async function commitCalendarEventFulfillmentAttachment(db, jobRef, jobId, optio
       productionLineRetry: {
         mode: 'fulfillment',
         fulfillmentBatchId: batchId,
+        ...(job.target?.fulfillmentOrders ? {
+          fulfillmentOrders: job.target.fulfillmentOrders,
+          fulfillmentRequestId: job.target.fulfillmentRequestId,
+          fulfillmentSourceEventId: eventId,
+          shippingMethod: text(job.target.fulfillmentOrders.find(order => order.eventId === eventId)?.expectedShippingMethod),
+          orderStatus: text(job.target.fulfillmentOrders.find(order => order.eventId === eventId)?.expectedOrderStatus),
+        } : {}),
         attachmentIds,
         status: 'processing',
         message: '照片已保留，系統正在背景完成訂單並傳送 LINE。',
@@ -463,6 +503,7 @@ async function commitCalendarEventFulfillmentAttachment(db, jobRef, jobId, optio
       eventId,
       uploaderUid: text(job.uploaderUid),
       expectedSize: batchSize,
+      ...(job.target?.fulfillmentOrders ? { fulfillmentOrders: job.target.fulfillmentOrders, fulfillmentRequestId: job.target.fulfillmentRequestId } : {}),
       jobIds: admin.firestore.FieldValue.arrayUnion(jobId),
       ...(!batchSnapshot.exists ? {
         status: 'waiting',
@@ -491,6 +532,150 @@ async function exchangeCustomTokenForIdToken(customToken, apiKey, fetchImpl = fe
   return payload.idToken
 }
 
+async function commitSalesAttachmentInBackground(options) {
+  if (!isAutomaticSalesAttachment(options.job)) return { ignored: true }
+  return commitAttachmentUsingApi({ ...options, baseUrl: options.lineApiUrl || DEFAULT_ERP_LINE_API_URL })
+}
+
+async function commitCalendarAttachmentInBackground(options) {
+  if (!isAutomaticCalendarAttachment(options.job)) return { ignored: true }
+  return commitAttachmentUsingApi({ ...options, baseUrl: options.calendarPublicBaseUrl || DEFAULT_CALENDAR_PUBLIC_BASE_URL })
+}
+
+async function commitAttachmentUsingApi({
+  jobRef,
+  job,
+  jobId,
+  auth = admin.auth(),
+  appCheck = admin.appCheck(),
+  apiKey,
+  appId,
+  baseUrl,
+  fetchImpl = fetch,
+}) {
+  if (!['ready', 'committed'].includes(job.status)) return { pending: true }
+  try {
+    const uploaderUid = text(job.uploaderUid)
+    if (!uploaderUid || !/^[A-Za-z0-9_-]{10,200}$/.test(text(jobId))) {
+      throw new Error('背景附件提交身分不完整')
+    }
+    const endpoint = new URL('/api/upload-drive', baseUrl)
+    if (endpoint.protocol !== 'https:') throw new Error('背景附件提交網址必須使用 HTTPS')
+    const customToken = await auth.createCustomToken(uploaderUid, { backgroundAttachmentJobId: jobId })
+    const [idToken, appCheckResult] = await Promise.all([
+      exchangeCustomTokenForIdToken(customToken, apiKey, fetchImpl),
+      appCheck.createToken(text(appId), { ttlMillis: 30 * 60 * 1000, limitedUse: true }),
+    ])
+    const response = await fetchImpl(endpoint.href, {
+      method: 'POST',
+      signal: AbortSignal.timeout(60_000),
+      headers: {
+        Authorization: `Bearer ${idToken}`,
+        'Content-Type': 'application/json',
+        'X-Firebase-AppCheck': appCheckResult.token,
+      },
+      body: JSON.stringify({ action: 'finalize-attachment-upload-job', jobId }),
+    })
+    const payload = await response.json().catch(() => null)
+    if (!response.ok || payload?.committed !== true) {
+      throw retryableError(`背景附件提交暫時失敗（HTTP ${response.status}）`)
+    }
+    await jobRef.set({ commitError: admin.firestore.FieldValue.delete() }, { merge: true })
+    return { committed: true }
+  } catch (error) {
+    await jobRef.set({
+      commitError: '照片已保留，背景提交暫時失敗，系統將自動重試。',
+      commitAttemptedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true }).catch(() => {})
+    throw error
+  }
+}
+
+async function recoverReadySalesAttachments({ db, bucket, ...options }) {
+  let cursor = null
+  while (true) {
+    let snapshot
+    try {
+      let query = db.collection('attachmentUploadJobs')
+        .where('autoCommitSalesAttachment', '==', true)
+        .limit(100)
+      if (cursor) query = query.startAfter(cursor)
+      snapshot = await query.get()
+    } catch {
+      console.error('背景銷貨附件查詢暫時失敗，保留工作待下次排程')
+      return
+    }
+    for (const document of snapshot.docs) {
+      const job = document.data() || {}
+      if (!isAutomaticSalesAttachment(job) || !['ready', 'committed'].includes(job.status)) continue
+      try {
+        const result = await commitSalesAttachmentInBackground({
+          ...options, jobRef: document.ref, job, jobId: document.id,
+        })
+        if (result.committed) {
+          if (!job.stagingDeletedAt) {
+            const path = parseStagingObjectPath(job.stagingPath)
+            if (path?.uid !== job.uploaderUid || path?.jobId !== document.id) continue
+            await bucket.file(job.stagingPath).delete({ ignoreNotFound: true })
+          }
+          await document.ref.set({
+            stagingDeletedAt: admin.firestore.FieldValue.serverTimestamp(),
+            autoCommitSalesAttachment: false,
+          }, { merge: true })
+        }
+      } catch {
+        console.error('背景銷貨附件待重新提交')
+      }
+    }
+    if (snapshot.docs.length < 100) return
+    cursor = snapshot.docs[snapshot.docs.length - 1]
+  }
+}
+
+async function recoverReadyCalendarAttachments({ db, bucket, ...options }) {
+  for (const [field, value] of [['autoCommitCalendarAttachment', true], ['status', 'ready']]) {
+    let cursor = null
+    while (true) {
+      let snapshot
+      try {
+        let query = db.collection('attachmentUploadJobs').where(field, '==', value).limit(100)
+        if (cursor) query = query.startAfter(cursor)
+        snapshot = await query.get()
+      } catch {
+        console.error('背景行事曆附件查詢暫時失敗，保留工作待下次排程')
+        break
+      }
+      for (const document of snapshot.docs) {
+        const job = document.data() || {}
+        if (!hasDurableCalendarCommit(job) || !['ready', 'committed'].includes(job.status)) continue
+        try {
+          let committed = job.status === 'committed'
+          if (isAutomaticCalendarAttachment(job)) {
+            committed = (await commitCalendarAttachmentInBackground({ ...options, jobRef: document.ref, job, jobId: document.id })).committed === true
+          } else if (!committed && job.target?.uploadKind === 'comment') {
+            committed = Boolean(await commitCalendarCommentAttachment(db, document.ref, document.id, job))
+          } else if (!committed && fulfillmentBatchId(job)) {
+            committed = Boolean(await commitCalendarEventFulfillmentAttachment(db, document.ref, document.id, options))
+          }
+          if (!committed) continue
+          const parsed = parseStagingObjectPath(job.stagingPath)
+          if (parsed?.uid !== job.uploaderUid || parsed?.jobId !== document.id) continue
+          await bucket.file(job.stagingPath).delete({ ignoreNotFound: true })
+          await document.ref.set({
+            stagingDeletedAt: admin.firestore.FieldValue.serverTimestamp(),
+            autoCommitCalendarAttachment: false,
+            commitError: admin.firestore.FieldValue.delete(),
+          }, { merge: true })
+        } catch {
+          console.error('背景行事曆附件待重新提交')
+        }
+      }
+      if (snapshot.docs.length < 100) break
+      cursor = snapshot.docs[snapshot.docs.length - 1]
+    }
+  }
+}
+
 function fulfillmentRetryDelayMs(attemptCount) {
   return Math.min(60 * 60 * 1000, 60 * 1000 * (2 ** Math.max(0, attemptCount - 1)))
 }
@@ -509,6 +694,8 @@ function classifyFulfillmentBatchJobs(jobs, requestedBatchId) {
     && text(job.target?.completionMode) === 'fulfillment'
     && text(job.target?.uploadKind) === 'event'
     && text(job.uploaderUid) === uploaderUid
+    && text(job.target?.fulfillmentRequestId) === text(first.target?.fulfillmentRequestId)
+    && JSON.stringify(job.target?.fulfillmentOrders || []) === JSON.stringify(first.target?.fulfillmentOrders || [])
   ))
   if (!consistent || jobs.length > expectedSize) return { state: 'invalid' }
   if (jobs.length < expectedSize || jobs.some((job) => job.status !== 'committed' || !text(job.attachment?.path))) {
@@ -520,6 +707,7 @@ function classifyFulfillmentBatchJobs(jobs, requestedBatchId) {
     eventId,
     uploaderUid,
     attachmentIds: jobs.map(job => text(job.attachment.path)),
+    ...(first.target?.fulfillmentOrders ? { fulfillmentOrders: first.target.fulfillmentOrders, fulfillmentRequestId: first.target.fulfillmentRequestId } : {}),
   }
 }
 
@@ -550,6 +738,8 @@ function fulfillmentFailureState(attemptCount, nowMs = Date.now()) {
 async function sendFulfillmentLineRequest({
   eventId,
   attachmentIds,
+  fulfillmentOrders,
+  fulfillmentRequestId,
   idToken,
   appCheckToken,
   lineApiUrl = DEFAULT_ERP_LINE_API_URL,
@@ -566,6 +756,7 @@ async function sendFulfillmentLineRequest({
       action: 'complete-order-fulfillment',
       eventId,
       attachmentIds,
+      ...(fulfillmentOrders ? { orders: fulfillmentOrders, batchId: fulfillmentRequestId } : {}),
     }),
   })
   return {
@@ -660,7 +851,7 @@ async function processFulfillmentBatch({
   const classification = classifyFulfillmentBatchJobs(jobs, batchId)
   if (classification.state === 'waiting') return { waiting: true }
   if (classification.state === 'invalid') throw permanentError('完工附件批次資料不一致')
-  const { expectedSize, eventId, uploaderUid, attachmentIds } = classification
+  const { expectedSize, eventId, uploaderUid, attachmentIds, fulfillmentOrders, fulfillmentRequestId } = classification
 
   const batchRef = db.collection('attachmentFulfillmentBatches').doc(fulfillmentBatchDocumentId(batchId))
   const leaseId = crypto.randomUUID()
@@ -674,6 +865,8 @@ async function processFulfillmentBatch({
       || text(current.eventId) !== eventId
       || text(current.uploaderUid) !== uploaderUid
       || Number(current.expectedSize) !== expectedSize
+      || text(current.fulfillmentRequestId) !== text(fulfillmentRequestId)
+      || JSON.stringify(current.fulfillmentOrders || []) !== JSON.stringify(fulfillmentOrders || [])
     )) throw permanentError('完工附件批次資料不一致')
     const attemptCount = (Number(current.attemptCount) || 0) + 1
     if (attemptCount > MAX_FULFILLMENT_ATTEMPTS) return
@@ -683,6 +876,7 @@ async function processFulfillmentBatch({
       uploaderUid,
       expectedSize,
       attachmentIds,
+      ...(fulfillmentOrders ? { fulfillmentOrders, fulfillmentRequestId } : {}),
       leaseId,
       attemptCount,
     }
@@ -710,6 +904,8 @@ async function processFulfillmentBatch({
     const { response, payload } = await sendFulfillmentLineRequest({
       eventId,
       attachmentIds: acquired.attachmentIds,
+      fulfillmentOrders: acquired.fulfillmentOrders,
+      fulfillmentRequestId: acquired.fulfillmentRequestId,
       idToken,
       appCheckToken: appCheckResult.token,
       lineApiUrl,
@@ -833,32 +1029,41 @@ async function processAttachmentUpload({
   try {
     const acquired = await acquireJob(db, jobRef, parsedPath, objectData, eventId, now)
     if (acquired.terminalStatus) {
+      let committed = acquired.terminalStatus === 'committed'
+      if (isAutomaticCalendarAttachment(acquired.job)) {
+        committed = (await commitCalendarAttachmentInBackground({ ...fulfillmentOptions, jobRef, job: acquired.job, jobId: parsedPath.jobId })).committed === true
+      }
+      if (isAutomaticSalesAttachment(acquired.job)) {
+        committed = (await commitSalesAttachmentInBackground({ jobRef, job: acquired.job, jobId: parsedPath.jobId, ...fulfillmentOptions })).committed === true
+      }
       if (acquired.terminalStatus === 'ready' && acquired.job?.target?.uploadKind === 'comment') {
-        await commitCalendarCommentAttachment(db, jobRef, parsedPath.jobId, acquired.job)
+        committed = Boolean(await commitCalendarCommentAttachment(db, jobRef, parsedPath.jobId, acquired.job))
       }
       if (acquired.terminalStatus === 'ready' && fulfillmentBatchId(acquired.job)) {
-        const committed = await commitCalendarEventFulfillmentAttachment(
+        const fulfillment = await commitCalendarEventFulfillmentAttachment(
           db,
           jobRef,
           parsedPath.jobId,
           fulfillmentOptions,
         )
-        if (committed) {
+        if (fulfillment) {
+          committed = true
           await processFulfillmentBatch({
             db,
-            batchId: committed.batchId,
+            batchId: fulfillment.batchId,
             ...fulfillmentOptions,
           }).catch(() => undefined)
         }
       }
-      await bucket.file(objectData.name).delete({ ignoreNotFound: true })
-      return { terminalStatus: acquired.job?.target?.uploadKind === 'comment' ? 'committed' : acquired.terminalStatus }
+      if (committed) await bucket.file(objectData.name).delete({ ignoreNotFound: true })
+      return { terminalStatus: committed ? 'committed' : acquired.terminalStatus }
     }
     job = acquired.job
     const [input] = await bucket.file(objectData.name).download()
     await assertDecodedImage(input)
     const [imageBuffer, thumbnailBuffer] = await transformVariants(input)
     const folder = await resolveDriveFolder(drive, job.target, configuredFolders)
+    if (job.target.kind === 'calendar-event') await assertPrivateDriveFolder(drive, folder.id)
     const names = variantNames(job.original?.name || objectData.name)
     const currentResult = job.result && typeof job.result === 'object' ? job.result : {}
     const currentImage = currentResult.image || currentResult.webp || null
@@ -874,7 +1079,6 @@ async function processAttachmentUpload({
           job,
           jobId: parsedPath.jobId,
           variant: 'image',
-          makePublic: job.target.kind === 'calendar-event',
           now,
         }),
       })
@@ -889,7 +1093,6 @@ async function processAttachmentUpload({
           job,
           jobId: parsedPath.jobId,
           variant: 'thumbnail',
-          makePublic: job.target.kind === 'calendar-event',
           now,
         }),
       })
@@ -928,31 +1131,40 @@ async function processAttachmentUpload({
       error: admin.firestore.FieldValue.delete(),
     }, { merge: true })
     readyWritten = true
+    let committed = false
+    if (isAutomaticCalendarAttachment(job)) {
+      committed = (await commitCalendarAttachmentInBackground({ ...fulfillmentOptions, jobRef, job: { ...job, status: 'ready' }, jobId: parsedPath.jobId })).committed === true
+    }
+    if (isAutomaticSalesAttachment(job)) {
+      committed = (await commitSalesAttachmentInBackground({ jobRef, job: { ...job, status: 'ready' }, jobId: parsedPath.jobId, ...fulfillmentOptions })).committed === true
+    }
     if (job.target?.uploadKind === 'comment') {
-      await commitCalendarCommentAttachment(db, jobRef, parsedPath.jobId, job)
+      committed = Boolean(await commitCalendarCommentAttachment(db, jobRef, parsedPath.jobId, job))
     }
     if (fulfillmentBatchId(job)) {
-      const committed = await commitCalendarEventFulfillmentAttachment(
+      const fulfillment = await commitCalendarEventFulfillmentAttachment(
         db,
         jobRef,
         parsedPath.jobId,
         fulfillmentOptions,
       )
-      if (committed) {
+      if (fulfillment) {
+        committed = true
         await processFulfillmentBatch({
           db,
-          batchId: committed.batchId,
+          batchId: fulfillment.batchId,
           ...fulfillmentOptions,
         }).catch(() => undefined)
       }
     }
-    await bucket.file(objectData.name).delete({ ignoreNotFound: true })
-    return { status: job.target?.uploadKind === 'comment' ? 'committed' : 'ready', result: nextResult }
+    if (committed) await bucket.file(objectData.name).delete({ ignoreNotFound: true })
+    return { status: committed ? 'committed' : 'ready', result: nextResult }
   } catch (error) {
     if (error?.code === 'JOB_BUSY') throw error
     if (!partialResultWritten && newlyUploadedIds.length > 0) {
       await Promise.allSettled(newlyUploadedIds.map(fileId => deleteDriveFile(drive, fileId)))
     }
+    if (readyWritten) throw error
     if (job && error?.code === 'PERMANENT_JOB_ERROR') {
       await jobRef.set({
         status: 'failed',
@@ -963,8 +1175,6 @@ async function processAttachmentUpload({
         processingEventId: admin.firestore.FieldValue.delete(),
         retrying: admin.firestore.FieldValue.delete(),
       }, { merge: true }).catch(() => {})
-    } else if (readyWritten) {
-      throw error
     } else if (job) {
       await jobRef.set({
         status: 'processing',
@@ -1074,6 +1284,8 @@ const processPendingAttachments = onSchedule({
 }, async () => {
   const db = admin.firestore()
   const bucket = admin.storage().bucket(DEFAULT_STORAGE_BUCKET)
+  await recoverReadySalesAttachments({ db, bucket, ...runtimeFulfillmentOptions() })
+  await recoverReadyCalendarAttachments({ db, bucket, ...runtimeFulfillmentOptions() })
   const snapshot = await db.collection('attachmentUploadJobs')
     .where('status', 'in', ['created', 'processing'])
     .limit(10)
@@ -1182,12 +1394,17 @@ const cleanupStagedAttachments = onSchedule({
 
 module.exports = {
   CLEANUP_AGE_MS,
+  isAutomaticSalesAttachment,
+  isAutomaticCalendarAttachment,
+  commitCalendarAttachmentInBackground,
+  recoverReadyCalendarAttachments,
+  commitSalesAttachmentInBackground,
+  recoverReadySalesAttachments,
   assertDecodedImage,
   cleanupExpiredJobs,
   commitCalendarCommentAttachment,
   calendarAttachmentFromJobResult,
   classifyFulfillmentBatchJobs,
-  makeDriveFilePublic,
   cleanupStagedAttachments,
   parseStagingObjectPath,
   processPendingAttachments,

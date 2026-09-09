@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 process.env.LINE_IMAGE_SIGNING_SECRET = 'test-secret'
 const {
   attachmentFromUploadJob,
+  buildForwardedLineActionBody,
   attachmentUploadJobDocumentId,
   mergeProductionLineRetryAttachmentIds,
   parseAttachmentUploadJobRequest,
@@ -60,6 +61,9 @@ assert.throws(() => parseAttachmentUploadJobRequest({
 }), /50 MB/)
 
 const attachment = attachmentFromUploadJob('job-1', {
+  uploadedByUid: 'user-1',
+  uploadedByEmployeeNo: 'C100001',
+  uploadedByName: '小明',
   original: { name: '施工現場.jpg', size: 4096, type: 'image/jpeg' },
   capture: { capturedAtSource: 'unknown' },
   result: {
@@ -84,6 +88,9 @@ assert.equal(attachment.path, 'drive-image-id')
 assert.equal(attachment.thumbnailPath, 'drive-thumbnail-id')
 assert.equal(attachment.originalName, '施工現場.jpg')
 assert.equal(attachment.uploadJobId, 'job-1')
+assert.equal(attachment.uploadedByUid, 'user-1')
+assert.equal(attachment.uploadedByEmployeeNo, 'C100001')
+assert.equal(attachment.uploadedByName, '小明')
 assert.match(attachment.lineOriginalUrl, /fileId=drive-image-id/)
 
 assert.deepEqual(
@@ -104,3 +111,26 @@ assert.deepEqual(
 )
 
 console.log('背景附件上傳 API helper 測試通過。')
+
+const batchRequest = {
+  eventId: 'event-1', originalName: '配達.jpg', originalSize: 100,
+  contentType: 'image/jpeg', completionMode: 'fulfillment',
+  fulfillmentBatchId: 'photos-batch-1', fulfillmentBatchSize: 2,
+  fulfillmentRequestId: 'delivery-request-1',
+  fulfillmentOrders: [
+    { eventId: 'event-1', salesId: 'sale-1', expectedShippingMethod: '外送', expectedOrderStatus: '即將配送' },
+    { eventId: 'event-2', salesId: 'sale-2', expectedShippingMethod: '外送', expectedOrderStatus: '即將配送' },
+  ],
+}
+assert.deepEqual(parseAttachmentUploadJobRequest(batchRequest).fulfillmentOrders, batchRequest.fulfillmentOrders)
+assert.equal(parseAttachmentUploadJobRequest(batchRequest).fulfillmentRequestId, 'delivery-request-1')
+assert.throws(() => parseAttachmentUploadJobRequest({ ...batchRequest, fulfillmentRequestId: '' }), /識別碼/)
+assert.throws(() => parseAttachmentUploadJobRequest({ ...batchRequest, fulfillmentOrders: [batchRequest.fulfillmentOrders[0], batchRequest.fulfillmentOrders[0]] }), /重複/)
+assert.throws(() => parseAttachmentUploadJobRequest({ ...batchRequest, eventId: 'event-3' }), /未包含/)
+assert.throws(() => parseAttachmentUploadJobRequest({ ...batchRequest, fulfillmentOrders: batchRequest.fulfillmentOrders.map(row => ({ ...row, expectedShippingMethod: '自取' })) }), /不正確/)
+
+assert.deepEqual(buildForwardedLineActionBody({
+  action: 'complete-order-fulfillment', eventId: 'event-1',
+  orders: batchRequest.fulfillmentOrders, batchId: 'delivery-request-1', preflight: true,
+}).orders, batchRequest.fulfillmentOrders)
+assert.equal(buildForwardedLineActionBody({ action: 'complete-order-fulfillment', orders: batchRequest.fulfillmentOrders, preflight: true }).preflight, true)

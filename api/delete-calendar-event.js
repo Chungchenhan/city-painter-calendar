@@ -1,9 +1,8 @@
-import fs from 'node:fs'
-import os from 'node:os'
-import path from 'node:path'
+import { canEditOrCopyErpEvent } from '../shared/erpEventEditPolicy.js'
 import admin from 'firebase-admin'
+import { calendarServices, authenticateCalendar } from '../shared/calendarApiSecurity.js'
+import { canReadCalendarEvent } from '../shared/calendarEventAccess.js'
 
-const PROJECT_ID = 'city-painter-erp'
 const HR_LEAVE_SOURCE = 'hrLeaveRequest'
 
 function setCorsHeaders(req, res) {
@@ -11,39 +10,7 @@ function setCorsHeaders(req, res) {
   res.setHeader('Access-Control-Allow-Origin', origin)
   res.setHeader('Vary', 'Origin')
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-}
-
-function serviceAccountJson() {
-  const source = process.env.FIREBASE_SERVICE_ACCOUNT_JSON ||
-    process.env.GOOGLE_SERVICE_ACCOUNT_JSON ||
-    process.env.GOOGLE_SERVICE_ACCOUNT_JSON_BASE64 && Buffer.from(process.env.GOOGLE_SERVICE_ACCOUNT_JSON_BASE64, 'base64').toString('utf8')
-  if (source) return JSON.parse(source)
-
-  const localPath = path.join(os.homedir(), '.firebase', 'service-account.json')
-  if (fs.existsSync(localPath)) return JSON.parse(fs.readFileSync(localPath, 'utf8'))
-  throw new Error('Missing Firebase service account credentials')
-}
-
-function getAdminApp() {
-  if (admin.apps.length > 0) return admin.app()
-
-  return admin.initializeApp({
-    credential: admin.credential.cert(serviceAccountJson()),
-    projectId: PROJECT_ID,
-  })
-}
-
-async function verifyRequest(req) {
-  const authHeader = req.headers.authorization || ''
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : ''
-  if (!token) return null
-
-  try {
-    return await admin.auth().verifyIdToken(token)
-  } catch {
-    return null
-  }
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Firebase-AppCheck')
 }
 
 async function readBody(req) {
@@ -66,6 +33,11 @@ function isHrReadonlyEvent(event, id) {
   return event?.source === HR_LEAVE_SOURCE || `${id || ''}`.startsWith('hrLeaveRequest_')
 }
 
+export function isProtectedErpSalesDeliveryPrimaryEvent(event) {
+  if (event?.source !== 'erpSalesDelivery') return false
+  return event?.sourceEventRole !== 'related'
+}
+
 async function loadUserRole(db, uid) {
   const snap = await db.collection('userRoles').doc(uid).get()
   return snap.exists ? snap.data() : null
@@ -77,11 +49,13 @@ async function loadEmployee(db, employeeId) {
   return snap.exists ? { id: snap.id, ...snap.data() } : null
 }
 
-async function canDeleteEvent(db, decoded, event, eventId) {
+export async function canDeleteEvent(db, decoded, event, eventId) {
   if (!decoded?.uid || !event) return false
   if (isHrReadonlyEvent(event, eventId)) return false
+  if (isProtectedErpSalesDeliveryPrimaryEvent(event)) return false
 
   const role = await loadUserRole(db, decoded.uid)
+  if (!canEditOrCopyErpEvent(role?.employeeId, event)) return false
   if (role?.role === 'admin') return true
   if (event.createdBy && event.createdBy === decoded.uid) return true
 
@@ -124,7 +98,13 @@ async function writeActivityLog(db, decoded, event, eventId, actionDate) {
     date: actionDate || event.date || '',
     actorUid: decoded.uid,
     actorName: role?.displayName || decoded.name || decoded.email || '有人',
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
+    serverVerified: true,
+    eventSnapshot: Object.fromEntries([
+      'title', 'date', 'endDate', 'calendarId', 'calendarIds', 'departmentId',
+      'assigneeIds', 'visibleAssigneeIds', 'visibleDepartmentIds', 'hiddenAssigneeIds',
+      'hiddenDepartmentIds', 'createdBy', 'source',
+    ].filter((key) => event[key] !== undefined).map((key) => [key, event[key]])),
   })
 }
 
@@ -141,11 +121,16 @@ export default async function handler(req, res) {
   }
 
   try {
-    getAdminApp()
-    const decoded = await verifyRequest(req)
-    if (!decoded?.uid) return res.status(401).json({ error: '登入已失效，請重新登入' })
+    const services = calendarServices()
+    const actor = await authenticateCalendar(req, services)
+    const decoded = actor.decoded
 
     const db = admin.firestore()
+    const role = await loadUserRole(db, decoded.uid)
+    const employee = await loadEmployee(db, role?.employeeId)
+    if (!role?.employeeId || !employee || employee.status === 'inactive' || employee.resignDate) {
+      return res.status(403).json({ error: '此員工帳號已停用' })
+    }
     const body = await readBody(req)
     const eventId = String(body?.eventId || '').trim()
     const rootId = String(body?.rootId || eventId).trim()
@@ -158,7 +143,10 @@ export default async function handler(req, res) {
     const event = eventSnap.exists ? { id: eventSnap.id, ...eventSnap.data() } : null
     const rootEvent = rootSnap.exists ? { id: rootSnap.id, ...rootSnap.data() } : event
     if (!rootEvent) return res.status(404).json({ error: '找不到要刪除的事件' })
-    if (!await canDeleteEvent(db, decoded, rootEvent, rootId)) return res.status(403).json({ error: '沒有此事件的刪除權限' })
+    if (isProtectedErpSalesDeliveryPrimaryEvent(rootEvent)) {
+      return res.status(409).json({ error: 'ERP 建立的主事件不可在行事曆刪除；請刪除銷貨單或更改取件方式。' })
+    }
+    if (!await canReadCalendarEvent(db, actor, rootEvent) || !await canDeleteEvent(db, decoded, rootEvent, rootId)) return res.status(403).json({ error: '沒有此事件的刪除權限' })
 
     const actionDate = sourceDate || recurrenceSourceDate(event || rootEvent)
     if (scope === 'single' && (eventId !== rootId || isRepeatingEvent(rootEvent))) {
@@ -182,6 +170,9 @@ export default async function handler(req, res) {
     return res.status(200).json({ ok: true, eventId: rootId, scope, sourceDate: actionDate })
   } catch (error) {
     console.error(error)
-    return res.status(500).json({ error: '事件刪除失敗，請稍後再試' })
+    const statusCode = Number(error?.statusCode || error?.status) || 500
+    return res.status(statusCode).json({
+      error: statusCode < 500 && error instanceof Error ? error.message : '事件刪除失敗，請稍後再試'
+    })
   }
 }

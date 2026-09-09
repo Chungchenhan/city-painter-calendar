@@ -11,6 +11,7 @@
 		0AFBB93ABA8B2A34F5B7DB15 /* CityPainterCalendarWidget.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 4D4B0A1E6AF9B1641B042656 /* CityPainterCalendarWidget.appex */; };
 		2F4CB28EE7BA79D8AB81B645 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B904CE7C9A5D4C98931AF1BB /* Foundation.framework */; };
 		343E299DFA9E43D068881DFB /* CityPainterCalendarWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 323F26E775BA55F7ACC97054 /* CityPainterCalendarWidget.swift */; };
+		47BB669806F677E6D32CDD53 /* WidgetCredentials.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E74585C181250D40AA222D7 /* WidgetCredentials.swift */; };
 		5906A01EFEA8A8A7A4ECD879 /* CityPainterCalendarApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E66F61B5C4B1939BFB50C424 /* CityPainterCalendarApp.swift */; };
 		5B5E7E4ECFC5548CD1776891 /* WidgetConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B471FB89A63731CC496F85D /* WidgetConfig.swift */; };
 		65047723D75D977DCB150F7B /* WidgetConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B471FB89A63731CC496F85D /* WidgetConfig.swift */; };
@@ -21,6 +22,8 @@
 		D65C0AF68D94D70E9748E43D /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 741EC308B8AB21E4D0AF5EA9 /* SwiftUI.framework */; };
 		DC7436C92A1D67C42DFFB41D /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B09D090A94B0123267C15480 /* WebKit.framework */; };
 		E10D9DFDDDEB0F6959862736 /* WidgetModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCF525044400DC7D925D5E60 /* WidgetModels.swift */; };
+		E569A74D951D27788E7B7CBD /* WidgetCredentials.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E74585C181250D40AA222D7 /* WidgetCredentials.swift */; };
+		F1DFE80FA8CAC0509B5FE62E /* WidgetAuthBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CEED27856834FA0DE34F13D /* WidgetAuthBridge.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -48,8 +51,10 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		2E74585C181250D40AA222D7 /* WidgetCredentials.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WidgetCredentials.swift; sourceTree = "<group>"; };
 		323F26E775BA55F7ACC97054 /* CityPainterCalendarWidget.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CityPainterCalendarWidget.swift; sourceTree = "<group>"; };
 		4D4B0A1E6AF9B1641B042656 /* CityPainterCalendarWidget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = CityPainterCalendarWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		5CEED27856834FA0DE34F13D /* WidgetAuthBridge.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WidgetAuthBridge.swift; sourceTree = "<group>"; };
 		741EC308B8AB21E4D0AF5EA9 /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; path = SwiftUI.framework; sourceTree = "<group>"; };
 		7B471FB89A63731CC496F85D /* WidgetConfig.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WidgetConfig.swift; sourceTree = "<group>"; };
 		81D62EE50A8169662F52331F /* Assets.xcassets */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -91,6 +96,7 @@
 			isa = PBXGroup;
 			children = (
 				7B471FB89A63731CC496F85D /* WidgetConfig.swift */,
+				2E74585C181250D40AA222D7 /* WidgetCredentials.swift */,
 			);
 			name = Shared;
 			path = Shared;
@@ -142,6 +148,7 @@
 				E66F61B5C4B1939BFB50C424 /* CityPainterCalendarApp.swift */,
 				DC255CFEB193721043F12A85 /* WebCalendarView.swift */,
 				81D62EE50A8169662F52331F /* Assets.xcassets */,
+				5CEED27856834FA0DE34F13D /* WidgetAuthBridge.swift */,
 			);
 			name = CityPainterCalendarApp;
 			path = CityPainterCalendarApp;
@@ -252,6 +259,7 @@
 				343E299DFA9E43D068881DFB /* CityPainterCalendarWidget.swift in Sources */,
 				E10D9DFDDDEB0F6959862736 /* WidgetModels.swift in Sources */,
 				65047723D75D977DCB150F7B /* WidgetConfig.swift in Sources */,
+				47BB669806F677E6D32CDD53 /* WidgetCredentials.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -262,6 +270,8 @@
 				5906A01EFEA8A8A7A4ECD879 /* CityPainterCalendarApp.swift in Sources */,
 				C7557BC706E897481F30E072 /* WebCalendarView.swift in Sources */,
 				5B5E7E4ECFC5548CD1776891 /* WidgetConfig.swift in Sources */,
+				E569A74D951D27788E7B7CBD /* WidgetCredentials.swift in Sources */,
+				F1DFE80FA8CAC0509B5FE62E /* WidgetAuthBridge.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -311,7 +321,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -339,6 +349,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_ENTITLEMENTS = Shared/WidgetAuth.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = YMV24PTPJ5;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -358,6 +369,7 @@
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_ENTITLEMENTS = Shared/WidgetAuth.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = YMV24PTPJ5;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -377,6 +389,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_ENTITLEMENTS = Shared/WidgetAuth.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = YMV24PTPJ5;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -395,6 +408,7 @@
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_ENTITLEMENTS = Shared/WidgetAuth.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = YMV24PTPJ5;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -442,7 +456,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;

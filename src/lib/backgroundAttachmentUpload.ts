@@ -1,9 +1,17 @@
+import { writeBrowserValue } from './browserStorage'
 import { doc, getDoc, onSnapshot } from 'firebase/firestore'
 import { ref, uploadBytesResumable } from 'firebase/storage'
 import type { PhotoCaptureMetadata } from './photoMetadata'
-import { auth, db, getAppCheckHeaders, storage } from './firebase'
+import { auth, db, getAppCheckHeaders, getFirebaseIdToken, storage } from './firebase'
 import type { CalendarEvent } from '../types'
 import { keepRemoteUploadResult, keepUploadFlowAfterLocalStateFailure } from './backgroundAttachmentUploadResult'
+
+export type FulfillmentBatchOrder = {
+  eventId: string
+  salesId: string
+  expectedShippingMethod: '外送'
+  expectedOrderStatus: string
+}
 
 export type BackgroundAttachmentCompletionMode = 'fulfillment' | 'production' | 'none'
 export type BackgroundAttachmentUploadKind = 'event' | 'comment'
@@ -18,6 +26,8 @@ export type DurableBackgroundAttachmentUpload = {
   completionMode: BackgroundAttachmentCompletionMode
   fulfillmentBatchId?: string
   fulfillmentBatchSize?: number
+  fulfillmentOrders?: FulfillmentBatchOrder[]
+  fulfillmentRequestId?: string
   blob: Blob
   name: string
   type: string
@@ -35,6 +45,8 @@ export type DurableBackgroundAttachmentUpload = {
   updatedAt: string
 }
 export type BackgroundAttachmentRecovery = {
+  fulfillmentOrders?: FulfillmentBatchOrder[]
+  fulfillmentRequestId?: string
   jobId: string
   eventId: string
   completionMode: BackgroundAttachmentCompletionMode
@@ -124,7 +136,13 @@ async function runDurableUploadTransaction<T>(
     const transaction = database.transaction(DURABLE_UPLOAD_STORE, mode)
     const store = transaction.objectStore(DURABLE_UPLOAD_STORE)
     let value: T
-    operation(store, (nextValue) => { value = nextValue })
+    try {
+      operation(store, (nextValue) => { value = nextValue })
+    } catch (error) {
+      transaction.abort()
+      reject(error)
+      return
+    }
     transaction.oncomplete = () => resolve(value)
     transaction.onerror = (event) => reject(
       transaction.error
@@ -135,16 +153,19 @@ async function runDurableUploadTransaction<T>(
   })
 }
 
-export async function persistDurableBackgroundAttachmentUpload(options: {
+function buildDurableBackgroundAttachmentUpload(options: {
   id: string
   uploaderUid: string
   eventId: string
   completionMode: BackgroundAttachmentCompletionMode
   fulfillmentBatchId?: string
   fulfillmentBatchSize?: number
+  fulfillmentOrders?: FulfillmentBatchOrder[]
+  fulfillmentRequestId?: string
   uploadKind?: BackgroundAttachmentUploadKind
   commentId?: string
   file: File
+  capture?: PhotoCaptureMetadata
 }) {
   const now = new Date().toISOString()
   const row: DurableBackgroundAttachmentUpload = {
@@ -154,6 +175,7 @@ export async function persistDurableBackgroundAttachmentUpload(options: {
     completionMode: options.completionMode,
     ...(options.fulfillmentBatchId ? { fulfillmentBatchId: options.fulfillmentBatchId } : {}),
     ...(options.fulfillmentBatchSize ? { fulfillmentBatchSize: options.fulfillmentBatchSize } : {}),
+    ...(options.fulfillmentOrders ? { fulfillmentOrders: options.fulfillmentOrders, fulfillmentRequestId: options.fulfillmentRequestId } : {}),
     uploadKind: options.uploadKind ?? 'event',
     ...(options.commentId ? { commentId: options.commentId } : {}),
     blob: options.file,
@@ -161,17 +183,29 @@ export async function persistDurableBackgroundAttachmentUpload(options: {
     type: backgroundImageContentType(options.file),
     size: options.file.size,
     lastModified: options.file.lastModified,
+    ...(options.capture ? { capture: options.capture } : {}),
     status: 'queued',
     progress: 0,
     cloudSafe: false,
     createdAt: now,
     updatedAt: now,
   }
+  return row
+}
+
+export async function persistDurableBackgroundAttachmentUpload(options: Parameters<typeof buildDurableBackgroundAttachmentUpload>[0]) {
+  const [row] = await persistDurableBackgroundAttachmentBatch([options])
+  return row
+}
+
+export async function persistDurableBackgroundAttachmentBatch(inputs: Parameters<typeof persistDurableBackgroundAttachmentUpload>[0][]) {
+  const rows = inputs.map(buildDurableBackgroundAttachmentUpload)
+  if (new Set(rows.map(row => row.id)).size !== rows.length) throw new Error('照片佇列識別碼重複')
   await runDurableUploadTransaction<void>('readwrite', (store, setValue) => {
-    store.put(row)
+    for (const row of rows) store.put(row)
     setValue(undefined)
   })
-  return row
+  return rows
 }
 
 export async function updateDurableBackgroundAttachmentUpload(
@@ -212,8 +246,12 @@ export async function loadDurableBackgroundAttachmentUploads(uploaderUid: string
 }
 
 export async function removeDurableBackgroundAttachmentUpload(uploadId: string) {
+  await removeDurableBackgroundAttachmentBatch([uploadId])
+}
+
+export async function removeDurableBackgroundAttachmentBatch(uploadIds: string[]) {
   await runDurableUploadTransaction<void>('readwrite', (store, setValue) => {
-    store.delete(uploadId)
+    for (const uploadId of new Set(uploadIds)) store.delete(uploadId)
     setValue(undefined)
   })
 }
@@ -232,7 +270,7 @@ export function blocksBackgroundAttachmentUnload(upload: Pick<DurableBackgroundA
 async function callJobApi(body: Record<string, unknown>) {
   const user = auth.currentUser
   if (!user) throw new Error('登入已失效，請重新登入')
-  const [token, appCheckHeaders] = await Promise.all([user.getIdToken(), getAppCheckHeaders()])
+  const [token, appCheckHeaders] = await Promise.all([getFirebaseIdToken(user), getAppCheckHeaders()])
   const response = await fetch('/api/upload-drive', {
     method: 'POST',
     headers: {
@@ -266,7 +304,9 @@ export function loadBackgroundAttachmentRecoveries(): BackgroundAttachmentRecove
 }
 
 function writeRecoveries(rows: BackgroundAttachmentRecovery[]) {
-  localStorage.setItem(RECOVERY_STORAGE_KEY, JSON.stringify(rows.slice(-30)))
+  if (!writeBrowserValue(RECOVERY_STORAGE_KEY, JSON.stringify(rows))) {
+    throw new Error('瀏覽器無法保存照片復原紀錄，請保留此頁面並稍後再試。')
+  }
 }
 
 export function rememberBackgroundAttachmentRecovery(row: BackgroundAttachmentRecovery) {
@@ -289,6 +329,8 @@ export async function createBackgroundAttachmentJob(
     commentId?: string
     fulfillmentBatchId?: string
     fulfillmentBatchSize?: number
+    fulfillmentOrders?: FulfillmentBatchOrder[]
+    fulfillmentRequestId?: string
   } = {},
 ) {
   const contentType = backgroundImageContentType(file)
@@ -303,6 +345,7 @@ export async function createBackgroundAttachmentJob(
     ...(context.commentId ? { commentId: context.commentId } : {}),
     ...(context.fulfillmentBatchId ? { fulfillmentBatchId: context.fulfillmentBatchId } : {}),
     ...(context.fulfillmentBatchSize ? { fulfillmentBatchSize: context.fulfillmentBatchSize } : {}),
+    ...(context.fulfillmentOrders ? { fulfillmentOrders: context.fulfillmentOrders, fulfillmentRequestId: context.fulfillmentRequestId } : {}),
     ...(clientUploadId ? { clientUploadId } : {}),
     ...(capture ? { capture } : {}),
   })
@@ -432,6 +475,8 @@ export async function startBackgroundAttachmentUpload(options: {
         commentId: options.commentId ?? durableUpload.commentId,
         fulfillmentBatchId: durableUpload.fulfillmentBatchId,
         fulfillmentBatchSize: durableUpload.fulfillmentBatchSize,
+        fulfillmentOrders: durableUpload.fulfillmentOrders,
+        fulfillmentRequestId: durableUpload.fulfillmentRequestId,
       },
     )
     jobId = created.jobId
@@ -502,7 +547,12 @@ export async function startBackgroundAttachmentUpload(options: {
 export async function resumeBackgroundAttachmentUpload(recovery: BackgroundAttachmentRecovery) {
   await waitForBackgroundAttachmentJob(recovery.jobId)
   const result = await finalizeBackgroundAttachmentJob(recovery.jobId)
-  forgetBackgroundAttachmentRecovery(recovery.jobId)
+  try {
+    forgetBackgroundAttachmentRecovery(recovery.jobId)
+  } catch (error) {
+    // 雲端完成不可因本機清理失敗被誤報為上傳失敗。
+    console.warn('[calendar] 照片已完成，本機復原紀錄待清理', error)
+  }
   return result
 }
 

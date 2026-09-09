@@ -81,3 +81,15 @@ test('一般行事曆事件不參與配送分組', () => {
   assert.equal(rows.length, 2)
   assert.ok(rows.every((row) => !row.isDeliveryGroup))
 })
+
+test('ERP 附屬事件保留獨立顯示，不併入主配送事件群組', () => {
+  const primary = event('primary')
+  const related = event('related', {
+    sourceEventRole: 'related',
+    sourceParentEventId: primary.id,
+  })
+  const rows = groupCalendarDayEvents([primary, related])
+
+  assert.equal(rows.length, 2)
+  assert.ok(rows.every((row) => !row.isDeliveryGroup))
+})

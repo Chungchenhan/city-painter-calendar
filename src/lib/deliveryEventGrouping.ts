@@ -7,8 +7,6 @@ export type CalendarDayDisplayItem = {
   isDeliveryGroup: boolean
 }
 
-const COMPLETED_ORDER_STATUSES = new Set(['已送達', '已完成'])
-
 function normalizedText(value: unknown) {
   return typeof value === 'string'
     ? value.normalize('NFKC').trim().replace(/\s+/g, '').toLocaleLowerCase('zh-Hant')
@@ -29,6 +27,7 @@ function deliveryCalendarKey(event: CalendarEvent) {
 
 export function deliveryEventGroupKey(event: CalendarEvent) {
   if (event.source !== 'erpSalesDelivery') return ''
+  if (event.sourceEventRole === 'related') return ''
   if (!normalizedText(event.sourceId)) return ''
   if ((event.endDate || event.date) !== event.date) return ''
   const customer = deliveryCustomerKey(event)
@@ -81,11 +80,20 @@ export function groupCalendarDayEvents(events: CalendarEvent[]): CalendarDayDisp
 }
 
 export function deliveryGroupCompletedCount(events: CalendarEvent[]) {
-  return events.filter((event) => (
-    event.done || COMPLETED_ORDER_STATUSES.has(event.orderStatus?.trim() || '')
-  )).length
+  return events.filter(isCalendarEventCompleted).length
 }
 
 export function deliveryGroupTitle(title: string, eventCount: number) {
   return `${title}（${eventCount}筆訂單）`
+}
+
+
+export function isCalendarEventCompleted(event: Pick<CalendarEvent, 'done' | 'source' | 'orderFulfillment' | 'orderStatus' | 'sourceEventKind' | 'sourceEventRole' | 'sourceParentEventId'>) {
+  if (event.source !== 'erpSalesDelivery') return false
+  if (event.done === true) return true
+  if (event.orderFulfillment?.status === 'completed') return true
+  // 關聯施工與撤場可能帶有主單狀態，必須有本次事件的完成紀錄。
+  if (event.sourceEventKind || event.sourceEventRole === 'related' || event.sourceParentEventId) return false
+  const status = event.orderStatus?.trim()
+  return status === '已完成' || status === '已送達'
 }

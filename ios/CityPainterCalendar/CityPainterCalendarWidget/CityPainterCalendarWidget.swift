@@ -12,12 +12,12 @@ struct CalendarProvider: TimelineProvider {
     }
 
     func getSnapshot(in context: Context, completion: @escaping (CalendarEntry) -> Void) {
-        completion(CalendarEntry(date: Date(), month: .placeholder))
+        completion(CalendarEntry(date: Date(), month: context.isPreview ? .placeholder : .signedOut))
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<CalendarEntry>) -> Void) {
         Task {
-            let month = await fetchWidgetMonth() ?? .placeholder
+            let month = await fetchWidgetMonth() ?? .signedOut
             let nextRefresh = Calendar.current.date(byAdding: .minute, value: 5, to: Date()) ?? Date().addingTimeInterval(300)
             completion(Timeline(entries: [CalendarEntry(date: Date(), month: month)], policy: .after(nextRefresh)))
         }
@@ -29,14 +29,16 @@ struct CalendarProvider: TimelineProvider {
         components?.queryItems = [URLQueryItem(name: "month", value: month)]
         guard let url = components?.url else { return nil }
 
-        var request = URLRequest(url: url)
-        if !WidgetConfig.widgetAPIToken.isEmpty {
-            request.setValue(WidgetConfig.widgetAPIToken, forHTTPHeaderField: "X-Widget-Token")
-        }
+        guard let credential = WidgetCredentials.load() else { return nil }
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
+        request.timeoutInterval = 20
+        request.setValue(credential.credential, forHTTPHeaderField: "X-Widget-Token")
 
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
-            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+            let status = (response as? HTTPURLResponse)?.statusCode
+            if status == 401 || status == 403 { WidgetCredentials.clear(matching: credential.credential) }
+            guard status == 200 else { return nil }
             return try JSONDecoder().decode(WidgetMonth.self, from: data)
         } catch {
             return nil

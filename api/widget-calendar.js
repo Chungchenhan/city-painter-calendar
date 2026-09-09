@@ -3,6 +3,10 @@ import os from 'node:os'
 import path from 'node:path'
 import admin from 'firebase-admin'
 import dayjs from 'dayjs'
+import { canReadCalendarEvent } from '../shared/calendarEventAccess.js'
+import { handleCalendarData } from '../shared/calendarData.js'
+import { calendarServices, readJson, respondError } from '../shared/calendarApiSecurity.js'
+import { authenticateWidgetDevice, handleWidgetDevice, parseWidgetCredential } from '../shared/widgetDeviceAuth.js'
 
 const PROJECT_ID = 'city-painter-erp'
 const COLORS = ['#f6b100', '#1fb6a6', '#3c82f6', '#ef6262', '#8d6df2', '#31a24c', '#f57c35', '#667085']
@@ -212,8 +216,27 @@ function queryValue(req, name) {
   return url.searchParams.get(name)
 }
 
-export default async function handler(req, res) {
+export function createHandler({ getDb = firestore, getAuth = () => admin.auth(), getServices = calendarServices } = {}) {
+return async function handler(req, res) {
+  const parsed = new URL(req.url || '/', 'http://localhost')
+  req.query = req.query || Object.fromEntries(parsed.searchParams)
+  if (req.query.action === 'data') {
+    try {
+      if (req.method === 'POST') req.body = await readJson(req)
+      return await handleCalendarData(req, res, getServices())
+    } catch (error) {
+      return respondError(res, error)
+    }
+  }
+  if (['widget-device-register', 'widget-device-revoke'].includes(req.query.action)) {
+    try { return await handleWidgetDevice(req, res, getServices()) }
+    catch (error) { return respondError(res, error) }
+  }
   cors(res)
+  res.setHeader('Cache-Control', 'private, no-store')
+  res.setHeader('Vercel-CDN-Cache-Control', 'no-store')
+  res.setHeader('CDN-Cache-Control', 'no-store')
+  res.setHeader('Vary', 'X-Widget-Token')
   if (req.method === 'OPTIONS') {
     res.status(204).end()
     return
@@ -223,16 +246,12 @@ export default async function handler(req, res) {
     return
   }
 
-  const requiredToken = process.env.WIDGET_API_TOKEN
-  const requestToken = req.headers['x-widget-token'] || queryValue(req, 'token')
-  if (requiredToken && requestToken !== requiredToken) {
-    res.status(401).json({ error: 'Unauthorized' })
-    return
-  }
+  if (!parseWidgetCredential(req.headers['x-widget-token'])) return res.status(401).json({ error: '請開啟行事曆 App 登入以啟用小工具' })
 
   try {
-    const monthValue = dayjs(`${queryValue(req, 'month') || dayjs().format('YYYY-MM')}-01`)
-    if (!monthValue.isValid()) {
+    const month = queryValue(req, 'month') || dayjs().format('YYYY-MM')
+    const monthValue = dayjs(`${month}-01`)
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month) || !monthValue.isValid() || monthValue.format('YYYY-MM') !== month) {
       res.status(400).json({ error: 'Invalid month. Use YYYY-MM.' })
       return
     }
@@ -241,7 +260,8 @@ export default async function handler(req, res) {
     const gridEnd = monthValue.endOf('month').endOf('week')
     const startDate = gridStart.format('YYYY-MM-DD')
     const endDate = gridEnd.format('YYYY-MM-DD')
-    const db = firestore()
+    const db = getDb()
+    const actor = await authenticateWidgetDevice(req, db, getAuth())
 
     const [rangeSnap, repeatSnap, calendarSnap, departmentSnap] = await Promise.all([
       db.collection('calendarEvents')
@@ -282,8 +302,30 @@ export default async function handler(req, res) {
       if (event.date <= endDate) map.set(doc.id, event)
     })
 
+    const visibleEvents = []
+    const hrNames = new Map()
+    for (const event of map.values()) {
+      if (widgetVisibleEvent(event, validCalendarIds) && await canReadCalendarEvent(db, actor, event)) {
+        const hrPrivate = event.source === 'hrLeaveRequest' && actor.role !== 'admin' && actor.employee.departmentId !== 'dept_mgmt'
+        if (hrPrivate) {
+          if (!hrNames.has(event.sourceId)) {
+            let name = ''
+            if (typeof event.sourceId === 'string' && event.sourceId && !event.sourceId.includes('/')) {
+              const leave = await db.collection('leaveRequests').doc(event.sourceId).get()
+              const employeeId = leave.exists ? leave.data().employeeId : ''
+              if (typeof employeeId === 'string' && employeeId && !employeeId.includes('/')) {
+                const employee = await db.collection('employees').doc(employeeId).get()
+                if (employee.exists) name = String(employee.data().nickname || employee.data().name || '')
+              }
+            }
+            hrNames.set(event.sourceId, name)
+          }
+          visibleEvents.push({ ...event, title: `${hrNames.get(event.sourceId) || '員工'} 請假` })
+        } else visibleEvents.push(event)
+      }
+    }
     const expanded = expandRecurringEvents(
-      Array.from(map.values()).filter((event) => widgetVisibleEvent(event, validCalendarIds)),
+      visibleEvents,
       startDate,
       endDate
     )
@@ -303,7 +345,7 @@ export default async function handler(req, res) {
       }
     })
 
-    res.setHeader('Cache-Control', 's-maxage=60, stale-while-revalidate=300')
+    res.setHeader('Cache-Control', 'private, no-store')
     res.status(200).json({
       month: monthValue.format('YYYY-MM'),
       title: `${monthValue.month() + 1}月`,
@@ -313,7 +355,11 @@ export default async function handler(req, res) {
       days
     })
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Widget API failed'
-    res.status(500).json({ error: message })
+    if (error.status) return respondError(res, error)
+    res.status(500).json({ error: 'Widget 暫時無法載入' })
   }
 }
+
+}
+
+export default createHandler()

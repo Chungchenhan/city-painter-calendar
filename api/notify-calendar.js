@@ -1,64 +1,12 @@
-import fs from 'node:fs'
-import os from 'node:os'
-import path from 'node:path'
-import admin from 'firebase-admin'
+import { createHash } from 'node:crypto'
 import webpush from 'web-push'
+import identity from '../functions/calendarPushIdentity.js'
+import { calendarServices, authenticateCalendar, responseHeaders, readJson, respondError } from '../shared/calendarApiSecurity.js'
+import { canNotifyCalendarEvent, canReadCalendarEvent } from '../shared/calendarEventAccess.js'
 
-const PROJECT_ID = 'city-painter-erp'
 const TAIPEI_TIME_ZONE = 'Asia/Taipei'
 const HR_PUNCH_CORRECTION_LEAVE_TYPE = '補打卡'
-const DEFAULT_NOTIFICATION_SETTINGS = {
-  shiftStartEnabled: true,
-  shiftEndEnabled: false,
-}
-
-function setCorsHeaders(req, res) {
-  const origin = req.headers.origin || '*'
-  res.setHeader('Access-Control-Allow-Origin', origin)
-  res.setHeader('Vary', 'Origin')
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-}
-
-function serviceAccountJson() {
-  const source = process.env.FIREBASE_SERVICE_ACCOUNT_JSON ||
-    process.env.GOOGLE_SERVICE_ACCOUNT_JSON ||
-    process.env.GOOGLE_SERVICE_ACCOUNT_JSON_BASE64 && Buffer.from(process.env.GOOGLE_SERVICE_ACCOUNT_JSON_BASE64, 'base64').toString('utf8')
-  if (source) return JSON.parse(source)
-
-  const localPath = path.join(os.homedir(), '.firebase', 'service-account.json')
-  if (fs.existsSync(localPath)) return JSON.parse(fs.readFileSync(localPath, 'utf8'))
-  throw new Error('Missing Firebase service account credentials')
-}
-
-function getAdminApp() {
-  if (admin.apps.length > 0) return admin.app()
-
-  return admin.initializeApp({
-    credential: admin.credential.cert(serviceAccountJson()),
-    projectId: PROJECT_ID,
-  })
-}
-
-async function verifyRequest(req) {
-  const authHeader = req.headers.authorization || ''
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : ''
-  if (!token) return null
-
-  try {
-    return await admin.auth().verifyIdToken(token)
-  } catch {
-    return null
-  }
-}
-
-async function readBody(req) {
-  if (req.body) return req.body
-  const chunks = []
-  for await (const chunk of req) chunks.push(chunk)
-  if (!chunks.length) return {}
-  return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')
-}
+const DEFAULT_NOTIFICATION_SETTINGS = { shiftStartEnabled: true, shiftEndEnabled: false }
 
 async function loadRecipientTargets(db, assigneeIds) {
   const ids = new Set((assigneeIds || []).filter(Boolean))
@@ -161,7 +109,7 @@ async function canReceiveCalendarNotification(db, sub) {
   return (settings.shiftStartEnabled && isDuringShift) || (settings.shiftEndEnabled && isAfterShift)
 }
 
-async function sendPushes(db, event, recipients, actorUid) {
+async function sendPushes(db, auth, event, recipients, actorUid, deliveryId) {
   const subsSnap = await db.collection('calendarNotificationSubscriptions').where('enabled', '==', true).get()
   const targets = []
   subsSnap.forEach((item) => {
@@ -171,7 +119,8 @@ async function sendPushes(db, event, recipients, actorUid) {
     if (!sub.uid || sub.uid === actorUid || (!matchesUid && !matchesEmployee) || !sub.subscription) return
     targets.push({ ref: item.ref, id: item.id, ...sub })
   })
-  if (targets.length === 0) return 0
+  const trustedTargets = await identity.trustedSubscriptions(db, auth, targets)
+  if (trustedTargets.length === 0) return 0
 
   const publicKey = process.env.WEB_PUSH_PUBLIC_KEY || process.env.VITE_WEB_PUSH_PUBLIC_KEY
   const privateKey = process.env.WEB_PUSH_PRIVATE_KEY
@@ -180,8 +129,8 @@ async function sendPushes(db, event, recipients, actorUid) {
   webpush.setVapidDetails('mailto:admin@city-painter.com', publicKey, privateKey)
 
   const allowedTargets = []
-  for (const sub of targets) {
-    if (await canReceiveCalendarNotification(db, sub)) allowedTargets.push(sub)
+  for (const sub of trustedTargets) {
+    if (await canReadCalendarEvent(db, sub.actor, event) && await canReceiveCalendarNotification(db, sub)) allowedTargets.push(sub)
   }
   if (allowedTargets.length === 0) return 0
 
@@ -189,7 +138,7 @@ async function sendPushes(db, event, recipients, actorUid) {
     const payload = JSON.stringify({
       title: '行事曆通知',
       body: `您被標記在「${event.title || '未命名活動'}」 ${eventTimeLabel(event)}`,
-      tag: `calendar-event-${event.id}`,
+      tag: `calendar-event-${deliveryId}`,
       url: '/',
       eventId: event.id,
       unreadCount: 1,
@@ -197,22 +146,24 @@ async function sendPushes(db, event, recipients, actorUid) {
 
     try {
       await webpush.sendNotification(sub.subscription, payload)
+      return true
     } catch (error) {
       const body = `${error?.body || ''}`
       if (error?.statusCode === 404 || error?.statusCode === 410 || body.includes('VapidPkHashMismatch') || body.includes('VAPID credentials')) {
         await sub.ref.delete()
         return
       }
-      console.error('calendar web push failed', sub.id, error)
+      return false
     }
   })
 
-  await Promise.all(jobs)
-  return jobs.length
+  const results = await Promise.all(jobs)
+  return results.filter(Boolean).length
 }
 
-export default async function handler(req, res) {
-  setCorsHeaders(req, res)
+export function createHandler({ getServices = calendarServices, send = sendPushes } = {}) {
+return async function handler(req, res) {
+  responseHeaders(req, res)
 
   if (req.method === 'OPTIONS') {
     return res.status(204).end()
@@ -224,30 +175,46 @@ export default async function handler(req, res) {
   }
 
   try {
-    getAdminApp()
-    const decoded = await verifyRequest(req)
-    if (!decoded?.uid) return res.status(401).json({ error: 'Unauthorized' })
+    const services = getServices()
+    const actor = await authenticateCalendar(req, services)
 
-    const body = await readBody(req)
+    const body = await readJson(req)
     const eventId = body?.eventId
-    if (!eventId || typeof eventId !== 'string') {
+    if (!identity.validDocumentId(eventId)) {
       return res.status(400).json({ error: 'Missing eventId' })
     }
 
-    const db = admin.firestore()
+    const db = services.db
     const eventSnap = await db.collection('calendarEvents').doc(eventId).get()
     if (!eventSnap.exists) return res.status(404).json({ error: 'Calendar event not found' })
 
     const event = { id: eventSnap.id, ...eventSnap.data() }
+    if (!await canNotifyCalendarEvent(db, actor, event)) return res.status(403).json({ error: '沒有此事件的通知權限' })
     const recipients = await loadRecipientTargets(db, event.assigneeIds)
     if (recipients.employeeIds.size === 0) {
       return res.status(200).json({ ok: true, sent: 0 })
     }
 
-    const sent = await sendPushes(db, event, recipients, decoded.uid)
+    if (process.env.CALENDAR_LOCAL_API === '1') return res.status(403).json({ error: 'LOCAL_NOTIFICATION_SEND_BLOCKED' })
+    const revision = JSON.stringify([event.updatedAt || event.createdAt || '', event.assigneeIds || [], event.title || '', event.date || '', event.startTime || '', event.endTime || ''])
+    const deliveryId = createHash('sha256').update(`${eventId}:${revision}`).digest('hex')
+    const ref = db.collection('calendarNotificationDeliveries').doc(deliveryId)
+    const claimed = await db.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(ref)
+      if (snapshot.exists) return false
+      transaction.set(ref, { eventId, actorUid: actor.uid, status: 'claimed', createdAt: services.fieldValue.serverTimestamp() })
+      return true
+    })
+    if (!claimed) return res.status(200).json({ ok: true, sent: 0, duplicate: true })
+    // 傳送逾時屬未知結果，不自動釋放 claim 而重複通知。
+    const sent = await send(db, services.auth, event, recipients, actor.uid, deliveryId)
+    await ref.update({ status: 'completed', sent, completedAt: services.fieldValue.serverTimestamp() })
     return res.status(200).json({ ok: true, sent })
   } catch (error) {
-    console.error(error)
-    return res.status(500).json({ error: 'Internal server error' })
+    return respondError(res, error)
   }
 }
+
+}
+
+export default createHandler()

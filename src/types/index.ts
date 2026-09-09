@@ -105,16 +105,21 @@ export interface CalendarEvent {
     capturedAt?: string
     capturedAtSource?: 'exif' | 'manual' | 'unknown'
     uploadedAt?: string
+    createdAtText?: string
     location?: {
       latitude: number
       longitude: number
-      source: 'exif' | 'manual'
+      source: 'exif' | 'manual' | 'device'
+      accuracy?: number
       label?: string
     }
     lineOriginalUrl?: string
     linePreviewUrl?: string
     thumbnailPath?: string
     uploadJobId?: string
+    uploadedByUid?: string
+    uploadedByEmployeeNo?: string
+    uploadedByName?: string
   }[]
   done: boolean
   source?: string
@@ -123,12 +128,27 @@ export interface CalendarEvent {
   sourceCustomerCode?: string
   sourceCustomerName?: string
   sourceShippingMethod?: string
+  sourceEventRole?: 'related'
+  sourceParentEventId?: string
+  sourceEventKind?: 'teardown' | 'construction-visit'
+  sourceWorkVisitId?: string
+  orderFulfillment?: Record<string, unknown>
   orderStatus?: string
   productionLineRetry?: {
     mode: 'production' | 'fulfillment'
     attachmentIds: string[]
     status: 'processing' | 'pending' | 'failed'
+    shippingMethod?: string
+    orderStatus?: string
     fulfillmentBatchId?: string
+    fulfillmentRequestId?: string
+    fulfillmentSourceEventId?: string
+    fulfillmentOrders?: Array<{
+      eventId: string
+      salesId: string
+      expectedShippingMethod: '外送'
+      expectedOrderStatus: string
+    }>
     message?: string
     updatedAt?: string
   }
@@ -166,6 +186,7 @@ export interface CalendarActivityLog {
   actorUid: string
   actorName: string
   eventId?: string
+  sourceEventId?: string
   eventTitle: string
   calendarId: string
   departmentId: string

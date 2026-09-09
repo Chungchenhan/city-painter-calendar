@@ -1,8 +1,11 @@
+const { bumpCalendarDataRevision } = require('./calendarDataRevision')
+const { trustedActivityEvent, canSendEventToSubscription } = require('./calendarActivitySecurity')
 const crypto = require('node:crypto')
 const admin = require('firebase-admin')
 const { onDocumentCreated, onDocumentWritten } = require('firebase-functions/v2/firestore')
 const { onSchedule } = require('firebase-functions/v2/scheduler')
 const webpush = require('web-push')
+const { trustedSubscriptions } = require('./calendarPushIdentity')
 const {
   cleanupStagedAttachments,
   processPendingAttachments,
@@ -241,7 +244,7 @@ async function loadSubscriptions(db) {
     if (!data.subscription || !data.employeeId) return
     list.push({ id: doc.id, ...data })
   })
-  return list
+  return trustedSubscriptions(db, admin.auth(), list)
 }
 
 function groupByEmployee(subscriptions) {
@@ -383,7 +386,7 @@ async function sendEventReminders(db, subscriptionsByEmployee, windowStartMs, wi
       if (!subscriptions || subscriptions.length === 0) continue
       const targets = []
       for (const sub of subscriptions) {
-        if (await canReceiveCalendarNotification(sub, notifyParts.date, notifyParts.minutes)) targets.push(sub)
+        if (await canSendEventToSubscription(db, sub, event) && await canReceiveCalendarNotification(sub, notifyParts.date, notifyParts.minutes)) targets.push(sub)
       }
       if (targets.length === 0) continue
       sent += await sendToSubscriptions(db, targets, {
@@ -422,23 +425,25 @@ exports.sendCalendarActivityNotifications = onDocumentCreated({
   region: 'asia-east1',
 }, async (event) => {
   const log = event.data && event.data.data()
-  if (!log || !(log.assigneeIds || []).length) return
+  if (!log) return
 
   const db = admin.firestore()
+  const trusted = await trustedActivityEvent(db, admin.auth(), log)
+  if (!trusted || !(trusted.event.assigneeIds || []).length) return
   const subscriptions = await loadSubscriptions(db)
   const canReceiveCalendarNotification = createNotificationGate(db)
   const now = getTaipeiParts()
   const targets = []
   for (const sub of subscriptions) {
-    if (!(log.assigneeIds || []).includes(sub.employeeId) || sub.uid === log.actorUid) continue
-    if (await canReceiveCalendarNotification(sub, now.date, now.minutes)) targets.push(sub)
+    if (!(trusted.event.assigneeIds || []).includes(sub.employeeId) || sub.uid === trusted.actor.uid) continue
+    if (await canSendEventToSubscription(db, sub, trusted.event) && await canReceiveCalendarNotification(sub, now.date, now.minutes)) targets.push(sub)
   }
   if (targets.length === 0) return
 
   const actionText = log.action === 'create' ? '新增' : log.action === 'delete' ? '刪除' : log.action === 'move' ? '移動' : log.action === 'copy' ? '複製' : '更新'
   await sendToSubscriptions(db, targets, {
     title: '行事曆通知',
-    body: `${log.actorName || '有人'}${actionText}「${log.eventTitle || '未命名活動'}」`,
+    body: `${trusted.actor.displayName || '有人'}${actionText}「${trusted.event.title || '未命名活動'}」`,
     tag: `calendar-activity-${event.params.logId}`,
     url: '/',
     eventId: log.eventId || '',
@@ -487,6 +492,15 @@ exports.invalidateCalendarSalesStatusFromCustomers = salesStatusRevisionTrigger(
   'customers/{documentId}',
   { line: true, payment: true },
 )
+
+function calendarDataRevisionTrigger(document) {
+  return onDocumentWritten({ document, region: 'asia-east1', retry: true }, async () => {
+    await bumpCalendarDataRevision({ db: admin.firestore(), fieldValue: admin.firestore.FieldValue })
+  })
+}
+
+exports.invalidateCalendarDataFromEvents = calendarDataRevisionTrigger('calendarEvents/{eventId}')
+exports.invalidateCalendarDataFromComments = calendarDataRevisionTrigger('calendarEvents/{eventId}/comments/{commentId}')
 
 exports.processStagedAttachment = processStagedAttachment
 exports.processPendingAttachments = processPendingAttachments

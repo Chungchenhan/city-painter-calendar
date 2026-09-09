@@ -68,3 +68,16 @@ https://sch.city-painter.com/api/widget-calendar?month=YYYY-MM
 ```
 
 目前正式站網域是 `https://sch.city-painter.com`。如果正式站網域變更，請修改 `Shared/WidgetConfig.swift`。
+
+## 登入與小工具授權
+
+- 不使用全站共用 token，也不需要 `WIDGET_API_TOKEN` 或 `WIDGET_USER_UID`。
+- App 登入後，網頁透過受限 WKWebView bridge 提供短效 Firebase ID token 與 App Check。只接受 `https://sch.city-painter.com` 主 frame，拒絕外域及 iframe。
+- 原生 App 呼叫 `/api/widget-calendar?action=widget-device-register`，後端以已驗證 UID 綁定員工與裝置並核發 30 天隨機憑證；`calendarWidgetDevices` 只保存雜湊，Rules 禁止前端讀寫。
+- 憑證只存 App／Widget 共用 Keychain（ThisDeviceOnly），不放 UserDefaults、JavaScript、Swift 常數或 Git。兩 target 必須使用同一 Team、`Shared/WidgetAuth.entitlements` 與 `WidgetKeychainAccessGroup`。
+- 每次讀取重新核對在職、停用、員工映射、Firebase 撤銷時間、裝置撤銷及有效期限，並套用事件可見範圍。
+- 登出立即清除本機憑證並要求刷新；離線撤銷保留 Keychain 待下次開啟重試。管理端可將指定裝置文件 `revokedAt` 設為目前毫秒時間，或撤銷 Firebase refresh tokens，拒絕後續讀取。
+- 未登入／失效顯示「請開啟 App 登入」。Web 與原生 App 都更新後，需開啟 App 一次完成自動綁定，既有有效登入不需重登。
+- iOS 既有 Widget 快照由系統控制，斷網／系統延後刷新時不能保證畫面立即清除。
+
+測試：`node --test shared/widgetDeviceAuth.test.js api/calendar-security.test.js`。

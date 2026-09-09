@@ -27,6 +27,13 @@ type Gesture =
       transform: ImageTransform
     }
 
+export type AttachmentImageViewerHeader = {
+  title: string
+  countLabel?: string
+  metadataLabel?: string
+  closeLabel?: string
+}
+
 export type AttachmentImageViewerProps = {
   src: string
   previewSrc?: string
@@ -50,6 +57,7 @@ export type AttachmentImageViewerProps = {
   respectBottomSafeArea?: boolean
   showNavigationButtons?: boolean
   enableKeyboardNavigation?: boolean
+  header?: AttachmentImageViewerHeader
 }
 
 const DEFAULT_TRANSFORM: ImageTransform = { scale: 1, x: 0, y: 0 }
@@ -91,6 +99,106 @@ function centerBetween(first: Point, second: Point): Point {
   }
 }
 
+const ATTACHMENT_VIEWER_HEADER_STYLES = `
+  .standard-attachment-viewer-header {
+    min-height: 56px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 48px;
+    align-items: center;
+    gap: 12px;
+    padding: max(4px, env(safe-area-inset-top)) 8px 4px 16px;
+    color: #fff;
+  }
+  .standard-attachment-viewer-header-title {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .standard-attachment-viewer-header-title strong {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    font-size: 14px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .standard-attachment-viewer-header-count {
+    flex: 0 0 auto;
+    color: rgba(255, 255, 255, 0.72);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+  .standard-attachment-viewer-header-metadata {
+    flex: 0 1 auto;
+    margin-left: auto;
+    min-width: 0;
+    overflow: hidden;
+    color: rgba(255, 255, 255, 0.82);
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .standard-attachment-viewer-header-close {
+    width: 48px;
+    min-width: 48px;
+    min-height: 48px;
+    padding: 0;
+    border: 0 !important;
+    background: transparent !important;
+    color: #fff !important;
+    font-size: 34px;
+    line-height: 1;
+    cursor: pointer;
+  }
+  @media (max-width: 760px) {
+    .standard-attachment-viewer-header-title {
+      flex-wrap: wrap;
+      column-gap: 8px;
+      row-gap: 2px;
+    }
+    .standard-attachment-viewer-header-metadata {
+      flex: 1 1 100%;
+      margin-left: 0;
+    }
+  }
+`
+
+function AttachmentViewerHeader({
+  header,
+  onClose,
+}: {
+  header: AttachmentImageViewerHeader
+  onClose: () => void
+}) {
+  return (
+    <>
+      <style>{ATTACHMENT_VIEWER_HEADER_STYLES}</style>
+      <div className="standard-attachment-viewer-header">
+        <div className="standard-attachment-viewer-header-title">
+          <strong title={header.title}>{header.title}</strong>
+          {header.countLabel && (
+            <span className="standard-attachment-viewer-header-count">{header.countLabel}</span>
+          )}
+          {header.metadataLabel && (
+            <span className="standard-attachment-viewer-header-metadata" title={header.metadataLabel}>
+              {header.metadataLabel}
+            </span>
+          )}
+        </div>
+        <button
+          type="button"
+          className="standard-attachment-viewer-header-close"
+          onClick={onClose}
+          aria-label={header.closeLabel || '關閉圖片預覽'}
+        >
+          ×
+        </button>
+      </div>
+    </>
+  )
+}
+
 export default function AttachmentImageViewer({
   src,
   previewSrc,
@@ -114,6 +222,7 @@ export default function AttachmentImageViewer({
   respectBottomSafeArea = false,
   showNavigationButtons = true,
   enableKeyboardNavigation = true,
+  header,
 }: AttachmentImageViewerProps) {
   const viewportRef = useRef<HTMLDivElement | null>(null)
   const imageRef = useRef<HTMLImageElement | null>(null)
@@ -430,6 +539,7 @@ export default function AttachmentImageViewer({
 
   return (
     <>
+      {header && <AttachmentViewerHeader header={header} onClose={onClose} />}
       {fullImageLoading && (
         <div
           className="standard-attachment-loading-toast"

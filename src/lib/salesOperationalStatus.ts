@@ -1,6 +1,7 @@
 import type { User } from 'firebase/auth'
 import type { FulfillmentPaymentPrompt } from '../types'
-import { getAppCheckHeaders } from './firebase'
+import { getAppCheckHeaders, getFirebaseIdToken } from './firebase'
+import { normalizeSalesManagerChats, type SalesManagerChat } from './lineManagerChat'
 
 export type SalesOperationalStatus = {
   eligible: boolean
@@ -12,6 +13,7 @@ export type SalesOperationalStatus = {
   recipientName?: string
   lineDisplayName: string
   lineTargetType?: string
+  managerChats?: SalesManagerChat[]
   recipientCount?: number
   notificationMode?: 'recipient' | 'group' | 'recipient_and_group' | 'none'
   availablePersonalCount?: number
@@ -119,6 +121,7 @@ export function normalizeSalesLineStatusPatch(value: unknown): SalesLineStatusPa
   keys.forEach((key) => {
     if (source[key] !== undefined) (patch as Record<string, unknown>)[key] = source[key]
   })
+  if (source.managerChats !== undefined) patch.managerChats = normalizeSalesManagerChats(source.managerChats)
   return Object.keys(patch).length > 0 ? patch : null
 }
 
@@ -143,17 +146,29 @@ export function normalizeSalesPaymentStatusPatch(value: unknown): SalesPaymentSt
   return Object.keys(patch).length > 0 ? patch : null
 }
 
-export async function fetchSalesOperationalStatus(user: User, eventId: string) {
-  const token = await user.getIdToken()
+export async function fetchSalesOperationalStatus(user: User, eventId: string, signal?: AbortSignal) {
+  signal?.throwIfAborted()
+  const token = await getFirebaseIdToken(user)
+  signal?.throwIfAborted()
   const appCheckHeaders = await getAppCheckHeaders()
+  signal?.throwIfAborted()
   const response = await fetch('/api/upload-drive', {
     method: 'POST',
+    signal,
     headers: {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
       ...appCheckHeaders,
     },
     body: JSON.stringify({ action: 'production-photo-status', eventId }),
+  }).catch((error: unknown) => {
+    signal?.throwIfAborted()
+    if (error instanceof TypeError && /failed to fetch|load failed|networkerror/i.test(error.message)) {
+      throw new Error(navigator.onLine === false
+        ? '目前沒有網路連線，訂單狀態尚未更新。'
+        : '無法連線至訂單狀態服務，最新狀態尚未確認。')
+    }
+    throw error
   })
   const result = await response.json().catch(() => null) as (
     Record<string, unknown> & { ok?: boolean, error?: ApiErrorPayload }

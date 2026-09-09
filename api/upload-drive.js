@@ -1,3 +1,5 @@
+import { canReadCalendarEvent } from '../shared/calendarEventAccess.js'
+import { authenticateCalendar, calendarServices } from '../shared/calendarApiSecurity.js'
 import fs from 'node:fs'
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
 import os from 'node:os'
@@ -6,6 +8,7 @@ import admin from 'firebase-admin'
 import { google } from 'googleapis'
 import formidable from 'formidable'
 import sharp from 'sharp'
+import { isErpEventEditRestricted } from '../shared/erpEventEditPolicy.js'
 
 const DEFAULT_DRIVE_FOLDER_ID = '1aqx7A8VwTKBSltaEj0IFoOXQP4HUJWF4'
 const DEFAULT_PUBLIC_BASE_URL = 'https://sch.city-painter.com'
@@ -18,6 +21,8 @@ const FORWARDED_LINE_ACTIONS = new Set([
   'record-fulfillment-cash-payment'
 ])
 const SALES_DELIVERY_EVENT_SYNC_ACTION = 'sync-sales-delivery-event-fields'
+const RELATED_SALES_DELIVERY_EVENT_SYNC_ACTION = 'sync-related-sales-delivery-event-fields'
+const MAX_RELATED_SALES_DELIVERY_ADDRESS_SYNC_EVENTS = 200
 const SALES_DELIVERY_EVENT_SYNC_FIELDS = [
   'title',
   'date',
@@ -26,6 +31,28 @@ const SALES_DELIVERY_EVENT_SYNC_FIELDS = [
   'endTime',
   'allDay',
   'location',
+]
+const RELATED_SALES_DELIVERY_EVENT_SYNC_FIELDS = [
+  ...SALES_DELIVERY_EVENT_SYNC_FIELDS,
+  'calendarId',
+  'calendarIds',
+  'departmentId',
+  'assigneeIds',
+  'visibleDepartmentIds',
+  'visibleAssigneeIds',
+  'hiddenDepartmentIds',
+  'hiddenAssigneeIds',
+  'titleOverrides',
+  'reminder',
+  'url',
+]
+const RELATED_SALES_DELIVERY_INDEPENDENT_FIELDS = [
+  'title',
+  'date',
+  'endDate',
+  'startTime',
+  'endTime',
+  'allDay',
 ]
 
 export const config = {
@@ -56,17 +83,6 @@ function getAdminApp() {
   })
 }
 
-async function verifyRequest(req) {
-  const authorization = String(req.headers.authorization || '')
-  const token = authorization.startsWith('Bearer ') ? authorization.slice(7) : ''
-  if (!token) return null
-  try {
-    getAdminApp()
-    return await admin.auth().verifyIdToken(token)
-  } catch {
-    return null
-  }
-}
 
 function requestError(message, status = 400) {
   return Object.assign(new Error(message), { status })
@@ -80,41 +96,32 @@ function stringList(value) {
   return Array.isArray(value) ? value.map(text).filter(Boolean) : []
 }
 
-async function verifyAppCheck(req) {
-  // 本機 Vite API 仍會驗證 Firebase 登入與員工權限，但不依賴 iOS WebView 不穩定的 App Check。
-  if (process.env.CALENDAR_LOCAL_API === '1') return
-  const token = text(req.headers['x-firebase-appcheck'])
-  if (!token) throw requestError('缺少網站安全驗證', 401)
-  try {
-    await admin.appCheck().verifyToken(token)
-  } catch {
-    throw requestError('網站安全驗證失敗', 401)
+export function attachmentUploaderFields(actor) {
+  return {
+    uploadedByUid: text(actor?.uid),
+    uploadedByEmployeeNo: text(actor?.employee?.empNo),
+    uploadedByName: text(actor?.employee?.nickname)
+      || text(actor?.employee?.name)
+      || text(actor?.decoded?.name)
+      || text(actor?.decoded?.email)
+      || text(actor?.employee?.empNo)
+      || text(actor?.employeeId),
+  }
+}
+
+export function salesAttachmentUploadMetadata(attachment) {
+  const uploadedAt = text(attachment?.uploadedAt) || text(attachment?.createdAtText)
+  return {
+    ...(text(attachment?.uploadedByUid) ? { uploadedByUid: text(attachment.uploadedByUid) } : {}),
+    ...(text(attachment?.uploadedByEmployeeNo) ? { uploadedByEmployeeNo: text(attachment.uploadedByEmployeeNo) } : {}),
+    ...(text(attachment?.uploadedByName) ? { uploadedByName: text(attachment.uploadedByName) } : {}),
+    ...(uploadedAt ? { uploadedAt } : {}),
   }
 }
 
 async function authenticateEmployee(req) {
-  getAdminApp()
-  await verifyAppCheck(req)
-  const decoded = await verifyRequest(req)
-  if (!decoded?.uid) throw requestError('登入已失效，請重新登入', 401)
-
-  const db = admin.firestore()
-  const roleSnapshot = await db.collection('userRoles').doc(decoded.uid).get()
-  const role = roleSnapshot.exists ? roleSnapshot.data() || {} : {}
-  const employeeId = text(role.employeeId)
-  if (!employeeId) throw requestError('此帳號不是有效員工帳號', 403)
-  const employeeSnapshot = await db.collection('employees').doc(employeeId).get()
-  const employee = employeeSnapshot.exists ? employeeSnapshot.data() || {} : null
-  if (!employee || employee.status === 'inactive' || text(employee.resignDate)) {
-    throw requestError('此員工帳號已停用', 403)
-  }
-  return {
-    uid: decoded.uid,
-    decoded,
-    role: text(role.role),
-    employeeId,
-    employee: { id: employeeId, ...employee },
-  }
+  const actor = await authenticateCalendar(req, calendarServices())
+  return { ...actor, decoded: { uid: actor.uid, name: actor.displayName, email: actor.email } }
 }
 
 async function departmentName(db, departmentId) {
@@ -268,6 +275,7 @@ export function normalizeSalesDeliveryEventSyncInput(body) {
       deliveryTime: event.allDay ? '' : '指定時間',
       deliveryScheduleSource: 'manual',
       recipientAddress: event.location,
+      recipientPostalCode: '',
     },
   }
 }
@@ -303,6 +311,7 @@ export function changedSalesDeliveryFields(sales, nextSales) {
     deliveryTime: '收貨時間',
     deliveryScheduleSource: '收貨排程來源',
     recipientAddress: '收件地址',
+    recipientPostalCode: '收件郵遞區號',
   }
   return Object.keys(nextSales)
     .filter((field) => normalizeStoredSalesDeliveryField(field, sales?.[field]) !== nextSales[field])
@@ -312,7 +321,10 @@ export function changedSalesDeliveryFields(sales, nextSales) {
 export function salesDeliveryPatchForEventChanges(expected, next, mappedSales) {
   const patch = {}
   if (expected.title !== next.title) patch.calendarTitle = mappedSales.calendarTitle
-  if (expected.location !== next.location) patch.recipientAddress = mappedSales.recipientAddress
+  if (expected.location !== next.location) {
+    patch.recipientAddress = mappedSales.recipientAddress
+    patch.recipientPostalCode = ''
+  }
   if (['date', 'endDate', 'startTime', 'endTime', 'allDay'].some((field) => expected[field] !== next[field])) {
     patch.deliveryDate = mappedSales.deliveryDate
     patch.deliveryStartTime = mappedSales.deliveryStartTime
@@ -321,6 +333,67 @@ export function salesDeliveryPatchForEventChanges(expected, next, mappedSales) {
     patch.deliveryScheduleSource = mappedSales.deliveryScheduleSource
   }
   return patch
+}
+
+function assertNonEmptyChangedSalesDeliveryLocation(expected, next) {
+  if (expected.location !== next.location && !next.location) {
+    throw requestError('收件地址不可空白', 400)
+  }
+}
+
+function validRelatedSalesDeliveryEventSnapshots(querySnapshot, sourceId, salesNo, primaryEventId) {
+  const snapshots = (querySnapshot?.docs || []).filter((snapshot) => {
+    const event = snapshot.data() || {}
+    return text(event.source) === 'erpSalesDelivery'
+      && text(event.sourceId) === sourceId
+      && text(event.sourceEventRole) === 'related'
+      && text(event.sourceParentEventId) === primaryEventId
+      && Boolean(salesNo)
+      && text(event.sourceSalesNo) === salesNo
+  })
+  if (snapshots.length > MAX_RELATED_SALES_DELIVERY_ADDRESS_SYNC_EVENTS) {
+    throw requestError('附屬事件數量過多，已停止地址同步', 409)
+  }
+  return snapshots
+}
+
+function relatedSalesDeliveryPrimaryNext(expectedRelated, expectedPrimary, nextRelated) {
+  const nextPrimary = { ...expectedPrimary }
+  for (const field of RELATED_SALES_DELIVERY_EVENT_SYNC_FIELDS) {
+    if (RELATED_SALES_DELIVERY_INDEPENDENT_FIELDS.includes(field)) continue
+    if (JSON.stringify(expectedRelated[field]) !== JSON.stringify(nextRelated[field])) {
+      nextPrimary[field] = nextRelated[field]
+    }
+  }
+  return nextPrimary
+}
+
+function salesDeliveryAddressActivityChange(before, after) {
+  return [{
+    field: 'location',
+    label: '地點',
+    before: text(before) || '空白',
+    after: text(after) || '空白',
+  }]
+}
+
+function writeRelatedSalesDeliveryAddressActivity(transaction, db, snapshot, location, actor, actorName, requestId, createdAt) {
+  const event = snapshot.data() || {}
+  const activityRef = db.collection('calendarActivityLogs').doc()
+  transaction.set(activityRef, {
+    action: 'update',
+    eventId: snapshot.id,
+    eventTitle: text(event.title),
+    calendarId: stringList(event.calendarIds)[0] || text(event.calendarId),
+    departmentId: text(event.departmentId),
+    assigneeIds: stringList(event.assigneeIds),
+    date: text(event.date),
+    changes: salesDeliveryAddressActivityChange(event.location, location),
+    actorUid: text(actor.uid),
+    actorName,
+    ...(requestId ? { requestId } : {}),
+    createdAt,
+  })
 }
 
 function taipeiDateTimeText(date = new Date()) {
@@ -337,11 +410,303 @@ function taipeiDateTimeText(date = new Date()) {
   return `${parts.year}/${parts.month}/${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`
 }
 
+function normalizeSalesDeliverySyncTextList(value, label) {
+  if (!Array.isArray(value)) throw requestError(`${label}格式錯誤`, 400)
+  const items = value.map(text).filter(Boolean)
+  if (items.length > 300 || items.some((item) => item.length > 200)) throw requestError(`${label}格式錯誤`, 400)
+  return Array.from(new Set(items))
+}
+
+function normalizeSalesDeliveryTitleOverrides(value, label) {
+  if (!Array.isArray(value)) throw requestError(`${label}格式錯誤`, 400)
+  if (value.length > 100) throw requestError(`${label}筆數過多`, 400)
+  return value.map((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) throw requestError(`${label}格式錯誤`, 400)
+    const unknownFields = Object.keys(item).filter((field) => !['targetType', 'targetId', 'title', 'icon'].includes(field))
+    if (unknownFields.length > 0) throw requestError(`${label}包含不允許的欄位`, 400)
+    const targetType = text(item.targetType)
+    const targetId = text(item.targetId)
+    const title = text(item.title)
+    const icon = text(item.icon)
+    if (!targetId || targetId.length > 200 || title.length > 300 || icon.length > 20) {
+      throw requestError(`${label}格式錯誤`, 400)
+    }
+    return { targetType, targetId, title, ...(icon ? { icon } : {}) }
+  })
+}
+
+export function normalizeRelatedSalesDeliveryEventFields(value, label) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : null
+  if (!source) throw requestError(`${label}格式錯誤`, 400)
+  const unknownFields = Object.keys(source).filter((field) => !RELATED_SALES_DELIVERY_EVENT_SYNC_FIELDS.includes(field))
+  if (unknownFields.length > 0) throw requestError(`${label}包含不允許的欄位：${unknownFields.join('、')}`, 400)
+  const core = normalizeSalesDeliveryEventFields(source, label, { allowAllDay: true })
+  const reminder = text(source.reminder) || 'none'
+  if (!['none', 'start', '5m', '15m', '1h', '1d'].includes(reminder)) throw requestError(`${label}提醒設定錯誤`, 400)
+  const calendarId = text(source.calendarId)
+  const departmentId = text(source.departmentId)
+  const url = text(source.url)
+  if (calendarId.length > 200 || departmentId.length > 200 || url.length > 2000) {
+    throw requestError(`${label}包含過長欄位`, 400)
+  }
+  return {
+    ...core,
+    calendarId,
+    calendarIds: normalizeSalesDeliverySyncTextList(source.calendarIds ?? [], `${label}行事曆`),
+    departmentId,
+    assigneeIds: normalizeSalesDeliverySyncTextList(source.assigneeIds ?? [], `${label}負責人`),
+    visibleDepartmentIds: normalizeSalesDeliverySyncTextList(source.visibleDepartmentIds ?? [], `${label}可見部門`),
+    visibleAssigneeIds: normalizeSalesDeliverySyncTextList(source.visibleAssigneeIds ?? [], `${label}可見人員`),
+    hiddenDepartmentIds: normalizeSalesDeliverySyncTextList(source.hiddenDepartmentIds ?? [], `${label}隱藏部門`),
+    hiddenAssigneeIds: normalizeSalesDeliverySyncTextList(source.hiddenAssigneeIds ?? [], `${label}隱藏人員`),
+    titleOverrides: normalizeSalesDeliveryTitleOverrides(source.titleOverrides ?? [], `${label}替代標題`),
+    reminder,
+    url,
+  }
+}
+
+function salesDeliverySyncEventFieldsMatch(event, expected) {
+  const current = normalizeRelatedSalesDeliveryEventFields(
+    Object.fromEntries(RELATED_SALES_DELIVERY_EVENT_SYNC_FIELDS.map((field) => [field, event?.[field]])),
+    '目前事件',
+  )
+  return RELATED_SALES_DELIVERY_EVENT_SYNC_FIELDS.every((field) => (
+    JSON.stringify(current[field]) === JSON.stringify(expected[field])
+  ))
+}
+
+function salesDeliverySyncEventChanges(expected, next) {
+  const labels = {
+    title: '標題', date: '日期', endDate: '結束日期', startTime: '開始時間', endTime: '結束時間',
+    allDay: '整天', location: '地點', calendarId: '行事曆', calendarIds: '行事曆', departmentId: '部門',
+    assigneeIds: '負責人', visibleDepartmentIds: '可見部門', visibleAssigneeIds: '可見人員',
+    hiddenDepartmentIds: '隱藏部門', hiddenAssigneeIds: '隱藏人員', titleOverrides: '替代標題',
+    reminder: '提醒', url: '網址',
+  }
+  const valueLabel = (value) => {
+    if (typeof value === 'boolean') return value ? '是' : '否'
+    if (Array.isArray(value)) return value.length > 0 ? JSON.stringify(value) : '空白'
+    return text(value) || '空白'
+  }
+  return RELATED_SALES_DELIVERY_EVENT_SYNC_FIELDS.flatMap((field) => (
+    JSON.stringify(expected[field]) === JSON.stringify(next[field])
+      ? []
+      : [{
+          field,
+          label: labels[field] || field,
+          before: valueLabel(expected[field]),
+          after: valueLabel(next[field]),
+        }]
+  ))
+}
+
+export function normalizeRelatedSalesDeliveryEventSyncInput(body) {
+  const requestId = text(body?.requestId)
+  const relatedEventId = text(body?.relatedEventId)
+  const primaryEventId = text(body?.primaryEventId)
+  const calendarTitle = text(body?.calendarTitle)
+  if (!/^[A-Za-z0-9_-]{16,120}$/.test(requestId)) throw requestError('同步要求識別碼不正確', 400)
+  for (const [value, label] of [[relatedEventId, '附屬事件'], [primaryEventId, '主事件']]) {
+    if (!value || value.includes('/') || value.length > 200) throw requestError(`${label}識別碼不正確`, 400)
+  }
+  if (relatedEventId === primaryEventId) throw requestError('主事件與附屬事件不可相同', 400)
+  if (!calendarTitle || calendarTitle.length > 300) throw requestError('行事曆標題不正確', 400)
+  const expectedRelated = normalizeRelatedSalesDeliveryEventFields(body?.expected?.related, '原附屬事件')
+  const expectedPrimary = normalizeRelatedSalesDeliveryEventFields(body?.expected?.primary, '原主事件')
+  const related = normalizeRelatedSalesDeliveryEventFields(body?.events?.related, '附屬事件')
+  const primary = normalizeRelatedSalesDeliveryEventFields(body?.events?.primary, '主事件')
+  return { requestId, relatedEventId, primaryEventId, calendarTitle, expectedRelated, expectedPrimary, related, primary }
+}
+
+export async function syncRelatedSalesDeliveryEventFields(db, actor, body) {
+  if (isErpEventEditRestricted(actor.employeeId)) throw requestError('沒有 ERP 事件的編輯權限', 403)
+  const input = normalizeRelatedSalesDeliveryEventSyncInput(body)
+  assertNonEmptyChangedSalesDeliveryLocation(input.expectedRelated, input.related)
+  const locationChanged = input.expectedRelated.location !== input.related.location
+  const [authorizedRelated, authorizedPrimary] = await Promise.all([
+    loadEvent(db, input.relatedEventId),
+    loadEvent(db, input.primaryEventId),
+  ])
+  if (!authorizedRelated || !authorizedPrimary) throw requestError('找不到主事件或附屬事件', 404)
+  if (!await canManageEvent(db, actor, authorizedRelated, input.relatedEventId)
+    || !await canManageEvent(db, actor, authorizedPrimary, input.primaryEventId)) {
+    throw requestError('沒有同步此銷貨單事件的權限', 403)
+  }
+
+  const sourceId = text(authorizedRelated.sourceId)
+  if (!sourceId || sourceId.includes('/') || sourceId.length > 200) throw requestError('附屬事件未綁定有效銷貨單', 409)
+  const relatedRef = db.collection('calendarEvents').doc(input.relatedEventId)
+  const primaryRef = db.collection('calendarEvents').doc(input.primaryEventId)
+  const salesRef = db.collection('sales').doc(sourceId)
+  const requestRef = db.collection('calendarEventSyncRequests').doc(input.requestId)
+  const linkedEventsQuery = db.collection('calendarEvents').where('sourceId', '==', sourceId)
+  const fingerprint = createHash('sha256').update(JSON.stringify(input)).digest('hex')
+  const now = new Date()
+  const nowIso = now.toISOString()
+  const updatedAtText = taipeiDateTimeText(now)
+  const updatedBy = text(actor.employee.name)
+    || text(actor.employee.nickname)
+    || text(actor.decoded?.name)
+    || text(actor.decoded?.email)
+    || actor.employeeId
+
+  return db.runTransaction(async (transaction) => {
+    const [requestSnapshot, relatedSnapshot, primarySnapshot, salesSnapshot, linkedEventsSnapshot] = await Promise.all([
+      transaction.get(requestRef),
+      transaction.get(relatedRef),
+      transaction.get(primaryRef),
+      transaction.get(salesRef),
+      locationChanged ? transaction.get(linkedEventsQuery) : Promise.resolve(null),
+    ])
+    if (requestSnapshot.exists) {
+      const stored = requestSnapshot.data() || {}
+      if (text(stored.fingerprint) !== fingerprint || text(stored.actorUid) !== text(actor.uid)) {
+        throw requestError('同步要求識別碼已由其他內容使用', 409)
+      }
+      return { ...(stored.result || {}), reused: true }
+    }
+    if (!relatedSnapshot.exists || !primarySnapshot.exists) throw requestError('主事件或附屬事件已不存在', 404)
+    if (!salesSnapshot.exists) throw requestError('對應的銷貨單已不存在', 404)
+    const related = relatedSnapshot.data() || {}
+    const primary = primarySnapshot.data() || {}
+    const sales = salesSnapshot.data() || {}
+    const salesNo = text(sales.salesNo)
+    if (text(related.source) !== 'erpSalesDelivery'
+      || text(related.sourceEventRole) !== 'related'
+      || text(related.sourceParentEventId) !== input.primaryEventId
+      || text(related.sourceId) !== sourceId
+      || !text(related.sourceSalesNo)
+      || text(related.sourceSalesNo) !== salesNo) {
+      throw requestError('附屬事件關聯已變更，請重新開啟後再試', 409)
+    }
+    if (text(primary.source) !== 'erpSalesDelivery'
+      || !['', 'primary'].includes(text(primary.sourceEventRole))
+      || text(primary.sourceParentEventId)
+      || text(primary.sourceId) !== sourceId) {
+      throw requestError('主事件關聯已變更，請重新開啟後再試', 409)
+    }
+    if (text(primary.sourceSalesNo) && text(primary.sourceSalesNo) !== salesNo) {
+      throw requestError('主事件與銷貨單號不一致，已停止同步', 409)
+    }
+    if (text(sales.deliveryCalendarEventId) !== input.primaryEventId) {
+      throw requestError('銷貨單主要事件指標不一致，已停止同步', 409)
+    }
+    if (!['外送', '施工', '活動'].includes(text(sales.shippingMethod))) {
+      throw requestError('此銷貨單已不是外送、施工或活動，請重新整理行事曆', 409)
+    }
+    if (!salesDeliverySyncEventFieldsMatch(related, input.expectedRelated)
+      || !salesDeliverySyncEventFieldsMatch(primary, input.expectedPrimary)) {
+      throw requestError('主事件或附屬事件已由其他畫面更新，請重新開啟後再修改', 409)
+    }
+
+    const linkedRelatedSnapshots = locationChanged
+      ? validRelatedSalesDeliveryEventSnapshots(linkedEventsSnapshot, sourceId, salesNo, input.primaryEventId)
+      : []
+    const siblingAddressSnapshots = linkedRelatedSnapshots.filter((snapshot) => (
+      snapshot.id !== input.relatedEventId
+      && text(snapshot.data()?.location) !== input.related.location
+    ))
+    const primaryNext = relatedSalesDeliveryPrimaryNext(
+      input.expectedRelated,
+      input.expectedPrimary,
+      input.related,
+    )
+    const salesPatch = locationChanged
+      ? { recipientAddress: input.related.location, recipientPostalCode: '' }
+      : {}
+    const changedFields = changedSalesDeliveryFields(sales, salesPatch)
+    const relatedChanges = salesDeliverySyncEventChanges(input.expectedRelated, input.related)
+    const primaryChanges = salesDeliverySyncEventChanges(input.expectedPrimary, primaryNext)
+    transaction.update(relatedRef, { ...input.related, updatedAt: nowIso })
+    transaction.update(primaryRef, { ...primaryNext, updatedAt: nowIso })
+    siblingAddressSnapshots.forEach((snapshot) => {
+      transaction.update(snapshot.ref, { location: input.related.location, updatedAt: nowIso })
+      writeRelatedSalesDeliveryAddressActivity(
+        transaction,
+        db,
+        snapshot,
+        input.related.location,
+        actor,
+        updatedBy,
+        input.requestId,
+        nowIso,
+      )
+    })
+    if (changedFields.length > 0) {
+      transaction.update(salesRef, {
+        ...salesPatch,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAtText,
+        updatedBy,
+      })
+      const salesAuditRef = db.collection('sales_audit_logs').doc()
+      transaction.set(salesAuditRef, {
+        salesId: salesSnapshot.id,
+        salesNo,
+        action: '行事曆關聯同步',
+        actorCode: text(actor.employee.empNo) || actor.employeeId,
+        actorName: updatedBy,
+        changedFields,
+        detail: `由附屬事件同步主事件：${changedFields.join('、')}${siblingAddressSnapshots.length > 0 ? `；同步 ${siblingAddressSnapshots.length} 個附屬事件地址` : ''}`,
+        requestId: input.requestId,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        createdAtText: updatedAtText,
+      })
+    }
+    for (const [snapshot, next, changes] of [
+      [relatedSnapshot, input.related, relatedChanges],
+      [primarySnapshot, primaryNext, primaryChanges],
+    ]) {
+      if (changes.length === 0) continue
+      const activityRef = db.collection('calendarActivityLogs').doc()
+      transaction.set(activityRef, {
+        action: 'update',
+        eventId: snapshot.id,
+        eventTitle: next.title,
+        calendarId: next.calendarIds[0] || next.calendarId,
+        departmentId: next.departmentId,
+        assigneeIds: next.assigneeIds,
+        date: next.date,
+        changes,
+        actorUid: text(actor.uid),
+        actorName: updatedBy,
+        requestId: input.requestId,
+        createdAt: nowIso,
+      })
+    }
+    const result = {
+      ok: true,
+      requestId: input.requestId,
+      relatedEventId: input.relatedEventId,
+      primaryEventId: input.primaryEventId,
+      salesId: salesSnapshot.id,
+      changedFields,
+      relatedChangedFields: relatedChanges.map((change) => change.field),
+      primaryChangedFields: primaryChanges.map((change) => change.field),
+      siblingAddressEventIds: siblingAddressSnapshots.map((snapshot) => snapshot.id),
+    }
+    transaction.set(requestRef, {
+      requestId: input.requestId,
+      fingerprint,
+      actorUid: text(actor.uid),
+      result,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    })
+    return { ...result, reused: false }
+  })
+}
+
 export async function syncSalesDeliveryEventFields(db, actor, body) {
+  if (isErpEventEditRestricted(actor.employeeId)) throw requestError('沒有 ERP 事件的編輯權限', 403)
   const input = normalizeSalesDeliveryEventSyncInput(body)
+  assertNonEmptyChangedSalesDeliveryLocation(input.expected, input.event)
+  const locationChanged = input.expected.location !== input.event.location
   const authorizedEvent = await loadEvent(db, input.eventId)
   if (!authorizedEvent || text(authorizedEvent.source) !== 'erpSalesDelivery') {
     throw requestError('找不到對應的銷貨單事件', 404)
+  }
+  if (text(authorizedEvent.sourceEventRole) === 'related' || text(authorizedEvent.sourceParentEventId)) {
+    throw requestError('附屬事件不可使用主事件同步操作', 409)
   }
   if (!await canManageEvent(db, actor, authorizedEvent, input.eventId)) {
     throw requestError('沒有此銷貨單事件的編輯權限', 403)
@@ -353,6 +718,7 @@ export async function syncSalesDeliveryEventFields(db, actor, body) {
   }
   const eventRef = db.collection('calendarEvents').doc(input.eventId)
   const salesRef = db.collection('sales').doc(sourceId)
+  const linkedEventsQuery = db.collection('calendarEvents').where('sourceId', '==', sourceId)
   const now = new Date()
   const nowIso = now.toISOString()
   const updatedAtText = taipeiDateTimeText(now)
@@ -363,9 +729,10 @@ export async function syncSalesDeliveryEventFields(db, actor, body) {
     || actor.employeeId
 
   return db.runTransaction(async (transaction) => {
-    const [eventSnapshot, salesSnapshot] = await Promise.all([
+    const [eventSnapshot, salesSnapshot, linkedEventsSnapshot] = await Promise.all([
       transaction.get(eventRef),
       transaction.get(salesRef),
+      locationChanged ? transaction.get(linkedEventsQuery) : Promise.resolve(null),
     ])
     if (!eventSnapshot.exists) throw requestError('行事曆事件已不存在', 404)
     if (!salesSnapshot.exists) throw requestError('對應的銷貨單已不存在', 404)
@@ -374,12 +741,18 @@ export async function syncSalesDeliveryEventFields(db, actor, body) {
     if (text(event.source) !== 'erpSalesDelivery' || text(event.sourceId) !== sourceId) {
       throw requestError('事件與銷貨單的綁定已變更，請重新開啟後再試', 409)
     }
+    if (text(event.sourceEventRole) === 'related' || text(event.sourceParentEventId)) {
+      throw requestError('附屬事件不可使用主事件同步操作', 409)
+    }
     if (text(event.sourceSalesNo) && text(sales.salesNo) !== text(event.sourceSalesNo)) {
       throw requestError('事件與銷貨單號不一致，已停止同步', 409)
     }
     const primaryEventId = text(sales.deliveryCalendarEventId)
     if (primaryEventId && primaryEventId !== input.eventId) {
       throw requestError('此事件不是銷貨單目前綁定的主要事件，已停止同步', 409)
+    }
+    if (!primaryEventId && input.eventId !== `erpSalesDelivery_${sourceId}`) {
+      throw requestError('銷貨單缺少主要事件指標，無法安全同步', 409)
     }
     if (!['外送', '施工', '活動'].includes(text(sales.shippingMethod))) {
       throw requestError('此銷貨單已不是外送、施工或活動，請重新整理行事曆', 409)
@@ -388,9 +761,30 @@ export async function syncSalesDeliveryEventFields(db, actor, body) {
       throw requestError('事件已由其他畫面更新，請重新開啟後再修改', 409)
     }
 
+    const relatedAddressSnapshots = locationChanged
+      ? validRelatedSalesDeliveryEventSnapshots(
+          linkedEventsSnapshot,
+          sourceId,
+          text(sales.salesNo),
+          input.eventId,
+        ).filter((snapshot) => text(snapshot.data()?.location) !== input.event.location)
+      : []
     const salesPatch = salesDeliveryPatchForEventChanges(input.expected, input.event, input.sales)
     const changedFields = changedSalesDeliveryFields(sales, salesPatch)
     transaction.update(eventRef, { ...input.event, updatedAt: nowIso })
+    relatedAddressSnapshots.forEach((snapshot) => {
+      transaction.update(snapshot.ref, { location: input.event.location, updatedAt: nowIso })
+      writeRelatedSalesDeliveryAddressActivity(
+        transaction,
+        db,
+        snapshot,
+        input.event.location,
+        actor,
+        updatedBy,
+        '',
+        nowIso,
+      )
+    })
     if (changedFields.length > 0) {
       transaction.update(salesRef, {
         ...salesPatch,
@@ -406,7 +800,7 @@ export async function syncSalesDeliveryEventFields(db, actor, body) {
         actorCode: text(actor.employee.empNo) || actor.employeeId,
         actorName: updatedBy,
         changedFields,
-        detail: `由行事曆同步：${changedFields.join('、')}`,
+        detail: `由行事曆同步：${changedFields.join('、')}${relatedAddressSnapshots.length > 0 ? `；同步 ${relatedAddressSnapshots.length} 個附屬事件地址` : ''}`,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
         createdAtText: updatedAtText,
       })
@@ -481,6 +875,7 @@ function salesAttachmentFileIds(sales) {
   return new Set((Array.isArray(sales?.attachments) ? sales.attachments : []).flatMap((attachment) => [
     text(attachment?.path),
     text(attachment?.thumbnailPath),
+    text(attachment?.sourceAttachmentId),
   ]).filter(Boolean))
 }
 
@@ -502,18 +897,72 @@ function attachmentBelongsToEvent(event, fileId) {
   ))
 }
 
+export function calendarAttachmentDeletePolicy({ fileId, appProperties = {}, job = null, event = null, sales = null }) {
+  const normalizedFileId = text(fileId)
+  const matchingAttachments = [
+    ...(Array.isArray(event?.attachments) ? event.attachments : []),
+    ...(Array.isArray(sales?.attachments) ? sales.attachments : []),
+  ].filter(attachment => [attachment?.path, attachment?.thumbnailPath, attachment?.sourceAttachmentId].some(id => text(id) === normalizedFileId))
+  if (text(appProperties.fulfillmentBatchId) || Array.isArray(job?.target?.fulfillmentOrders)
+    || matchingAttachments.some(attachment => text(attachment.fulfillmentBatchId))) {
+    return { action: 'retain', reason: 'shared-fulfillment-attachment' }
+  }
+  const metadataJobId = text(appProperties.attachmentUploadJobId)
+  const metadataEventId = text(appProperties.calendarEventId)
+  const jobEventId = text(job?.target?.eventId)
+  const jobProtectsFile = Boolean(
+    normalizedFileId
+    && metadataJobId
+    && text(job?.target?.completionMode) === 'fulfillment'
+    && text(job?.target?.uploadKind) === 'event'
+    && (!metadataEventId || !jobEventId || metadataEventId === jobEventId)
+    && !['failed', 'expired'].includes(text(job?.status))
+  )
+  if (jobProtectsFile) {
+    return { action: 'retain', reason: 'fulfillment-job-managed' }
+  }
+  if (text(event?.source) !== 'erpSalesDelivery') return { action: 'delete', reason: 'unmanaged' }
+  if (attachmentBelongsToEvent(event, normalizedFileId) || salesAttachmentFileIds(sales).has(normalizedFileId)) {
+    return { action: 'retain', reason: 'erp-sales-attachment-managed' }
+  }
+  return { action: 'delete', reason: 'unreferenced' }
+}
+
+export async function resolveCalendarAttachmentDeletePolicy(db, fileId, requestedEventId, appProperties) {
+  const jobId = text(appProperties?.attachmentUploadJobId)
+  const eventId = text(appProperties?.calendarEventId) || text(requestedEventId)
+  const [protectedFiles, legacyProtectedFiles] = await Promise.all([
+    db.collection('calendar_fulfillment_batches').where('protectedFileIds', 'array-contains', fileId).limit(1).get(),
+    db.collection('calendar_fulfillment_batches').where('attachmentIds', 'array-contains', fileId).limit(1).get(),
+  ])
+  if (!protectedFiles.empty || !legacyProtectedFiles.empty) return { action: 'retain', reason: 'shared-fulfillment-attachment' }
+  const [jobSnapshot, event] = await Promise.all([
+    jobId && !jobId.includes('/')
+      ? db.collection('attachmentUploadJobs').doc(jobId).get()
+      : Promise.resolve(null),
+    loadEvent(db, eventId),
+  ])
+  const job = jobSnapshot?.exists ? jobSnapshot.data() || {} : null
+  const sales = text(event?.source) === 'erpSalesDelivery'
+    ? await loadSalesRecordForEvent(db, event)
+    : null
+  return calendarAttachmentDeletePolicy({ fileId, appProperties, job, event, sales })
+}
+
 function lineImageSigningSecret() {
   return process.env.LINE_IMAGE_SIGNING_SECRET || getServiceAccountCredentials().private_key
 }
 
-function lineImageSignature(fileId, variant) {
+export function lineImageSignature(fileId, variant, expires) {
   return createHmac('sha256', lineImageSigningSecret())
-    .update(`${fileId}:${variant}`)
+    .update(`${fileId}:${variant}:${expires}`)
     .digest('hex')
 }
 
-function validLineImageSignature(fileId, variant, signature) {
-  const expected = Buffer.from(lineImageSignature(fileId, variant), 'hex')
+export function validLineImageSignature(fileId, variant, expires, signature, now = Math.floor(Date.now() / 1000)) {
+  if (!['original', 'preview', 'download'].includes(variant) || !Number.isSafeInteger(expires)
+    || expires <= now || expires > now + 86400 || !/^[a-f0-9]{64}$/.test(String(signature || ''))) return false
+  const expected = Buffer.from(lineImageSignature(fileId, variant, expires), 'hex')
   let received
   try {
     received = Buffer.from(String(signature || ''), 'hex')
@@ -552,12 +1001,32 @@ function salesAttachmentImageUrl(eventId, fileId, variant, expires) {
   return `/api/upload-drive?${params.toString()}`
 }
 
-function lineImageUrls(fileId) {
+export function lineImageUrls(fileId, expires = Math.floor(Date.now() / 1000) + 86400) {
   const baseUrl = (process.env.CALENDAR_PUBLIC_BASE_URL || DEFAULT_PUBLIC_BASE_URL).replace(/\/$/, '')
-  const url = (variant) => `${baseUrl}/api/upload-drive?fileId=${encodeURIComponent(fileId)}&variant=${variant}&signature=${lineImageSignature(fileId, variant)}`
+  const url = (variant) => `${baseUrl}/api/upload-drive?fileId=${encodeURIComponent(fileId)}&variant=${variant}&expires=${expires}&signature=${lineImageSignature(fileId, variant, expires)}`
   return {
     lineOriginalUrl: url('original'),
     linePreviewUrl: url('preview')
+  }
+}
+
+export async function assertPrivateDriveFolder(drive, folderId, fallbackFactory) {
+  const inspect = async (reader) => {
+    let pageToken
+    do {
+      const response = await reader.permissions.list({ fileId: folderId, supportsAllDrives: true, pageSize: 100,
+        fields: 'nextPageToken,permissions(type)', ...(pageToken ? { pageToken } : {}) })
+      if ((response.data.permissions || []).some((permission) => permission.type === 'anyone')) {
+        throw new Error('附件資料夾具有公開繼承權限，請先由管理員處理')
+      }
+      pageToken = response.data.nextPageToken
+    } while (pageToken)
+  }
+  try { await inspect(drive) } catch (error) {
+    if (![403, 404].includes(Number(error?.code || error?.response?.status))) throw error
+    // Drive OAuth 的 drive.file 範圍可操作子檔卻看不到父目錄，改用已授權的伺服器身分完整驗證。
+    const reader = fallbackFactory ? fallbackFactory() : google.drive({ version: 'v3', auth: new google.auth.GoogleAuth({ credentials: getServiceAccountCredentials(), scopes: ['https://www.googleapis.com/auth/drive'] }) })
+    await inspect(reader)
   }
 }
 
@@ -626,6 +1095,7 @@ function parsePhotoLocation(value) {
   }
   const latitude = Number(location?.latitude)
   const longitude = Number(location?.longitude)
+  const accuracy = Number(location?.accuracy)
   const locationSource = text(location?.source)
   if (
     !Number.isFinite(latitude)
@@ -634,12 +1104,13 @@ function parsePhotoLocation(value) {
     || !Number.isFinite(longitude)
     || longitude < -180
     || longitude > 180
-    || !['exif', 'manual'].includes(locationSource)
+    || !['exif', 'manual', 'device'].includes(locationSource)
   ) throw requestError('照片拍攝地點格式不正確', 400)
   return {
     latitude,
     longitude,
     source: locationSource,
+    ...(Number.isFinite(accuracy) && accuracy >= 0 ? { accuracy } : {}),
     ...(text(location?.label) ? { label: text(location.label).slice(0, 300) } : {})
   }
 }
@@ -668,6 +1139,26 @@ function isImage(file) {
 const MAX_BACKGROUND_IMAGE_BYTES = 50 * 1024 * 1024
 const BACKGROUND_COMPLETION_MODES = new Set(['fulfillment', 'production', 'none'])
 
+export function parseFulfillmentOrders(value, sourceEventId) {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.length < 2 || value.length > 20) throw requestError('合併配達需選擇 2～20 筆訂單', 400)
+  const orders = value.map((row) => {
+    const eventId = text(row?.eventId)
+    const salesId = text(row?.salesId)
+    const expectedShippingMethod = text(row?.expectedShippingMethod)
+    const expectedOrderStatus = text(row?.expectedOrderStatus)
+    if (!eventId || eventId.includes('/') || eventId.length > 200 || !salesId || salesId.includes('/') || salesId.length > 200
+      || expectedShippingMethod !== '外送' || !expectedOrderStatus || expectedOrderStatus.length > 100) {
+      throw requestError('合併配達訂單資料不正確', 400)
+    }
+    return { eventId, salesId, expectedShippingMethod, expectedOrderStatus }
+  }).sort((a, b) => a.eventId.localeCompare(b.eventId))
+  if (!orders.some(row => row.eventId === sourceEventId)
+    || new Set(orders.map(row => row.eventId)).size !== orders.length
+    || new Set(orders.map(row => row.salesId)).size !== orders.length) throw requestError('合併配達訂單重複或未包含照片訂單', 400)
+  return orders
+}
+
 export function parseAttachmentUploadJobRequest(body = {}) {
   const eventId = text(body.eventId)
   const name = text(body.originalName)
@@ -679,6 +1170,12 @@ export function parseAttachmentUploadJobRequest(body = {}) {
   const commentId = text(body.commentId)
   const fulfillmentBatchId = text(body.fulfillmentBatchId)
   const fulfillmentBatchSize = Number(body.fulfillmentBatchSize)
+  const fulfillmentOrders = parseFulfillmentOrders(body.fulfillmentOrders, eventId)
+  const fulfillmentRequestId = text(body.fulfillmentRequestId)
+  if (fulfillmentOrders && (completionMode !== 'fulfillment' || !/^[A-Za-z0-9-]{8,120}$/.test(fulfillmentRequestId))) {
+    throw requestError('合併配達識別碼或模式不正確', 400)
+  }
+  if (!fulfillmentOrders && fulfillmentRequestId) throw requestError('合併配達訂單不完整', 400)
   if (!eventId || eventId.includes('/') || eventId.length > 200) throw requestError('附件事件識別碼不正確', 400)
   if (!name || name.length > 500) throw requestError('照片檔名不正確', 400)
   if (!type.startsWith('image/') || type === 'image/svg+xml') throw requestError('外送／施工／活動完成只能上傳照片', 400)
@@ -722,7 +1219,8 @@ export function parseAttachmentUploadJobRequest(body = {}) {
     uploadKind,
     commentId: uploadKind === 'comment' ? commentId : '',
     fulfillmentBatchId: completionMode === 'fulfillment' ? fulfillmentBatchId : '',
-    fulfillmentBatchSize: completionMode === 'fulfillment' ? fulfillmentBatchSize : 0
+    fulfillmentBatchSize: completionMode === 'fulfillment' ? fulfillmentBatchSize : 0,
+    ...(fulfillmentOrders ? { fulfillmentOrders, fulfillmentRequestId } : {})
   }
 }
 
@@ -752,6 +1250,9 @@ export function attachmentFromUploadJob(jobId, job) {
     ...(text(job?.capture?.capturedAt) ? { capturedAt: text(job.capture.capturedAt) } : {}),
     ...(text(job?.capture?.capturedAtSource) ? { capturedAtSource: text(job.capture.capturedAtSource) } : {}),
     ...(job?.capture?.location && typeof job.capture.location === 'object' ? { location: job.capture.location } : {}),
+    ...(text(job?.uploadedByUid) ? { uploadedByUid: text(job.uploadedByUid) } : {}),
+    ...(text(job?.uploadedByEmployeeNo) ? { uploadedByEmployeeNo: text(job.uploadedByEmployeeNo) } : {}),
+    ...(text(job?.uploadedByName) ? { uploadedByName: text(job.uploadedByName) } : {}),
     ...lineImageUrls(fileId),
     uploadJobId: jobId
   }
@@ -764,13 +1265,23 @@ export function mergeProductionLineRetryAttachmentIds(previousRetry, completionM
   return Array.from(new Set([...existing, text(attachmentPath)].filter(Boolean)))
 }
 
-async function createAttachmentUploadJob(db, actor, body) {
+async function createAttachmentUploadJob(db, actor, body, req) {
   const request = parseAttachmentUploadJobRequest(body)
   await authorizeUpload(db, actor, {
     eventId: request.eventId,
     uploadKind: request.uploadKind,
     commentId: request.commentId,
   })
+  if (request.fulfillmentOrders) {
+    for (const order of request.fulfillmentOrders) await authorizeLineAction(db, actor, order)
+    const preflight = await forwardLineAction(req, {
+      action: 'complete-order-fulfillment', eventId: request.eventId,
+      orders: request.fulfillmentOrders, batchId: request.fulfillmentRequestId, preflight: true,
+    }, { canManageEvent: true })
+    if (preflight.status < 200 || preflight.status >= 300 || preflight.body?.ok !== true) {
+      throw requestError(text(preflight.body?.error?.message || preflight.body?.error) || '合併配達驗證失敗', preflight.status >= 400 ? preflight.status : 409)
+    }
+  }
   if (request.uploadKind === 'comment') {
     const commentSnapshot = await db.collection('calendarEvents')
       .doc(request.eventId)
@@ -797,6 +1308,8 @@ async function createAttachmentUploadJob(db, actor, body) {
         || text(existing.target?.commentId) !== request.commentId
         || text(existing.target?.fulfillmentBatchId) !== request.fulfillmentBatchId
         || Number(existing.target?.fulfillmentBatchSize || 0) !== request.fulfillmentBatchSize
+        || text(existing.target?.fulfillmentRequestId) !== text(request.fulfillmentRequestId)
+        || JSON.stringify(existing.target?.fulfillmentOrders || []) !== JSON.stringify(request.fulfillmentOrders || [])
         || text(existing.original?.name) !== request.name
         || Number(existing.original?.size) !== request.size
         || text(existing.original?.type) !== request.type
@@ -805,8 +1318,10 @@ async function createAttachmentUploadJob(db, actor, body) {
     }
     transaction.create(jobRef, {
       status: 'created',
+      ...(request.eventId !== 'draft-event' ? { autoCommitCalendarAttachment: true } : {}),
       uploaderUid: actor.uid,
       uploaderEmployeeId: actor.employeeId,
+      ...attachmentUploaderFields(actor),
       ...(request.clientUploadId ? { clientUploadId: request.clientUploadId } : {}),
       stagingPath,
       original: {
@@ -828,7 +1343,8 @@ async function createAttachmentUploadJob(db, actor, body) {
         completionMode: request.completionMode,
         ...(request.fulfillmentBatchId ? {
           fulfillmentBatchId: request.fulfillmentBatchId,
-          fulfillmentBatchSize: request.fulfillmentBatchSize
+          fulfillmentBatchSize: request.fulfillmentBatchSize,
+          ...(request.fulfillmentOrders ? { fulfillmentOrders: request.fulfillmentOrders, fulfillmentRequestId: request.fulfillmentRequestId } : {})
         } : {})
       },
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -868,7 +1384,7 @@ async function finalizeAttachmentUploadJob(db, actor, body) {
     const attachment = attachmentFromUploadJob(jobId, job)
     const event = { id: eventSnapshot.id, ...eventSnapshot.data() }
     if (uploadKind === 'comment') {
-      if (!await canViewEvent(db, actor, event)) throw requestError('沒有此事件的附件上傳權限', 403)
+      if (!await canReadCalendarEvent(db, actor, event)) throw requestError('沒有此事件的附件上傳權限', 403)
       const commentId = text(job.target?.commentId)
       if (!commentId || commentId.includes('/') || commentId.length > 200) {
         throw requestError('留言識別碼不正確', 409)
@@ -1011,26 +1527,28 @@ async function renderLineImage(req, res) {
   const requestUrl = new URL(req.url || '/', 'http://localhost')
   const fileId = typeof req.query?.fileId === 'string' ? req.query.fileId.trim() : String(requestUrl.searchParams.get('fileId') || '').trim()
   const requestedVariant = typeof req.query?.variant === 'string' ? req.query.variant : requestUrl.searchParams.get('variant')
-  const variant = requestedVariant === 'preview' ? 'preview' : 'original'
+  const variant = requestedVariant
+  const expires = Number(typeof req.query?.expires === 'string' ? req.query.expires : requestUrl.searchParams.get('expires'))
   const signature = typeof req.query?.signature === 'string' ? req.query.signature : requestUrl.searchParams.get('signature') || ''
-  if (!fileId || !validLineImageSignature(fileId, variant, signature)) {
+  if (!fileId || !validLineImageSignature(fileId, variant, expires, signature)) {
     res.status(403).json({ error: 'Invalid image signature' })
     return
   }
 
   const drive = google.drive({ version: 'v3', auth: getDriveAuth() })
   const metadata = await drive.files.get({ fileId, fields: 'mimeType', supportsAllDrives: true })
-  if (!metadata.data.mimeType?.startsWith('image/')) {
+  if (variant !== 'download' && !metadata.data.mimeType?.startsWith('image/')) {
     res.status(415).json({ error: 'Unsupported image type' })
     return
   }
   const source = await drive.files.get({ fileId, alt: 'media', supportsAllDrives: true }, { responseType: 'arraybuffer' })
   const input = Buffer.from(source.data)
-  const output = await createLineJpeg(input, variant)
+  const output = variant === 'download' ? input : await createLineJpeg(input, variant)
 
-  res.setHeader('Content-Type', 'image/jpeg')
+  if (variant === 'download') res.setHeader('Content-Disposition', 'attachment')
+  res.setHeader('Content-Type', variant === 'download' ? 'application/octet-stream' : 'image/jpeg')
   res.setHeader('Content-Length', String(output.length))
-  res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
+  res.setHeader('Cache-Control', 'private, no-store')
   res.setHeader('X-Content-Type-Options', 'nosniff')
   res.status(200).end(output)
 }
@@ -1108,7 +1626,7 @@ async function salesAttachmentCenterResponse(db, actor, body) {
         provider: 'google-drive',
         ...(text(attachment.capturedAt) ? { capturedAt: text(attachment.capturedAt) } : {}),
         ...(text(attachment.capturedAtSource) ? { capturedAtSource: text(attachment.capturedAtSource) } : {}),
-        ...(text(attachment.uploadedAt) ? { uploadedAt: text(attachment.uploadedAt) } : {}),
+        ...salesAttachmentUploadMetadata(attachment),
         ...(attachment.location && typeof attachment.location === 'object' ? { location: attachment.location } : {}),
         linePreviewUrl: salesAttachmentImageUrl(event.id, previewFileId, 'preview', expires),
         lineOriginalUrl: salesAttachmentImageUrl(event.id, fileId, 'original', expires),
@@ -1120,18 +1638,29 @@ async function salesAttachmentCenterResponse(db, actor, body) {
 
 export function buildForwardedLineActionBody(body) {
   const action = String(body.action || '')
-  return action === 'record-fulfillment-cash-payment'
-    ? {
-        action,
-        eventId: body.eventId,
-        amount: body.amount,
-        idempotencyKey: body.idempotencyKey
-      }
-    : {
-        action,
-        eventId: body.eventId,
-        attachmentIds: body.attachmentIds
-      }
+  if (action === 'record-fulfillment-cash-payment') {
+    return {
+      action,
+      eventId: body.eventId,
+      amount: body.amount,
+      idempotencyKey: body.idempotencyKey
+    }
+  }
+  if (action === 'complete-order-fulfillment') {
+    return {
+      action,
+      eventId: body.eventId,
+      attachmentIds: body.attachmentIds,
+      expectedShippingMethod: body.expectedShippingMethod,
+      expectedOrderStatus: body.expectedOrderStatus,
+      ...(body.orders !== undefined ? { orders: body.orders, batchId: body.batchId, ...(body.preflight === true ? { preflight: true } : {}) } : {})
+    }
+  }
+  return {
+    action,
+    eventId: body.eventId,
+    attachmentIds: body.attachmentIds
+  }
 }
 
 export function isForwardedLineAction(action) {
@@ -1175,7 +1704,7 @@ async function forwardLineAction(req, body, authorization) {
   }
 }
 
-async function authorizeUpload(db, actor, fields) {
+export async function authorizeUpload(db, actor, fields) {
   const eventId = fieldText(fields.eventId)
   const uploadKind = fieldText(fields.uploadKind)
   const commentId = fieldText(fields.commentId)
@@ -1191,7 +1720,7 @@ async function authorizeUpload(db, actor, fields) {
   if (!event) throw requestError('找不到附件對應的行事曆事件', 404)
   if (uploadKind === 'comment') {
     if (!commentId || commentId.includes('/') || commentId.length > 200) throw requestError('留言識別碼不正確', 400)
-    if (!await canViewEvent(db, actor, event)) throw requestError('沒有此事件的附件上傳權限', 403)
+    if (!await canReadCalendarEvent(db, actor, event)) throw requestError('沒有此事件的附件上傳權限', 403)
     return { eventId, uploadKind: 'comment', commentId }
   }
   if (
@@ -1201,20 +1730,65 @@ async function authorizeUpload(db, actor, fields) {
   return { eventId, uploadKind: 'event', commentId: '' }
 }
 
-async function createBackgroundComment(db, actor, body) {
+export async function resolveBackgroundCommentAttachments(drive, actor, eventId, commentId, attachments = []) {
+  if (!Array.isArray(attachments) || attachments.length > 10) throw requestError('留言附件數量不正確', 400)
+  const ids = attachments.map((item) => text(item?.path))
+  if (ids.some((id) => !/^[A-Za-z0-9_-]{10,200}$/.test(id)) || new Set(ids).size !== ids.length) {
+    throw requestError('留言附件識別碼不正確', 400)
+  }
+  return Promise.all(ids.map(async (id) => {
+    const response = await drive.files.get({
+      fileId: id,
+      fields: 'id,name,mimeType,size,createdTime,webViewLink,appProperties,trashed',
+      supportsAllDrives: true,
+    })
+    const file = response.data || {}
+    const properties = file.appProperties || {}
+    if (file.trashed || text(file.id) !== id
+      || text(properties.calendarUploaderUid) !== actor.uid
+      || text(properties.calendarEventId) !== eventId
+      || text(properties.calendarCommentId) !== commentId
+      || text(properties.calendarUploadKind) !== 'comment') {
+      throw requestError('沒有此留言附件的使用權限', 403)
+    }
+    // 混合留言只接收既有上傳的檔案識別碼，不採用瀏覽器提供的網址或檔案屬性。
+    return {
+      name: text(file.name),
+      originalName: text(file.name),
+      path: id,
+      url: `https://drive.google.com/file/d/${id}/view`,
+      type: text(file.mimeType) || 'application/octet-stream',
+      size: Math.max(0, Number(file.size) || 0),
+      provider: 'google-drive',
+      ...attachmentUploaderFields(actor),
+      ...(text(file.createdTime) ? { uploadedAt: text(file.createdTime) } : {}),
+    }
+  }))
+}
+
+export async function createBackgroundComment(db, actor, body) {
   const eventId = text(body.eventId)
   const commentId = text(body.commentId)
   const commentText = typeof body.text === 'string' ? body.text.trim() : ''
-  const pendingAttachmentCount = Number(body.pendingAttachmentCount)
+  const pendingAttachmentCount = Number(body.pendingAttachmentCount ?? 0)
+  const requestedAttachments = body.attachments ?? []
+  if (!Array.isArray(requestedAttachments) || requestedAttachments.length + pendingAttachmentCount > 10) {
+    throw requestError('每則留言最多可附加 10 個附件', 400)
+  }
   if (!eventId || eventId.includes('/') || eventId.length > 200) throw requestError('留言事件識別碼不正確', 400)
   if (!commentId || commentId.includes('/') || commentId.length > 200) throw requestError('留言識別碼不正確', 400)
   if (commentText.length > 5000) throw requestError('留言文字最多 5000 字', 400)
-  if (!Number.isSafeInteger(pendingAttachmentCount) || pendingAttachmentCount < 1 || pendingAttachmentCount > 10) {
+  if (!Number.isSafeInteger(pendingAttachmentCount) || pendingAttachmentCount < 0 || pendingAttachmentCount > 10) {
     throw requestError('每則留言最多可附加 10 張照片', 400)
   }
+  if (!commentText && !requestedAttachments.length && pendingAttachmentCount === 0) throw requestError('請輸入留言或附加檔案', 400)
   const event = await loadEvent(db, eventId)
   if (!event) throw requestError('找不到附件對應的行事曆事件', 404)
-  if (!await canViewEvent(db, actor, event)) throw requestError('沒有此事件的留言權限', 403)
+  if (!await canReadCalendarEvent(db, actor, event)) throw requestError('沒有此事件的留言權限', 403)
+  const attachments = requestedAttachments.length
+    ? await resolveBackgroundCommentAttachments(google.drive({ version: 'v3', auth: getDriveAuth() }), actor, eventId, commentId, requestedAttachments)
+    : []
+  const initialAttachmentPaths = attachments.map((attachment) => attachment.path)
   const authorName = text(actor.employee.name)
     || text(actor.employee.nickname)
     || text(actor.decoded?.name)
@@ -1228,7 +1802,8 @@ async function createBackgroundComment(db, actor, body) {
       if (
         text(existing.authorUid) !== actor.uid
         || text(existing.text) !== commentText
-        || Number(existing.pendingAttachmentCount) !== pendingAttachmentCount
+        || Number(existing.initialPendingAttachmentCount ?? existing.pendingAttachmentCount) !== pendingAttachmentCount
+        || JSON.stringify(existing.initialAttachmentPaths || []) !== JSON.stringify(initialAttachmentPaths)
       ) throw requestError('留言識別碼衝突', 409)
       return
     }
@@ -1237,13 +1812,43 @@ async function createBackgroundComment(db, actor, body) {
       authorEmployeeId: actor.employeeId,
       authorName,
       text: commentText,
-      attachments: [],
+      attachments,
+      initialAttachmentPaths,
+      initialPendingAttachmentCount: pendingAttachmentCount,
       pendingAttachmentCount,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     })
   })
   return { ok: true, commentId }
+}
+
+export async function commitDevelopmentCommentAttachment(db, actor, body, suppliedDrive) {
+  const eventId = text(body.eventId)
+  const commentId = text(body.commentId)
+  if (!eventId || eventId.includes('/') || eventId.length > 200
+    || !commentId || commentId.includes('/') || commentId.length > 200) throw requestError('留言識別碼不正確', 400)
+  const event = await loadEvent(db, eventId)
+  if (!event || !await canReadCalendarEvent(db, actor, event)) throw requestError('沒有此事件的留言權限', 403)
+  const drive = suppliedDrive || google.drive({ version: 'v3', auth: getDriveAuth() })
+  const [attachment] = await resolveBackgroundCommentAttachments(drive, actor, eventId, commentId, [{ path: body.fileId }])
+  const commentRef = db.collection('calendarEvents').doc(eventId).collection('comments').doc(commentId)
+  await db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(commentRef)
+    if (!snapshot.exists) throw requestError('找不到附件對應的留言', 404)
+    const comment = snapshot.data() || {}
+    if (comment.authorUid !== actor.uid || comment.authorEmployeeId !== actor.employeeId) throw requestError('只能更新自己的留言附件', 403)
+    const attachments = Array.isArray(comment.attachments) ? comment.attachments : []
+    if (attachments.some((item) => item.path === attachment.path)) return
+    const pending = Number(comment.pendingAttachmentCount)
+    if (!Number.isSafeInteger(pending) || pending < 1 || attachments.length >= 10) throw requestError('留言沒有待上傳的附件欄位', 409)
+    transaction.update(commentRef, {
+      attachments: [...attachments, attachment],
+      pendingAttachmentCount: pending - 1,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    })
+  })
+  return { ok: true, commentId, attachment }
 }
 
 async function authorizeDelete(db, actor, fileId, requestedEventId, appProperties) {
@@ -1280,7 +1885,60 @@ async function authorizeDelete(db, actor, fileId, requestedEventId, appPropertie
   throw requestError('舊附件缺少所有權資料，僅管理員可刪除', 403)
 }
 
-async function authorizeLineAction(db, actor, body) {
+export async function fulfillmentSelectionStatus(db, actor, body) {
+  const requestedIds = body?.eventIds
+  if (!Array.isArray(requestedIds) || requestedIds.length < 1 || requestedIds.length > 20
+    || requestedIds.some((id) => typeof id !== 'string' || !id.trim() || id !== id.trim()
+      || id.includes('/') || id.length > 200 || /[\u0000-\u001f\u007f]/u.test(id))) {
+    throw requestError('請提供 1 至 20 筆有效的行事曆事件識別碼', 400)
+  }
+  const eventIds = [...new Set(requestedIds)]
+  const results = new Array(eventIds.length)
+  let cursor = 0
+  const worker = async () => {
+    while (cursor < eventIds.length) {
+      const index = cursor++
+      const eventId = eventIds[index]
+      try {
+        const event = await loadEvent(db, eventId)
+        if (!event || text(event.source) !== 'erpSalesDelivery') throw requestError('找不到對應的銷貨單事件', 404)
+        if (!await canViewEvent(db, actor, event)) throw requestError('沒有查看此銷貨單事件的權限', 403)
+        if (!await canManageEvent(db, actor, event, eventId)
+          && !await canOperateErpOrderFulfillment(db, actor, event)) {
+          throw requestError('沒有配達回報權限', 403)
+        }
+        if (text(event.sourceEventRole) === 'related' || text(event.sourceParentEventId)) {
+          throw requestError('附屬事件不能執行合併配達回報', 400)
+        }
+        const salesId = text(event.sourceId)
+        if (!salesId || salesId.includes('/') || salesId.length > 200) throw requestError('事件缺少有效的銷貨單資料', 409)
+        // 僅以事件保存的精確識別碼查單，避免舊單號相似或重複時誤選。
+        const snapshot = await db.collection('sales').doc(salesId).get()
+        if (!snapshot.exists) throw requestError('找不到事件對應的銷貨單', 404)
+        const sales = snapshot.data() || {}
+        if (sales.deleted === true || sales.isDeleted === true || sales.deletedAt || sales.voided === true
+          || ['作廢', '刪除', '已刪除', '取消', '已取消', 'cancelled', 'canceled', 'void', 'voided', 'deleted']
+            .includes(text(sales.status).toLowerCase())) {
+          throw requestError('作廢或刪除的訂單不可配達', 409)
+        }
+        // 與 ERP 完成訂單的狀態正規化一致，空白舊單仍可使用「未設定」送出預期狀態。
+        const orderStatus = text(sales.orderStatus) || '未設定'
+        results[index] = { eventId, salesId, status: {
+          canCompleteOrder: true,
+          shippingMethod: text(sales.shippingMethod),
+          orderStatus: orderStatus === '已送出' ? '已寄出' : orderStatus,
+        } }
+      } catch (error) {
+        results[index] = { eventId, message: Number(error?.status) >= 400 && Number(error?.status) < 500
+          ? error.message : '訂單狀態讀取失敗，請稍後再試' }
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(4, eventIds.length) }, worker))
+  return { ok: true, statuses: results.filter((result) => result.status), errors: results.filter((result) => !result.status) }
+}
+
+export async function authorizeLineAction(db, actor, body) {
   const eventId = text(body.eventId)
   const event = await loadEvent(db, eventId)
   if (!event || text(event.source) !== 'erpSalesDelivery') throw requestError('找不到對應的銷貨單事件', 404)
@@ -1296,6 +1954,31 @@ async function authorizeLineAction(db, actor, body) {
     && !await canOperateErpOrderFulfillment(db, actor, event)
   ) throw requestError('沒有操作此銷貨單事件的權限', 403)
   return { canManageEvent: true }
+}
+
+export async function calendarAttachmentLinks(db, actor, body) {
+  const eventId = text(body.eventId)
+  const fileIds = body.fileIds
+  if (!eventId || eventId.includes('/') || !Array.isArray(fileIds) || fileIds.length < 1 || fileIds.length > 20
+    || fileIds.some((id) => typeof id !== 'string' || !/^[A-Za-z0-9_-]{10,200}$/.test(id))) {
+    throw requestError('附件識別碼不正確', 400)
+  }
+  const event = await loadEvent(db, eventId)
+  if (!event || !await canReadCalendarEvent(db, actor, event)) throw requestError('沒有此事件的附件讀取權限', 403)
+  const attachments = [...(event.attachments || [])]
+  if (fileIds.some((id) => !attachments.some((item) => item.path === id || item.thumbnailPath === id))) {
+    const comments = await db.collection('calendarEvents').doc(eventId).collection('comments').get()
+    for (const comment of comments.docs) attachments.push(...(comment.data().attachments || []))
+  }
+  if (fileIds.some((id) => !attachments.some((item) => item.path === id || item.thumbnailPath === id))) {
+    throw requestError('附件不屬於此事件', 403)
+  }
+  const expires = Math.floor(Date.now() / 1000) + 600
+  return { expiresAt: expires * 1000, links: fileIds.map((fileId) => ({
+    fileId,
+    ...lineImageUrls(fileId, expires),
+    downloadUrl: `${(process.env.CALENDAR_PUBLIC_BASE_URL || DEFAULT_PUBLIC_BASE_URL).replace(/\/$/, '')}/api/upload-drive?fileId=${encodeURIComponent(fileId)}&variant=download&expires=${expires}&signature=${lineImageSignature(fileId, 'download', expires)}`,
+  })) }
 }
 
 export default async function handler(req, res) {
@@ -1344,6 +2027,11 @@ export default async function handler(req, res) {
         })
         const appProperties = metadata.data.appProperties || {}
         await authorizeDelete(db, actor, fileId, eventId, appProperties)
+        const deletePolicy = await resolveCalendarAttachmentDeletePolicy(db, fileId, eventId, appProperties)
+        if (deletePolicy.action === 'retain') {
+          res.status(200).json({ ok: true, retained: true, reason: deletePolicy.reason })
+          return
+        }
         await drive.files.delete({ fileId })
       } catch (error) {
         if (error && typeof error === 'object' && 'code' in error && error.code === 404) {
@@ -1359,8 +2047,17 @@ export default async function handler(req, res) {
 
     if (req.headers['content-type']?.includes('application/json')) {
       const body = await parseJsonBody(req)
+      if (body.action === 'calendar-attachment-links') {
+        res.setHeader('Cache-Control', 'no-store')
+        res.status(200).json(await calendarAttachmentLinks(db, actor, body))
+        return
+      }
       if (body.action === 'create-attachment-upload-job') {
-        res.status(201).json(await createAttachmentUploadJob(db, actor, body))
+        res.status(201).json(await createAttachmentUploadJob(db, actor, body, req))
+        return
+      }
+      if (body.action === 'commit-development-comment-attachment') {
+        res.status(200).json(await commitDevelopmentCommentAttachment(db, actor, body))
         return
       }
       if (body.action === 'create-background-comment') {
@@ -1371,6 +2068,11 @@ export default async function handler(req, res) {
         res.status(200).json(await finalizeAttachmentUploadJob(db, actor, body))
         return
       }
+      if (body.action === 'fulfillment-selection-status') {
+        res.setHeader('Cache-Control', 'private, no-store')
+        res.status(200).json(await fulfillmentSelectionStatus(db, actor, body))
+        return
+      }
       if (body.action === 'sales-attachments') {
         res.setHeader('Cache-Control', 'private, no-store')
         res.status(200).json(await salesAttachmentCenterResponse(db, actor, body))
@@ -1378,6 +2080,10 @@ export default async function handler(req, res) {
       }
       if (body.action === SALES_DELIVERY_EVENT_SYNC_ACTION) {
         res.status(200).json(await syncSalesDeliveryEventFields(db, actor, body))
+        return
+      }
+      if (body.action === RELATED_SALES_DELIVERY_EVENT_SYNC_ACTION) {
+        res.status(200).json(await syncRelatedSalesDeliveryEventFields(db, actor, body))
         return
       }
       if (!isForwardedLineAction(body.action)) {
@@ -1401,6 +2107,8 @@ export default async function handler(req, res) {
     const drive = google.drive({ version: 'v3', auth })
     const folderId = process.env.GOOGLE_DRIVE_CALENDAR_FOLDER_ID || DEFAULT_DRIVE_FOLDER_ID
     const uploadContext = await authorizeUpload(db, actor, fields)
+    await assertPrivateDriveFolder(drive, folderId)
+    const uploaderFields = attachmentUploaderFields(actor)
     const clientUploadId = fieldText(fields.clientUploadId)
     if (clientUploadId && !/^[A-Za-z0-9-]{8,120}$/.test(clientUploadId)) {
       throw requestError('照片佇列識別碼不正確', 400)
@@ -1450,17 +2158,7 @@ export default async function handler(req, res) {
         })
         driveFile = created.data
 
-        try {
-          await drive.permissions.create({
-            fileId: driveFile.id,
-            requestBody: {
-              type: 'anyone',
-              role: 'reader'
-            }
-          })
-        } catch {
-          // 若雲端硬碟政策不允許公開連結，仍保留檔案的 Drive 連結。
-        }
+
       }
 
       attachments.push({
@@ -1473,6 +2171,7 @@ export default async function handler(req, res) {
         originalName: prepared.originalName,
         originalSize: prepared.originalSize,
         optimized: prepared.optimized,
+        ...uploaderFields,
         ...(prepared.capturedAt ? { capturedAt: prepared.capturedAt } : {}),
         ...(prepared.capturedAtSource ? { capturedAtSource: prepared.capturedAtSource } : {}),
         ...(prepared.location ? { location: prepared.location } : {}),

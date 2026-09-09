@@ -1,13 +1,14 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useState } from 'react'
-import dayjs from 'dayjs'
-import { collection, getDocs, limit, onSnapshot, orderBy, query, where } from 'firebase/firestore'
+import { useEffect } from 'react'
+import { doc, onSnapshot } from 'firebase/firestore'
 import { db } from '../lib/firebase'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import dayjs from 'dayjs'
+import { useAuth } from '../contexts/AuthContext'
+import { fetchCalendarData } from '../lib/calendarDataApi'
 import { readLocalQueryCache, writeLocalQueryCache } from '../lib/localQueryCache'
 import type { CalendarActivityLog, CalendarEvent, CalendarGroup } from '../types'
 
 const EVENT_ARCHIVE_CACHE_KEY = 'calendarEventsArchive'
-const EVENT_ARCHIVE_MONTH_CACHE_KEY = 'calendarEventsArchiveMonths'
 const EVENT_SEARCH_CACHE_KEY = 'calendarEventsSearchIndex'
 const REPEAT_VALUES: NonNullable<CalendarEvent['repeat']>[] = ['daily', 'weekly', 'weekdays', 'monthly', 'monthlyNthWeekday', 'monthlyDay', 'yearly', 'custom']
 
@@ -51,185 +52,91 @@ function cachedEventsInRange(startDate: string, endDate: string) {
   return sortEvents(cached.filter((event) => eventOverlapsRange(event, startDate, endDate)))
 }
 
-function cachedArchiveMonths() {
-  return new Set(readLocalQueryCache<string[]>(EVENT_ARCHIVE_MONTH_CACHE_KEY) ?? [])
-}
-
-function markArchiveMonthCached(monthKey: string) {
-  const months = cachedArchiveMonths()
-  months.add(monthKey)
-  writeLocalQueryCache(EVENT_ARCHIVE_MONTH_CACHE_KEY, Array.from(months).slice(-36))
-}
-
 export function useCalendarGroups() {
+  const { user } = useAuth()
   return useQuery({
-    queryKey: ['calendarCalendars'],
+    queryKey: ['calendarCalendars', user?.uid],
+    enabled: Boolean(user),
     queryFn: async () => {
-      const snap = await getDocs(collection(db, 'calendarCalendars'))
-      const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() })) as CalendarGroup[]
+      const rows = await fetchCalendarData<CalendarGroup>('groups')
       const sorted = rows.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'))
       writeLocalQueryCache('calendarCalendars', sorted)
       return sorted
     },
     placeholderData: () => readLocalQueryCache<CalendarGroup[]>('calendarCalendars') ?? [],
-    staleTime: 2 * 60 * 1000
+    staleTime: 2 * 60 * 1000,
   })
 }
 
 export function useCalendarEvents(activeMonth: string) {
+  const { user } = useAuth()
   const queryClient = useQueryClient()
+  useEffect(() => {
+    if (!user) return
+    let previous: number | undefined
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const unsubscribe = onSnapshot(doc(db, 'calendarDataRevisions', 'global'), snapshot => {
+      const version = Number(snapshot.data()?.version || 0)
+      if (previous === undefined) { previous = version; return }
+      if (previous === version) return
+      previous = version
+      clearTimeout(timer)
+      timer = setTimeout(() => {
+        for (const key of ['calendarEvents', 'calendarEventsSearchIndex', 'calendarActivityLogs', 'calendarCalendars']) {
+          void queryClient.invalidateQueries({ queryKey: [key] }, { cancelRefetch: false })
+        }
+        window.dispatchEvent(new Event('calendar-data-revision'))
+      }, 300)
+    }, () => { /* 版本提示失敗時由 focus 與有界輪詢補查。 */ })
+    return () => { unsubscribe(); clearTimeout(timer) }
+  }, [user?.uid, queryClient])
   const monthValue = dayjs(activeMonth || dayjs().format('YYYY-MM')).startOf('month')
   const startDate = monthValue.subtract(2, 'month').startOf('month').format('YYYY-MM-DD')
   const endDate = monthValue.add(2, 'month').endOf('month').format('YYYY-MM-DD')
-  const queryKey = ['calendarEvents', startDate, endDate]
-
-  const result = useQuery({
-    queryKey,
-    queryFn: async () => {
-      const [rangeSnap, repeatSnap] = await Promise.all([
-        getDocs(query(
-          collection(db, 'calendarEvents'),
-          where('date', '>=', startDate),
-          where('date', '<=', endDate)
-        )),
-        getDocs(query(
-          collection(db, 'calendarEvents'),
-          where('repeat', 'in', REPEAT_VALUES)
-        )),
+  return useQuery<CalendarEvent[]>({
+    queryKey: ['calendarEvents', user?.uid, startDate, endDate],
+    enabled: Boolean(user),
+    queryFn: async ({ signal }) => {
+      const [rangeRows, repeatRows] = await Promise.all([
+        fetchCalendarData<CalendarEvent>('events', { start: startDate, end: endDate }, Infinity, signal),
+        fetchCalendarData<CalendarEvent>('repeat', {}, Infinity, signal),
       ])
-      const map = new Map<string, CalendarEvent>()
-      rangeSnap.docs.forEach((d) => map.set(d.id, { id: d.id, ...d.data() } as CalendarEvent))
-      const repeatRows = repeatSnap.docs.map((d) => ({ id: d.id, ...d.data() })) as CalendarEvent[]
-      repeatRows.forEach((event) => {
-        if (event.date <= endDate) map.set(event.id, event)
-      })
-      const rows = Array.from(map.values())
-      const sorted = sortEvents(rows)
+      const map = new Map(rangeRows.map(event => [event.id, event]))
+      repeatRows.filter(event => event.date <= endDate).forEach(event => map.set(event.id, event))
+      const sorted = sortEvents(Array.from(map.values()))
       mergeEventArchive(sorted, { startDate, endDate }, repeatRows)
       return sorted
     },
     placeholderData: () => cachedEventsInRange(startDate, endDate),
     refetchOnWindowFocus: 'always',
-    staleTime: 60 * 1000
+    refetchInterval: 60000,
+    staleTime: 10000,
   })
-
-  useEffect(() => {
-    let rangeRows: CalendarEvent[] | null = null
-    let repeatRows: CalendarEvent[] | null = null
-    let unsubscribeRange: (() => void) | null = null
-    let unsubscribeRepeat: (() => void) | null = null
-
-    const publishRows = () => {
-      if (!rangeRows || !repeatRows) return
-      const map = new Map<string, CalendarEvent>()
-      rangeRows.forEach((event) => map.set(event.id, event))
-      repeatRows.forEach((event) => {
-        if (event.date <= endDate) map.set(event.id, event)
-      })
-      const sorted = sortEvents(Array.from(map.values()))
-      mergeEventArchive(sorted, { startDate, endDate }, repeatRows)
-      queryClient.setQueryData(queryKey, sorted)
-    }
-
-    const rangeQuery = query(
-      collection(db, 'calendarEvents'),
-      where('date', '>=', startDate),
-      where('date', '<=', endDate)
-    )
-    const repeatQuery = query(
-      collection(db, 'calendarEvents'),
-      where('repeat', 'in', REPEAT_VALUES)
-    )
-
-    const timer = window.setTimeout(() => {
-      unsubscribeRange = onSnapshot(rangeQuery, (snap) => {
-        rangeRows = snap.docs.map((d) => ({ id: d.id, ...d.data() })) as CalendarEvent[]
-        publishRows()
-      }, (error) => {
-        console.warn('[calendar] range listener failed', error)
-        void queryClient.invalidateQueries({ queryKey })
-      })
-      unsubscribeRepeat = onSnapshot(repeatQuery, (snap) => {
-        repeatRows = snap.docs.map((d) => ({ id: d.id, ...d.data() })) as CalendarEvent[]
-        publishRows()
-      }, (error) => {
-        console.warn('[calendar] repeat listener failed', error)
-        void queryClient.invalidateQueries({ queryKey })
-      })
-    }, 5000)
-
-    return () => {
-      window.clearTimeout(timer)
-      unsubscribeRange?.()
-      unsubscribeRepeat?.()
-    }
-  }, [endDate, queryClient, startDate])
-
-  useEffect(() => {
-    if (!activeMonth) return
-    let cancelled = false
-    const timer = window.setTimeout(async () => {
-      const months = [3, 4].map((offset) => monthValue.subtract(offset, 'month').format('YYYY-MM'))
-      for (const monthKey of months) {
-        if (cancelled || cachedArchiveMonths().has(monthKey)) continue
-        const monthStart = dayjs(monthKey).startOf('month').format('YYYY-MM-DD')
-        const monthEnd = dayjs(monthKey).endOf('month').format('YYYY-MM-DD')
-        try {
-          const snap = await getDocs(query(
-            collection(db, 'calendarEvents'),
-            where('date', '>=', monthStart),
-            where('date', '<=', monthEnd)
-          ))
-          mergeEventArchive(snap.docs.map((d) => ({ id: d.id, ...d.data() })) as CalendarEvent[], { startDate: monthStart, endDate: monthEnd })
-          markArchiveMonthCached(monthKey)
-        } catch {
-          break
-        }
-      }
-    }, 8000)
-    return () => {
-      cancelled = true
-      window.clearTimeout(timer)
-    }
-  }, [activeMonth])
-
-  return result
 }
 
 export function useCalendarSearchEvents(enabled: boolean) {
+  const { user } = useAuth()
   return useQuery({
-    queryKey: ['calendarEventsSearchIndex'],
-    enabled,
-    queryFn: async () => {
-      const snap = await getDocs(collection(db, 'calendarEvents'))
-      const rows = sortEvents(snap.docs.map((d) => ({ id: d.id, ...d.data() })) as CalendarEvent[])
+    queryKey: ['calendarEventsSearchIndex', user?.uid],
+    enabled: enabled && Boolean(user),
+    queryFn: async ({ signal }) => {
+      const rows = sortEvents(await fetchCalendarData<CalendarEvent>('events', {}, Infinity, signal))
       writeLocalQueryCache(EVENT_SEARCH_CACHE_KEY, rows)
       mergeEventArchive(rows)
       return rows
     },
-    placeholderData: () => readLocalQueryCache<CalendarEvent[]>(EVENT_SEARCH_CACHE_KEY),
-    staleTime: 5 * 60 * 1000
+    staleTime: 5 * 60 * 1000,
   })
 }
 
 export function useCalendarActivityLogs(enabled = true) {
-  const [data, setData] = useState<CalendarActivityLog[]>([])
-  const [isLoading, setIsLoading] = useState(enabled)
-
-  useEffect(() => {
-    if (!enabled) {
-      setIsLoading(false)
-      return
-    }
-    setIsLoading(true)
-    const q = query(collection(db, 'calendarActivityLogs'), orderBy('createdAt', 'desc'), limit(40))
-    return onSnapshot(q, (snap) => {
-      setData(snap.docs.map((d) => ({ id: d.id, ...d.data() })) as CalendarActivityLog[])
-      setIsLoading(false)
-    }, () => {
-      setIsLoading(false)
-    })
-  }, [enabled])
-
-  return { data, isLoading }
+  const { user } = useAuth()
+  return useQuery({
+    queryKey: ['calendarActivityLogs', user?.uid],
+    enabled: enabled && Boolean(user),
+    queryFn: () => fetchCalendarData<CalendarActivityLog>('activity', {}, 40),
+    refetchInterval: 60000,
+    staleTime: 10000,
+    placeholderData: [],
+  })
 }

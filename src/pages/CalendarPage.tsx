@@ -1,10 +1,18 @@
+import { fetchCalendarData, createCalendarActivity, getCalendarEventSnapshot } from '../lib/calendarDataApi'
+import CalendarAttachmentFile from '../components/CalendarAttachmentFile'
+import { createCombinedDeliveryStatusCache, type DeliverySelectionResult } from '../lib/combinedDeliveryStatusCache'
+import CombinedDeliveryDialog from '../components/CombinedDeliveryDialog'
+import { combinedDeliveryCandidates, type CombinedDeliveryOrder } from '../lib/combinedDelivery'
+import { isCalendarEventCompleted } from '../lib/deliveryEventGrouping'
+import { readBrowserValue, writeBrowserValue } from '../lib/browserStorage'
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, ChangeEvent, ClipboardEvent as ReactClipboardEvent, DragEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode, TouchEvent as ReactTouchEvent } from 'react'
 import dayjs from 'dayjs'
-import { addDoc, arrayUnion, collection, deleteDoc, deleteField, doc, getDoc, getDocs, limitToLast, onSnapshot, orderBy, query, runTransaction, serverTimestamp, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore'
+import { canEditOrCopyErpEvent } from '../../shared/erpEventEditPolicy.js'
+import { addDoc, arrayUnion, collection, deleteDoc, deleteField, doc, getDoc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore'
 import { signOut, type User } from 'firebase/auth'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { auth, db, getAppCheckHeaders } from '../lib/firebase'
+import { auth, db, firebaseRequestErrorMessage, getAppCheckHeaders, getFirebaseIdToken } from '../lib/firebase'
 import {
   blocksBackgroundAttachmentUnload,
   canUseBackgroundImageUpload,
@@ -12,7 +20,9 @@ import {
   loadDurableBackgroundAttachmentUploads,
   loadBackgroundAttachmentRecoveries,
   persistDurableBackgroundAttachmentUpload,
+  persistDurableBackgroundAttachmentBatch,
   removeDurableBackgroundAttachmentUpload,
+  removeDurableBackgroundAttachmentBatch,
   resumeBackgroundAttachmentUpload,
   runWithConcurrency,
   startBackgroundAttachmentUpload,
@@ -21,8 +31,28 @@ import {
   type DurableBackgroundAttachmentUpload,
   type DurableBackgroundAttachmentStatus,
 } from '../lib/backgroundAttachmentUpload'
+import { createCloudSafeBatchNotice, shouldUseCalendarCloudUpload } from '../lib/backgroundAttachmentUploadPolicy'
 import { employeeNicknameTitle } from '../lib/employeeDirectory'
+import { compareDayEventsForCalendarDate, eventDaySegmentForCalendarDate, eventTimeLabelForCalendarDate } from '../lib/calendarEventSort'
 import { fulfillmentPaymentNotice, type FulfillmentCashPaymentResult } from '../lib/fulfillmentPaymentResult'
+import { fulfillmentRetryDecision } from '../lib/fulfillmentRetryLifecycle'
+import { attachmentThumbnailSources, isImageAttachment } from '../lib/attachmentThumbnail'
+import { attachmentUploadLabel } from '../lib/attachmentUploadMetadata'
+import { resolveEventDetailAttachments } from '../lib/eventDetailAttachments'
+import {
+  ERP_SALES_DELIVERY_RELATED_INDEPENDENT_FIELDS,
+  ERP_SALES_DELIVERY_RELATED_SHARED_FIELDS,
+  erpSalesDeliveryPrimaryEventId,
+  isErpSalesWorkScheduleEvent,
+  isOperationalErpSalesDeliveryEvent,
+  workScheduleTitleForOverride,
+  resolveTeardownDetailEvent,
+  isErpSalesDeliveryEvent,
+  isPrimaryErpSalesDeliveryEvent,
+  isRelatedErpSalesDeliveryEvent,
+  primarySyncFieldsForRelatedEdit,
+  relatedErpSalesDeliveryFields,
+} from '../lib/erpSalesDeliveryEventRelation'
 import { composeEditableEventTitle } from '../lib/calendarEventTitle'
 import {
   deliveryGroupCompletedCount,
@@ -31,7 +61,8 @@ import {
   type CalendarDayDisplayItem,
 } from '../lib/deliveryEventGrouping'
 import { readLocalQueryCache, updateLocalQueryCache, writeLocalQueryCache } from '../lib/localQueryCache'
-import { extractPhotoCaptureMetadata, type PhotoCaptureMetadata } from '../lib/photoMetadata'
+import { extractPhotoCaptureMetadata, type PhotoCaptureMetadata, type PhotoLocation } from '../lib/photoMetadata'
+import { mergePhotoCaptureMetadata, requestDevicePhotoLocationForEvent } from '../lib/photoGeolocation'
 import { sortAttachmentsNewestFirst } from '../lib/attachmentSort'
 import {
   backgroundAttachmentDisplayLabel,
@@ -40,6 +71,7 @@ import {
 } from '../lib/backgroundAttachmentDisplay'
 import { ensurePushSubscription, isPushSupported } from '../lib/pushNotifications'
 import CalendarDatePicker from '../components/CalendarDatePicker'
+import AttachmentThumbnail from '../components/AttachmentThumbnail'
 import ZoomableAttachmentImage from '../components/ZoomableAttachmentImage'
 import CalendarRoutePending from '../components/shared/CalendarRoutePending'
 import { useAuth } from '../contexts/AuthContext'
@@ -72,9 +104,24 @@ const SALES_ATTACHMENT_PREFETCH_DAYS = 7
 const SALES_ATTACHMENT_PREFETCH_EVENT_LIMIT = 14
 const SALES_ATTACHMENT_PREFETCH_DELAY_MS = 2500
 const SALES_ATTACHMENT_URL_REFRESH_INTERVAL_MS = 4 * 60 * 1000
+const SALES_FORM_REDIRECT_REUSE_MS = 90_000
+const SALES_FORM_REDIRECT_CACHE_LIMIT = 4
+const SALES_FORM_POPUP_NAME = 'city_painter_sales_form'
+const SALES_FORM_POPUP_FEATURES = [
+  'popup=yes',
+  'width=1360',
+  'height=820',
+  'left=80',
+  'top=60',
+  'resizable=yes',
+  'scrollbars=yes',
+].join(',')
 const TOUCH_DRAG_LONG_PRESS_MS = 360
 const TOUCH_DRAG_START_TOLERANCE = 48
 const SALES_DELIVERY_EVENT_SYNC_ACTION = 'sync-sales-delivery-event-fields'
+const RELATED_SALES_DELIVERY_EVENT_SYNC_ACTION = 'sync-related-sales-delivery-event-fields'
+const RELATED_SALES_DELIVERY_INDEPENDENT_FIELDS = new Set<string>(ERP_SALES_DELIVERY_RELATED_INDEPENDENT_FIELDS)
+const RELATED_SALES_DELIVERY_SHARED_FIELDS = new Set<string>(ERP_SALES_DELIVERY_RELATED_SHARED_FIELDS)
 const SALES_DELIVERY_EVENT_SYNC_FIELD_NAMES = [
   'title',
   'date',
@@ -256,6 +303,7 @@ function productionLineBindingDescription(status: ProductionLineStatus, includeP
 
 type ApiErrorPayload = string | { message?: string }
 type OrderFulfillmentResult = {
+  orders?: { eventId: string; salesId: string; orderStatus: string; paymentPrompt?: FulfillmentPaymentPrompt }[]
   orderStatus: string
   shippingMethod?: string
   message: string
@@ -265,15 +313,22 @@ type OrderFulfillmentResult = {
   paymentPrompt?: FulfillmentPaymentPrompt
 }
 type FulfillmentPaymentModal = FulfillmentPaymentPrompt & {
+  batchSalesNo?: string
   eventId: string
   idempotencyKey: string
 }
 type ProductionLineRetry = {
+  fulfillmentOrders?: CombinedDeliveryOrder[]
+  fulfillmentRequestId?: string
+  fulfillmentSourceEventId?: string
   eventId: string
   attachmentIds: string[]
   mode: 'fulfillment'
+  shippingMethod: string
+  orderStatus: string
 }
 type DetailBackgroundUpload = {
+  fulfillmentRequestId?: string
   id: string
   jobId?: string
   attachmentPath?: string
@@ -454,9 +509,40 @@ function salesDeliveryEventSyncFields(event: Pick<CalendarEvent, 'title' | 'date
   }
 }
 
+type RelatedSalesDeliveryEventSyncInput = Pick<
+  CalendarEvent,
+  'title' | 'date' | 'startTime' | 'endTime' | 'calendarId' | 'departmentId' | 'assigneeIds'
+> & Partial<Pick<
+  CalendarEvent,
+  'endDate' | 'allDay' | 'location' | 'calendarIds' | 'visibleDepartmentIds' | 'visibleAssigneeIds'
+  | 'hiddenDepartmentIds' | 'hiddenAssigneeIds' | 'titleOverrides' | 'reminder' | 'url'
+>>
+
+function relatedSalesDeliveryEventSyncFields(event: RelatedSalesDeliveryEventSyncInput) {
+  return {
+    ...salesDeliveryEventSyncFields({
+      ...event,
+      startTime: event.allDay ? '' : event.startTime,
+      endTime: event.allDay ? '' : event.endTime,
+    }),
+    calendarId: event.calendarId || '',
+    calendarIds: event.calendarIds ?? [],
+    departmentId: event.departmentId || '',
+    assigneeIds: event.assigneeIds ?? [],
+    visibleDepartmentIds: event.visibleDepartmentIds ?? [],
+    visibleAssigneeIds: event.visibleAssigneeIds ?? [],
+    hiddenDepartmentIds: event.hiddenDepartmentIds ?? [],
+    hiddenAssigneeIds: event.hiddenAssigneeIds ?? [],
+    titleOverrides: event.titleOverrides ?? [],
+    reminder: event.reminder ?? 'none',
+    url: event.url || '',
+  }
+}
+
 function withoutSalesDeliveryEventSyncFields(payload: Record<string, unknown>) {
   const eventOnlyPayload = { ...payload }
   SALES_DELIVERY_EVENT_SYNC_FIELD_NAMES.forEach((field) => delete eventOnlyPayload[field])
+  delete eventOnlyPayload.attachments
   return eventOnlyPayload
 }
 
@@ -497,12 +583,6 @@ function normalizeDepartmentTitleIconDefaults(value: unknown) {
 
 function eventEndDate(event: Pick<CalendarEvent, 'date' | 'endDate'>) {
   return event.endDate || event.date
-}
-
-function eventTimeForCalendarDate(event: Pick<CalendarEvent, 'date' | 'endDate' | 'startTime' | 'endTime'>, date: string) {
-  const endDate = eventEndDate(event)
-  if (event.date !== endDate && date === endDate) return event.endTime
-  return event.startTime
 }
 
 function shiftedEventDateRange(event: Pick<CalendarEvent, 'date' | 'endDate'>, nextStartDate: string) {
@@ -613,18 +693,8 @@ function todayShiftTime(date: string, time: string, fallbackTime: string) {
   return value.isValid() ? value : dayjs(`${date} ${fallbackTime}`)
 }
 
-function isImageAttachment(attachment: EventAttachment) {
-  if (attachment.type?.startsWith('image/')) return true
-  return /\.(png|jpe?g|webp|gif)$/i.test(attachment.name)
-}
-
 function attachmentPreviewUrl(attachment: EventAttachment) {
-  if (!isImageAttachment(attachment)) return ''
-  if (attachment.linePreviewUrl) return attachment.linePreviewUrl
-  if (attachment.provider === 'google-drive' && attachment.path) {
-    return `https://drive.google.com/thumbnail?id=${encodeURIComponent(attachment.path)}&sz=w1000`
-  }
-  return attachment.url
+  return attachmentThumbnailSources(attachment)[0] ?? ''
 }
 
 function attachmentFullImageUrl(attachment: EventAttachment) {
@@ -673,9 +743,23 @@ function fulfillmentShippingMethod(event: CalendarEvent, status: ProductionLineS
 }
 
 function isErpOrderFulfillmentEvent(event: CalendarEvent, status: ProductionLineStatus | null) {
-  if (event.source !== 'erpSalesDelivery' || !event.sourceId) return false
+  if (!isOperationalErpSalesDeliveryEvent(event)) return false
   const shippingMethod = fulfillmentShippingMethod(event, status)
   return shippingMethod === '外送' || shippingMethod === '施工' || shippingMethod === '活動'
+}
+
+function fulfillmentRetryForStatus(
+  eventId: string,
+  attachmentIds: string[],
+  status: Pick<ProductionLineStatus, 'shippingMethod' | 'orderStatus'>,
+): ProductionLineRetry {
+  return {
+    eventId,
+    attachmentIds,
+    mode: 'fulfillment',
+    shippingMethod: String(status.shippingMethod || '').trim(),
+    orderStatus: String(status.orderStatus || '').trim(),
+  }
 }
 
 function erpSalesFormUrl(salesId: string) {
@@ -685,7 +769,7 @@ function erpSalesFormUrl(salesId: string) {
 async function createSalesFormRedirectUrl(user: User, salesId: string): Promise<string> {
   const targetPath = `/sales/main/${encodeURIComponent(salesId)}/edit`
   const [token, appCheckHeaders] = await Promise.all([
-    user.getIdToken(),
+    getFirebaseIdToken(user),
     getAppCheckHeaders(),
   ])
   const response = await fetch(`${erpOrigin()}/api/access-control`, {
@@ -743,6 +827,16 @@ function eventDetailNoteContent(
         if (paymentStatus) {
           const salesNoIndex = lines.findIndex((line) => /^銷售單號[：:]/.test(line.trim()))
           lines.splice(salesNoIndex >= 0 ? salesNoIndex + 1 : lines.length, 0, `付款狀態：${paymentStatus}`)
+        }
+        const mainNoteIndex = lines.findIndex((line) => /^主要備註[：:]/.test(line.trim()))
+        const salesNoIndex = lines.findIndex((line) => /^銷售單號[：:]/.test(line.trim()))
+        if (mainNoteIndex >= 0 && salesNoIndex >= 0) {
+          const nextFieldOffset = lines.slice(mainNoteIndex + 1)
+            .findIndex((line) => /^(?:銷售單號|付款狀態|收件人|電話|手機|備註)[：:]/.test(line.trim()))
+          const count = nextFieldOffset < 0 ? lines.length - mainNoteIndex : nextFieldOffset + 1
+          const mainNoteLines = lines.splice(mainNoteIndex, count)
+          const anchorIndex = lines.findIndex((line) => /^銷售單號[：:]/.test(line.trim()))
+          lines.splice(anchorIndex + 1, 0, ...mainNoteLines)
         }
         return lines.join('\n')
       })()
@@ -1217,6 +1311,10 @@ export default function CalendarPage() {
   const [showRepeatPicker, setShowRepeatPicker] = useState(false)
   const [showRepeatCustomModal, setShowRepeatCustomModal] = useState(false)
   const [dayListDate, setDayListDate] = useState<string | null>(null)
+  const combinedDeliveryStatusCache = useMemo(() => createCombinedDeliveryStatusCache(), [user?.uid, role, employeeId, canScanSalesOrder])
+  const combinedDeliveryScope = `${user?.uid || ''}:${role}:${employeeId}:${canScanSalesOrder}`
+  const [combinedDelivery, setCombinedDelivery] = useState<{ events: CalendarEvent[]; files: File[]; requestId: string } | null>(null)
+  const combinedDeliverySubmittingRef = useRef(false)
   const [selectedDeliveryGroupKey, setSelectedDeliveryGroupKey] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [activeSearchDepartmentIds, setActiveSearchDepartmentIds] = useState<string[]>([])
@@ -1230,8 +1328,11 @@ export default function CalendarPage() {
   const [departmentTitleIconDefaults, setDepartmentTitleIconDefaults] = useState<Record<string, string[]>>({})
   const [departmentTitleIconDraft, setDepartmentTitleIconDraft] = useState<Record<string, string[]>>({})
   const [savingTitleIcons, setSavingTitleIcons] = useState(false)
-  const [lastSeenActivityAt, setLastSeenActivityAt] = useState(() => localStorage.getItem(ACTIVITY_NOTIFICATION_SEEN_KEY) || '')
+  const [lastSeenActivityAt, setLastSeenActivityAt] = useState(() => readBrowserValue(ACTIVITY_NOTIFICATION_SEEN_KEY) || '')
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null)
+  const [selectedEventSnapshot, setSelectedEventSnapshot] = useState<CalendarEvent | null>(null)
+  const [showRelatedEventsPanel, setShowRelatedEventsPanel] = useState(false)
+  const [openingActivityEventId, setOpeningActivityEventId] = useState<string | null>(null)
   const [enlargedEventAttachment, setEnlargedEventAttachment] = useState<EventAttachment | null>(null)
   const [salesFormOpenError, setSalesFormOpenError] = useState('')
   const [monthDayEventRowLimit, setMonthDayEventRowLimit] = useState(DEFAULT_MONTH_DAY_EVENT_ROW_LIMIT)
@@ -1241,6 +1342,8 @@ export default function CalendarPage() {
   const [showVisibilityEditor, setShowVisibilityEditor] = useState(false)
   const [editingCalendarId, setEditingCalendarId] = useState<string | null>(null)
   const [editingEventId, setEditingEventId] = useState<string | null>(null)
+  const [editingEventSnapshot, setEditingEventSnapshot] = useState<CalendarEvent | null>(null)
+  const [copySourceEvent, setCopySourceEvent] = useState<CalendarEvent | null>(null)
   const [recurrenceEditMode, setRecurrenceEditMode] = useState<{ scope: RecurrenceEditScope, source: CalendarEvent } | null>(null)
   const [recurrenceEditCandidate, setRecurrenceEditCandidate] = useState<CalendarEvent | null>(null)
   const [recurrenceDeleteCandidate, setRecurrenceDeleteCandidate] = useState<CalendarEvent | null>(null)
@@ -1274,13 +1377,14 @@ export default function CalendarPage() {
   const [productionLineNotice, setProductionLineNotice] = useState<{ variant: 'success' | 'error' | 'muted'; message: string } | null>(null)
   const [productionLineRetry, setProductionLineRetry] = useState<ProductionLineRetry | null>(null)
   const [productionLineRetrying, setProductionLineRetrying] = useState(false)
+  const [combinedPaymentEventIds, setCombinedPaymentEventIds] = useState<string[]>([])
   const [fulfillmentPaymentModal, setFulfillmentPaymentModal] = useState<FulfillmentPaymentModal | null>(null)
   const [fulfillmentPaymentAmount, setFulfillmentPaymentAmount] = useState('')
   const [fulfillmentPaymentSaving, setFulfillmentPaymentSaving] = useState(false)
   const [fulfillmentPaymentError, setFulfillmentPaymentError] = useState('')
   const noteTextareaRef = useRef<HTMLTextAreaElement | null>(null)
   const detailAttachmentInputRef = useRef<HTMLInputElement | null>(null)
-  const salesFormRedirectPrefetchRef = useRef<SalesFormRedirectPrefetch | null>(null)
+  const salesFormRedirectPrefetchesRef = useRef(new Map<string, SalesFormRedirectPrefetch>())
   const backgroundAttachmentRecoveryIdsRef = useRef(new Set<string>())
   const durableUploadLoadedUidRef = useRef('')
   const detailBackgroundUploadsRef = useRef<DetailBackgroundUpload[]>([])
@@ -1481,7 +1585,7 @@ export default function CalendarPage() {
         map.set(date, list)
       })
     })
-    map.forEach((list) => list.sort(compareDayEvents))
+    map.forEach((list, date) => list.sort((a, b) => compareDayEventsForCalendarDate(a, b, date)))
     return map
   }, [visibleEvents])
 
@@ -1506,6 +1610,25 @@ export default function CalendarPage() {
   const selectedDeliveryGroup = selectedDeliveryGroupKey
     ? deliveryGroupsByKey.get(selectedDeliveryGroupKey) ?? null
     : null
+
+  const deliveryStatusPrefetchEvents = useMemo(() => {
+    const today = dayjs().format('YYYY-MM-DD')
+    return [...deliveryGroupsByKey.values()]
+      .sort((a, b) => Math.abs(dayjs(a.primaryEvent.date).diff(dayjs(today), 'day')) - Math.abs(dayjs(b.primaryEvent.date).diff(dayjs(today), 'day')))
+      .flatMap((group) => group.events)
+      .filter((event, index, rows) => event.sourceShippingMethod === '外送' && !isCalendarEventCompleted(event) && rows.findIndex((row) => row.id === event.id) === index)
+      .slice(0, 20)
+  }, [deliveryGroupsByKey])
+
+  useEffect(() => {
+    if (!user || !deliveryStatusPrefetchEvents.length) return
+    const timer = window.setTimeout(() => { void loadCombinedDeliveryStatuses(deliveryStatusPrefetchEvents) }, 0)
+    return () => window.clearTimeout(timer)
+  }, [combinedDeliveryStatusCache, deliveryStatusPrefetchEvents])
+
+  const combinedDeliveryEvents = useMemo(() => combinedDelivery?.events.map((event) => (
+    visibleEvents.find((current) => current.id === event.id) || event
+  )) || [], [combinedDelivery, visibleEvents])
 
   function canReceiveActivityLog(log: CalendarActivityLog) {
     const assigneeIds = log.assigneeIds ?? []
@@ -1741,10 +1864,10 @@ export default function CalendarPage() {
   }, [])
 
   useEffect(() => {
-    if (dayListDate) return
+    if (dayListDate || showRelatedEventsPanel) return
     dayListSwipeRef.current = null
     setDayListSwipeOffset(0)
-  }, [dayListDate])
+  }, [dayListDate, showRelatedEventsPanel])
 
   useEffect(() => {
     setEnlargedEventAttachment(null)
@@ -1841,17 +1964,23 @@ export default function CalendarPage() {
   }, [showCalendarDrawer])
 
   useEffect(() => {
-    if (!selectedEventId) return
+    if (!selectedEventId || showEventModal) return
 
     function closeEventDetail(event: MouseEvent | TouchEvent) {
       if (shouldKeepOverlayOpenForSystemGesture(event)) return
       const target = event.target
-      if (target instanceof Element && target.closest('.event-detail-panel, .event-pill, .event-line, .week-event, .fulfillment-payment-overlay, .event-attachment-lightbox-overlay')) return
+      if (target instanceof Element && target.closest('.event-detail-panel, .event-pill, .event-line, .week-event, .fulfillment-payment-overlay, .event-attachment-lightbox-overlay, .related-events-overlay')) return
       setSelectedEventId(null)
       setShowEventActionMenu(false)
     }
 
     function closeEventDetailWithEscape(event: KeyboardEvent) {
+      if (event.key === 'Escape' && showRelatedEventsPanel) {
+        event.preventDefault()
+        event.stopImmediatePropagation()
+        setShowRelatedEventsPanel(false)
+        return
+      }
       if (event.key === 'Escape' && !fulfillmentPaymentModal && !enlargedEventAttachment) setSelectedEventId(null)
     }
 
@@ -1863,7 +1992,7 @@ export default function CalendarPage() {
       document.removeEventListener('touchstart', closeEventDetail)
       document.removeEventListener('keydown', closeEventDetailWithEscape)
     }
-  }, [selectedEventId, fulfillmentPaymentModal, enlargedEventAttachment])
+  }, [selectedEventId, showEventModal, showRelatedEventsPanel, fulfillmentPaymentModal, enlargedEventAttachment])
 
   useEffect(() => {
     if (!showEventActionMenu) return
@@ -2021,16 +2150,99 @@ export default function CalendarPage() {
     return Array.from({ length: 7 }, (_, index) => start.add(index, 'day'))
   }, [selectedDate])
 
-  const selectedEvent = useMemo(() => {
+  const selectedEventRecord = useMemo(() => {
     if (!selectedEventId) return null
     return visibleEvents.find((event) => event.id === selectedEventId) ??
       visibleSearchEvents.find((event) => event.id === selectedEventId) ??
+      (selectedEventSnapshot?.id === selectedEventId ? selectedEventSnapshot : null) ??
       null
-  }, [selectedEventId, visibleEvents, visibleSearchEvents])
-  const salesOperationalEventId = selectedEvent?.source === 'erpSalesDelivery' ? selectedEvent.id : ''
+  }, [selectedEventId, selectedEventSnapshot, visibleEvents, visibleSearchEvents])
+  const teardownPrimaryEventId = isErpSalesWorkScheduleEvent(selectedEventRecord)
+    ? erpSalesDeliveryPrimaryEventId(selectedEventRecord) : ''
+  const teardownPrimaryEventQuery = useQuery({
+    queryKey: ['calendar-teardown-primary', user?.uid ?? '', teardownPrimaryEventId],
+    enabled: Boolean(teardownPrimaryEventId && user?.uid),
+    queryFn: async () => {
+      const snapshot = await getCalendarEventSnapshot(teardownPrimaryEventId)
+      if (!snapshot.exists()) throw new Error('找不到排程所關聯的主事件')
+      const event = { id: snapshot.id, ...snapshot.data() } as CalendarEvent
+      if (!eventAllowedForViewer(event) || !isPrimaryErpSalesDeliveryEvent(event)
+        || event.sourceId !== selectedEventRecord?.sourceId) throw new Error('無法讀取排程所關聯的主事件')
+      return event
+    },
+    staleTime: 60 * 1000,
+  })
+  const teardownPrimaryEvent = teardownPrimaryEventId
+    ? visibleEvents.find((event) => event.id === teardownPrimaryEventId)
+      ?? teardownPrimaryEventQuery.data ?? null
+    : null
+  const selectedEvent = useMemo(() => selectedEventRecord
+    ? resolveTeardownDetailEvent(selectedEventRecord, teardownPrimaryEvent) : null,
+  [selectedEventRecord, teardownPrimaryEvent])
+  const selectedOperationalEvent = selectedEvent
+  const salesDeliveryRelationIndexQuery = useQuery({
+    queryKey: ['erp-sales-delivery-relation-index', user?.uid ?? ''],
+    enabled: Boolean(user?.uid && backgroundDataReady),
+    queryFn: fetchErpSalesDeliveryRelationIndex,
+    staleTime: 5 * 60 * 1000,
+    gcTime: 30 * 60 * 1000,
+  })
+  const selectedSalesRelationSourceId = isErpSalesDeliveryEvent(selectedEvent)
+    ? selectedEvent?.sourceId?.trim() || ''
+    : ''
+  const [liveSalesRelations, setLiveSalesRelations] = useState<{
+    sourceId: string
+    events: CalendarEvent[]
+    loading: boolean
+    error: boolean
+  }>({ sourceId: '', events: [], loading: true, error: false })
+  const [salesRelationsRetry, setSalesRelationsRetry] = useState(0)
+  useEffect(() => {
+    if (!selectedEventId || !selectedSalesRelationSourceId || !user?.uid) return
+    const sourceId = selectedSalesRelationSourceId
+    setLiveSalesRelations({ sourceId, events: [], loading: true, error: false })
+    let cancelled = false
+    let refreshing = false
+    let refreshAgain = false
+    const refresh = async () => {
+      if (refreshing) { refreshAgain = true; return }
+      refreshing = true
+      try {
+        const events = await fetchCalendarData<CalendarEvent>('source', { sourceId })
+        if (!cancelled) setLiveSalesRelations({ sourceId, events, loading: false, error: false })
+      } catch {
+        if (!cancelled) setLiveSalesRelations({ sourceId, events: [], loading: false, error: true })
+      } finally {
+        refreshing = false
+        if (refreshAgain && !cancelled) { refreshAgain = false; void refresh() }
+      }
+    }
+    void refresh()
+    const timer = window.setInterval(refresh, 60000)
+    window.addEventListener('calendar-data-revision', refresh)
+    window.addEventListener('focus', refresh)
+    return () => { cancelled = true; window.clearInterval(timer); window.removeEventListener('calendar-data-revision', refresh); window.removeEventListener('focus', refresh) }
+
+  }, [Boolean(selectedEventId), selectedSalesRelationSourceId, user?.uid, salesRelationsRetry])
+  const relatedSalesDeliveryEventsQuery = {
+    isLoading: liveSalesRelations.sourceId !== selectedSalesRelationSourceId || liveSalesRelations.loading,
+    isError: liveSalesRelations.sourceId === selectedSalesRelationSourceId && liveSalesRelations.error,
+    refetch: () => setSalesRelationsRetry((value) => value + 1),
+  }
+  const relatedSalesDeliveryEvents = liveSalesRelations.sourceId === selectedSalesRelationSourceId
+    ? liveSalesRelations.events.filter((event) => isErpSalesDeliveryEvent(event)
+      && event.sourceId === selectedSalesRelationSourceId && eventAllowedForViewer(event))
+      .sort((a, b) => Number(isRelatedErpSalesDeliveryEvent(a)) - Number(isRelatedErpSalesDeliveryEvent(b))
+        || `${a.date} ${a.startTime}`.localeCompare(`${b.date} ${b.startTime}`))
+    : []
+  const hasRelatedSalesDeliveryEvents = relatedSalesDeliveryEventsQuery.isLoading
+    ? Boolean(selectedSalesRelationSourceId && salesDeliveryRelationIndexQuery.data?.[selectedSalesRelationSourceId])
+    : relatedSalesDeliveryEvents.some(isRelatedErpSalesDeliveryEvent)
+  const salesOperationalEventId = isErpSalesWorkScheduleEvent(selectedEvent)
+    ? selectedEvent?.id ?? '' : erpSalesDeliveryPrimaryEventId(selectedEvent)
   const canViewSalesOperationalPayment = Boolean(selectedEvent && (
     canManageCalendarEvent(selectedEvent)
-    || (canScanSalesOrder && isErpOrderFulfillmentEvent(selectedEvent, null))
+    || (canScanSalesOrder && Boolean(selectedOperationalEvent && isErpOrderFulfillmentEvent(selectedOperationalEvent, null)))
   ))
   const {
     status: productionLineStatus,
@@ -2043,8 +2255,8 @@ export default function CalendarPage() {
     enabled: Boolean(user?.uid && salesOperationalEventId),
     canViewPayment: canViewSalesOperationalPayment,
   })
-  const salesAttachmentEventId = selectedEvent?.source === 'erpSalesDelivery' && canViewSalesAttachments
-    ? selectedEvent.id
+  const salesAttachmentEventId = isErpSalesDeliveryEvent(selectedEvent) && canViewSalesAttachments
+    ? erpSalesDeliveryPrimaryEventId(selectedEvent)
     : ''
   const salesCenterAttachmentsQuery = useQuery({
     queryKey: ['sales-center-attachments', user?.uid ?? '', salesAttachmentEventId],
@@ -2054,30 +2266,34 @@ export default function CalendarPage() {
     gcTime: 9 * 60 * 1000,
     refetchInterval: SALES_ATTACHMENT_URL_REFRESH_INTERVAL_MS,
     refetchOnWindowFocus: 'always',
+    refetchOnReconnect: 'always',
     retry: 1,
   })
   const salesCenterAttachments = salesCenterAttachmentsQuery.data ?? []
+  const salesCenterAttachmentsAvailable = salesCenterAttachmentsQuery.data !== undefined
   const salesCenterAttachmentsLoading = Boolean(
     salesAttachmentEventId && salesCenterAttachmentsQuery.isFetching && !salesCenterAttachmentsQuery.data
   )
   const salesCenterAttachmentsError = salesCenterAttachmentsQuery.isError
-    ? salesCenterAttachmentsQuery.error instanceof Error
-      ? salesCenterAttachmentsQuery.error.message
-      : '附件中心讀取失敗'
+    ? firebaseRequestErrorMessage(
+        salesCenterAttachmentsQuery.error,
+        salesCenterAttachmentsQuery.error instanceof Error
+          ? salesCenterAttachmentsQuery.error.message
+          : '附件中心讀取失敗',
+      )
     : ''
   const combinedEventDetailAttachments = useMemo(() => {
-    const seen = new Set<string>()
-    const attachments = [...(selectedEvent?.attachments ?? []), ...salesCenterAttachments].filter((attachment) => {
-      const key = attachment.path || attachment.url
-      if (!key || seen.has(key)) return false
-      seen.add(key)
-      return true
+    const attachments = resolveEventDetailAttachments({
+      eventSource: selectedEvent?.source,
+      eventAttachments: selectedEvent?.attachments ?? [],
+      salesAttachments: salesCenterAttachments,
+      salesSourceAvailable: salesCenterAttachmentsAvailable,
     })
     return sortAttachmentsNewestFirst(attachments)
-  }, [salesCenterAttachments, selectedEvent?.attachments])
+  }, [salesCenterAttachments, salesCenterAttachmentsAvailable, selectedEvent?.attachments, selectedEvent?.source])
   const selectedEventBackgroundUploadRows = useMemo(
-    () => detailBackgroundUploads.filter((upload) => upload.eventId === selectedEvent?.id),
-    [detailBackgroundUploads, selectedEvent?.id],
+    () => detailBackgroundUploads.filter((upload) => upload.eventId === selectedOperationalEvent?.id),
+    [detailBackgroundUploads, selectedOperationalEvent?.id],
   )
   const selectedEventBackgroundUploads = useMemo(
     () => sortAttachmentsNewestFirst([
@@ -2118,9 +2334,9 @@ export default function CalendarPage() {
     const finalDate = today.add(SALES_ATTACHMENT_PREFETCH_DAYS - 1, 'day').format('YYYY-MM-DD')
     const eventIds = Array.from(new Set(
       visibleEvents
-        .filter((event) => event.source === 'erpSalesDelivery' && event.date >= today.format('YYYY-MM-DD') && event.date <= finalDate)
+        .filter((event) => isErpSalesDeliveryEvent(event) && event.date >= today.format('YYYY-MM-DD') && event.date <= finalDate)
         .sort((a, b) => `${a.date} ${a.startTime}`.localeCompare(`${b.date} ${b.startTime}`))
-        .map((event) => recurrenceRootId(event))
+        .map((event) => erpSalesDeliveryPrimaryEventId(event))
     )).slice(0, SALES_ATTACHMENT_PREFETCH_EVENT_LIMIT)
     if (!eventIds.length) return
 
@@ -2158,7 +2374,9 @@ export default function CalendarPage() {
     }
   }, [backgroundDataReady, canViewSalesAttachments, eventsFetching, eventsLoading, queryClient, user?.uid, visibleEvents])
 
-  const commentThreadId = selectedEvent ? recurrenceRootId(selectedEvent) : ''
+  const commentThreadId = selectedEvent
+    ? erpSalesDeliveryPrimaryEventId(selectedEvent) || recurrenceRootId(selectedEvent)
+    : ''
   const eventCommentsCacheKey = user?.uid && commentThreadId ? `${user.uid}:${commentThreadId}` : ''
   const cachedEventComments = eventCommentsCacheKey
     ? eventCommentsMemoryCache.get(eventCommentsCacheKey)
@@ -2189,8 +2407,13 @@ export default function CalendarPage() {
 
   const prepareSalesFormRedirect = useCallback((salesId: string): Promise<string> => {
     if (!user) return Promise.reject(new Error('登入已失效，請重新登入行事曆。'))
-    const cached = salesFormRedirectPrefetchRef.current
-    if (cached?.salesId === salesId && Date.now() - cached.createdAt < 90_000) {
+    const now = Date.now()
+    const prefetches = salesFormRedirectPrefetchesRef.current
+    for (const [cachedSalesId, cachedEntry] of prefetches) {
+      if (now - cachedEntry.createdAt >= SALES_FORM_REDIRECT_REUSE_MS) prefetches.delete(cachedSalesId)
+    }
+    const cached = prefetches.get(salesId)
+    if (cached) {
       return cached.promise
     }
 
@@ -2201,13 +2424,18 @@ export default function CalendarPage() {
       promise: Promise.resolve(''),
     }
     prepared.promise = createSalesFormRedirectUrl(user, salesId).then((redirectUrl) => {
-      if (salesFormRedirectPrefetchRef.current === prepared) prepared.redirectUrl = redirectUrl
+      if (prefetches.get(salesId) === prepared) prepared.redirectUrl = redirectUrl
       return redirectUrl
     }).catch((error) => {
-      if (salesFormRedirectPrefetchRef.current === prepared) salesFormRedirectPrefetchRef.current = null
+      if (prefetches.get(salesId) === prepared) prefetches.delete(salesId)
       throw error
     })
-    salesFormRedirectPrefetchRef.current = prepared
+    prefetches.set(salesId, prepared)
+    while (prefetches.size > SALES_FORM_REDIRECT_CACHE_LIMIT) {
+      const oldestSalesId = prefetches.keys().next().value
+      if (!oldestSalesId) break
+      prefetches.delete(oldestSalesId)
+    }
     return prepared.promise
   }, [user])
 
@@ -2219,8 +2447,11 @@ export default function CalendarPage() {
   }, [commentThreadId])
 
   useEffect(() => {
+    setShowRelatedEventsPanel(false)
+  }, [selectedEventId])
+
+  useEffect(() => {
     setSalesFormOpenError('')
-    salesFormRedirectPrefetchRef.current = null
     const salesId = selectedEvent?.source === 'erpSalesDelivery' && canOpenSalesForm
       ? selectedEvent.sourceId?.trim() || ''
       : ''
@@ -2231,12 +2462,15 @@ export default function CalendarPage() {
     preconnect.href = erpOrigin()
     preconnect.crossOrigin = 'anonymous'
     document.head.append(preconnect)
-    const timer = window.setTimeout(() => {
-      void prepareSalesFormRedirect(salesId).catch(() => undefined)
-    }, 120)
+    const prefetch = document.createElement('link')
+    prefetch.rel = 'prefetch'
+    prefetch.as = 'document'
+    prefetch.href = erpSalesFormUrl(salesId)
+    document.head.append(prefetch)
+    void prepareSalesFormRedirect(salesId).catch(() => undefined)
     return () => {
-      window.clearTimeout(timer)
       preconnect.remove()
+      prefetch.remove()
     }
   }, [canOpenSalesForm, prepareSalesFormRedirect, selectedEvent?.id, selectedEvent?.source, selectedEvent?.sourceId, user])
 
@@ -2247,32 +2481,32 @@ export default function CalendarPage() {
     if (cachedRows) setEventCommentsState({ cacheKey: eventCommentsCacheKey, rows: cachedRows })
     setEventCommentsErrorState({ cacheKey: eventCommentsCacheKey, message: '' })
 
-    const commentsQuery = query(
-      collection(db, 'calendarEvents', commentThreadId, 'comments'),
-      orderBy('createdAt', 'asc'),
-      limitToLast(100)
-    )
-    return onSnapshot(commentsQuery, (snapshot) => {
-      const rows = snapshot.docs.map((snapshotDoc) => {
-        const data = snapshotDoc.data({ serverTimestamps: 'estimate' })
-        return {
-          id: snapshotDoc.id,
-          authorUid: typeof data.authorUid === 'string' ? data.authorUid : '',
-          authorEmployeeId: typeof data.authorEmployeeId === 'string' ? data.authorEmployeeId : '',
-          authorName: typeof data.authorName === 'string' ? data.authorName : '未命名使用者',
-          text: typeof data.text === 'string' ? data.text : '',
-          attachments: Array.isArray(data.attachments) ? data.attachments as EventAttachment[] : [],
-          pendingAttachmentCount: Math.max(0, Number(data.pendingAttachmentCount) || 0),
-          createdAt: firestoreDateIso(data.createdAt)
-        } satisfies CalendarEventComment
-      }).sort((a, b) => `${a.createdAt}-${a.id}`.localeCompare(`${b.createdAt}-${b.id}`))
-      cacheEventComments(eventCommentsCacheKey, rows)
-      setEventCommentsState({ cacheKey: eventCommentsCacheKey, rows })
-      setEventCommentsErrorState({ cacheKey: eventCommentsCacheKey, message: '' })
-    }, (error) => {
-      console.warn('[calendar] event comments listener failed', error)
-      setEventCommentsErrorState({ cacheKey: eventCommentsCacheKey, message: '留言載入失敗，請稍後重試' })
-    })
+    let cancelled = false
+    let refreshing = false
+    let refreshAgain = false
+    const refresh = async () => {
+      if (refreshing) { refreshAgain = true; return }
+      refreshing = true
+      try {
+        const rows = await fetchCalendarData<CalendarEventComment>('comments', { eventId: commentThreadId })
+        rows.sort((a, b) => `${a.createdAt}-${a.id}`.localeCompare(`${b.createdAt}-${b.id}`))
+        if (cancelled) return
+        cacheEventComments(eventCommentsCacheKey, rows)
+        setEventCommentsState({ cacheKey: eventCommentsCacheKey, rows })
+        setEventCommentsErrorState({ cacheKey: eventCommentsCacheKey, message: '' })
+      } catch {
+        if (!cancelled) setEventCommentsErrorState({ cacheKey: eventCommentsCacheKey, message: '留言載入失敗，請稍後重試' })
+      } finally {
+        refreshing = false
+        if (refreshAgain && !cancelled) { refreshAgain = false; void refresh() }
+      }
+    }
+    void refresh()
+    const timer = window.setInterval(refresh, 60000)
+    window.addEventListener('calendar-data-revision', refresh)
+    window.addEventListener('focus', refresh)
+    return () => { cancelled = true; window.clearInterval(timer); window.removeEventListener('focus', refresh); window.removeEventListener('calendar-data-revision', refresh) }
+
   }, [commentThreadId, eventCommentsCacheKey, eventCommentsReloadKey])
 
   useEffect(() => {
@@ -2309,33 +2543,44 @@ export default function CalendarPage() {
     setFulfillmentPaymentError('')
     setProductionLineNotice(null)
     setProductionLineRetry(null)
-    if (!selectedEvent || selectedEvent.source !== 'erpSalesDelivery' || !user?.uid) return
+    const selectedEvent = selectedOperationalEvent
+    if (!selectedEvent || !isOperationalErpSalesDeliveryEvent(selectedEvent) || !user?.uid) return
 
     const storedRetry = selectedEvent.productionLineRetry
-    if (storedRetry?.mode === 'production') {
-      void updateDoc(doc(db, 'calendarEvents', selectedEvent.id), {
-        productionLineRetry: deleteField()
-      }).catch((error) => console.warn('[calendar] 清除已停用的照片 LINE 重試資料失敗', error))
-      return
-    }
-    if (
-      storedRetry
-      && storedRetry.mode === 'fulfillment'
-      && (storedRetry.status === 'pending' || storedRetry.status === 'failed')
-      && Array.isArray(storedRetry.attachmentIds)
-      && storedRetry.attachmentIds.length > 0
-    ) {
-      setProductionLineRetry({
-        eventId: selectedEvent.id,
-        mode: storedRetry.mode,
-        attachmentIds: storedRetry.attachmentIds.filter((id) => typeof id === 'string' && id)
-      })
-      setProductionLineNotice({
-        variant: 'error',
-        message: storedRetry.message || '照片已保留，訂單完成尚待重試。'
-      })
-    }
-  }, [selectedEvent?.id, selectedEvent?.source, user?.uid])
+    if (!storedRetry) return
+    let active = true
+    const eventId = selectedEvent.id
+    void (async () => {
+      try {
+        const liveStatus = await fetchProductionLineStatus(eventId)
+        if (!active) return
+        setProductionLineStatus(liveStatus)
+        const decision = fulfillmentRetryDecision(storedRetry, liveStatus)
+        if (decision.action === 'clear') {
+          await updateDoc(doc(db, 'calendarEvents', eventId), { productionLineRetry: deleteField() })
+          return
+        }
+        if (decision.action !== 'allow') return
+        setProductionLineRetry({
+          eventId,
+          mode: 'fulfillment',
+          attachmentIds: decision.attachmentIds,
+          shippingMethod: String(storedRetry.shippingMethod || '').trim(),
+          orderStatus: String(storedRetry.orderStatus || '').trim(),
+          fulfillmentOrders: storedRetry.fulfillmentOrders,
+          fulfillmentRequestId: storedRetry.fulfillmentRequestId,
+          fulfillmentSourceEventId: storedRetry.fulfillmentSourceEventId,
+        })
+        setProductionLineNotice({
+          variant: 'error',
+          message: storedRetry.message || '照片已保留，訂單完成尚待重試。'
+        })
+      } catch (error) {
+        console.warn('[calendar] 重試前訂單狀態核對失敗', error)
+      }
+    })()
+    return () => { active = false }
+  }, [selectedOperationalEvent?.id, selectedOperationalEvent?.productionLineRetry?.updatedAt, selectedOperationalEvent?.source, user?.uid])
 
   useEffect(() => {
     if (unsafeActiveBackgroundUploads.length === 0) return
@@ -2373,6 +2618,7 @@ export default function CalendarPage() {
             ...items,
             ...eventRows.filter((row) => !existingIds.has(row.id)).map((row) => ({
               id: row.id,
+              fulfillmentRequestId: row.fulfillmentRequestId,
               jobId: row.jobId || row.attachment?.uploadJobId,
               attachmentPath: row.attachment?.path,
               eventId: row.eventId,
@@ -2448,13 +2694,14 @@ export default function CalendarPage() {
               completed.map((result) => result.attachment),
               group[0].completionMode,
             )
+            await invalidateSalesCenterAttachments(group[0].eventId)
           }
         } finally {
           group.forEach((recovery) => backgroundAttachmentRecoveryIdsRef.current.delete(recovery.jobId))
         }
       })()
     })
-  }, [user?.uid])
+  }, [queryClient, user?.uid])
 
   useEffect(() => {
     detailBackgroundUploadsRef.current = detailBackgroundUploads
@@ -2798,7 +3045,7 @@ export default function CalendarPage() {
 
   function eventDisplayTitle(event: CalendarEvent) {
     const overrideTitle = eventTitleOverrideForViewer(event)
-    if (overrideTitle) return overrideTitle
+    if (overrideTitle) return workScheduleTitleForOverride(event, overrideTitle)
     if (!isHrReadonlyEvent(event) || !event.assigneeIds?.length) return event.title
     const employee = employees.find((item) => item.id === event.assigneeIds[0])
     return employeeNicknameTitle(event.title, employee)
@@ -2808,7 +3055,8 @@ export default function CalendarPage() {
     const rows: { target: string; title: string; muted?: boolean }[] = []
     const addRow = (target: string, title: string, muted = false) => {
       const cleanTarget = target.trim()
-      const cleanTitle = title.trim()
+      const trimmedTitle = title.trim()
+      const cleanTitle = workScheduleTitleForOverride(event, trimmedTitle)
       if (!cleanTarget || !cleanTitle) return
       if (rows.some((row) => row.target === cleanTarget && row.title === cleanTitle && row.muted === muted)) return
       rows.push({ target: cleanTarget, title: cleanTitle, muted })
@@ -2929,8 +3177,10 @@ export default function CalendarPage() {
     if (field === 'titleOverrides') return Array.isArray(value) ? `${value.length} 個替代標題` : '0 個替代標題'
     if (field === 'reminder') return REMINDER_OPTIONS.find((option) => option.value === value)?.label ?? '無通知'
     if (field === 'repeat') return repeatLabel(value as CalendarEvent['repeat'], eventForm.date, eventForm.repeatCustom)
+    if (field === 'repeatCustom') return JSON.stringify(value ?? {})
     if (field === 'todos') return Array.isArray(value) ? `${value.length} 項` : '0 項'
     if (field === 'attachments') return Array.isArray(value) ? `${value.length} 個附件` : '0 個附件'
+    if (field === 'allDay') return value === true ? '是' : '否'
     return String(value ?? '').trim() || '空白'
   }
 
@@ -2941,6 +3191,7 @@ export default function CalendarPage() {
       ['endDate', '結束日期'],
       ['startTime', '開始時間'],
       ['endTime', '結束時間'],
+      ['allDay', '全天事件'],
       ['departmentId', '部門'],
       ['calendarIds', '行事曆'],
       ['assigneeIds', '同仁'],
@@ -2951,27 +3202,29 @@ export default function CalendarPage() {
       ['titleOverrides', '替代標題'],
       ['reminder', '通知'],
       ['repeat', '重複'],
+      ['repeatCustom', '重複設定'],
       ['location', '地點'],
       ['url', '網址'],
       ['note', '備註'],
-      ['todos', '待辦清單']
+      ['todos', '待辦清單'],
+      ['attachments', '附件']
     ] as const
 
     return fields.flatMap(([field, label]) => {
-      const before = valueLabel(field, beforeEvent[field as keyof CalendarEvent])
-      const after = valueLabel(field, afterEvent[field as keyof CalendarEvent])
-      return before === after ? [] : [{ field, label, before, after }]
+      const beforeValue = beforeEvent[field as keyof CalendarEvent]
+      const afterValue = afterEvent[field as keyof CalendarEvent]
+      const before = valueLabel(field, beforeValue)
+      const after = valueLabel(field, afterValue)
+      const structureChanged = ['titleOverrides', 'todos', 'repeatCustom'].includes(field)
+        && JSON.stringify(beforeValue ?? (field === 'repeatCustom' ? {} : []))
+          !== JSON.stringify(afterValue ?? (field === 'repeatCustom' ? {} : []))
+      return before === after && !structureChanged ? [] : [{ field, label, before, after }]
     })
   }
 
   async function writeActivityLog(input: Omit<CalendarActivityLog, 'id' | 'actorUid' | 'actorName' | 'createdAt'>) {
     try {
-      await addDoc(collection(db, 'calendarActivityLogs'), {
-        ...input,
-        actorUid: user?.uid ?? '',
-        actorName: currentActorName(),
-        createdAt: new Date().toISOString()
-      })
+      if (input.action !== 'delete') await createCalendarActivity(input)
       await queryClient.invalidateQueries({ queryKey: ['calendarActivityLogs'] })
     } catch (error) {
       console.warn('[calendar] write activity log failed', error)
@@ -3017,49 +3270,6 @@ export default function CalendarPage() {
       })
     }
     return Array.from(ids)
-  }
-
-  function titleForEmployeeView(event: CalendarEvent, targetEmployeeId: string) {
-    const employee = employees.find((item) => item.id === targetEmployeeId)
-    const overrides = event.titleOverrides ?? []
-    const userOverride = overrides.find((item) => item.targetType === 'employee' && item.targetId === targetEmployeeId)
-    if (userOverride?.title.trim()) return userOverride.title.trim()
-    const departmentOverride = overrides.find((item) => (
-      item.targetType === 'department' &&
-      (item.targetId === employee?.departmentId || departmentName(item.targetId) === employee?.departmentName)
-    ))
-    if (departmentOverride?.title.trim()) return departmentOverride.title.trim()
-    const allEmployeesOverride = overrides.find((item) => item.targetType === ALL_EMPLOYEES_EXCEPT_SELF && item.targetId !== targetEmployeeId)
-    if (allEmployeesOverride?.title.trim()) return allEmployeesOverride.title.trim()
-    const allDepartmentsOverride = overrides.find((item) => (
-      item.targetType === ALL_DEPARTMENTS_EXCEPT_OWN &&
-      item.targetId !== employee?.departmentId &&
-      departmentName(item.targetId) !== employee?.departmentName
-    ))
-    if (allDepartmentsOverride?.title.trim()) return allDepartmentsOverride.title.trim()
-    return departmentOverride?.title.trim() || event.title
-  }
-
-  async function syncCalendarEventViews(event: CalendarEvent) {
-    if (!event.id || !employees.length) return
-    const viewerIds = new Set(eventViewerEmployeeIds(event))
-    const batch = writeBatch(db)
-    employees
-      .filter((employee) => employeeActiveForCalendar(employee))
-      .forEach((employee) => {
-        const ref = doc(db, 'calendarEventViews', employee.id, 'events', event.id)
-        if (!viewerIds.has(employee.id)) {
-          batch.delete(ref)
-          return
-        }
-        batch.set(ref, {
-          ...event,
-          sourceEventId: event.id,
-          displayTitle: titleForEmployeeView(event, employee.id),
-          updatedAt: new Date().toISOString()
-        }, { merge: true })
-      })
-    await batch.commit()
   }
 
   function toggleEventCalendar(calendarId: string) {
@@ -3121,9 +3331,16 @@ export default function CalendarPage() {
   const selectedRepeatText = repeatLabel(eventForm.repeat, eventForm.date, eventForm.repeatCustom)
   const currentTitleIcon = selectedTitleIcon(eventForm.title, titleIconOptions)
   const currentTitleText = titleWithoutKnownIcon(eventForm.title, titleIconOptions)
-  const editingSalesDeliveryEvent = editingEventId
-    ? events.some((event) => event.id === editingEventId && event.source === 'erpSalesDelivery')
-    : false
+  const editingEventRecord = editingEventId
+    ? events.find((event) => event.id === editingEventId)
+      ?? (editingEventSnapshot?.id === editingEventId ? editingEventSnapshot : null)
+    : null
+  const editingSalesDeliveryEvent = isErpSalesDeliveryEvent(editingEventRecord)
+  const editingRelatedSalesDeliveryEvent = isRelatedErpSalesDeliveryEvent(editingEventRecord)
+  const salesDeliveryEditor = editingSalesDeliveryEvent || isErpSalesDeliveryEvent(copySourceEvent)
+  const relatedSalesDeliveryDraft = editingRelatedSalesDeliveryEvent || isErpSalesDeliveryEvent(copySourceEvent)
+  const salesDeliveryAttachmentReadonly = editingSalesDeliveryEvent || isErpSalesDeliveryEvent(copySourceEvent)
+  const salesDeliverySystemNoteReadonly = editingSalesDeliveryEvent || isErpSalesDeliveryEvent(copySourceEvent)
   const eventDepartmentTitleIcons = departmentTitleIconDefaults[eventForm.departmentId] ?? []
   const eventTitleIconOptions = eventDepartmentTitleIcons.length
     ? titleIconOptions.filter((item) => eventDepartmentTitleIcons.includes(item.icon))
@@ -3526,6 +3743,8 @@ export default function CalendarPage() {
     resetAttachmentUploadState()
     setDeletedAttachments([])
     setEditingEventId(null)
+    setEditingEventSnapshot(null)
+    setCopySourceEvent(null)
     setRecurrenceEditMode(null)
     setRecurrenceEditCandidate(null)
     setShowTitleIconPicker(false)
@@ -3537,6 +3756,7 @@ export default function CalendarPage() {
   }
 
   function openEventDetail(event: CalendarEvent, options: { preserveMonth?: boolean } = {}) {
+    prefetchCombinedDelivery(event)
     setDragActionMenu(null)
     eventDetailReturnDayListDateRef.current = dayListDate
     setDayListDate(null)
@@ -3546,13 +3766,43 @@ export default function CalendarPage() {
     if (!options.preserveMonth && !dayjs(event.date).isSame(month, 'month')) {
       setMonth(dayjs(event.date).startOf('month'))
     }
+    setSelectedEventSnapshot(event)
     setSelectedEventId(event.id)
     if (showNotificationsPanel) markActivityNotificationsSeen()
     setShowNotificationsPanel(false)
     setShowSearchPanel(false)
   }
 
+  async function openActivityLogEvent(log: CalendarActivityLog) {
+    if (!log.eventId || log.action === 'delete' || openingActivityEventId) return
+    setOpeningActivityEventId(log.eventId)
+    try {
+      const loadedEvent = events.find((event) => event.id === log.eventId)
+      if (loadedEvent && eventAllowedForViewer(loadedEvent)) {
+        openEventDetail(loadedEvent)
+        return
+      }
+
+      const eventSnap = await getCalendarEventSnapshot(log.eventId)
+      if (!eventSnap.exists()) {
+        alert('此事件已不存在或已被刪除')
+        return
+      }
+      const event = { id: eventSnap.id, ...eventSnap.data() } as CalendarEvent
+      if (!eventAllowedForViewer(event)) {
+        alert('您目前沒有此事件的檢視權限')
+        return
+      }
+      openEventDetail(event)
+    } catch {
+      alert('目前無法開啟此事件，請稍後再試')
+    } finally {
+      setOpeningActivityEventId(null)
+    }
+  }
+
   function openDeliveryGroup(item: CalendarDayDisplayItem) {
+    void loadCombinedDeliveryStatuses(item.events.filter((event) => event.sourceShippingMethod === '外送' && !isCalendarEventCompleted(event)))
     setDragActionMenu(null)
     setShowEventActionMenu(false)
     setSelectedEventId(null)
@@ -3564,6 +3814,10 @@ export default function CalendarPage() {
   }
 
   function openEditEvent(event: CalendarEvent) {
+    if (!canEditOrCopyErpEvent(employeeId, event)) {
+      alert('沒有 ERP 事件的編輯權限')
+      return
+    }
     if (isHrReadonlyEvent(event)) {
       alert('此事件來自 HR 後台，請至 HR 後台編輯')
       return
@@ -3580,8 +3834,16 @@ export default function CalendarPage() {
   }
 
   function openCopyEvent(event: CalendarEvent, copyDate?: string) {
+    if (!canEditOrCopyErpEvent(employeeId, event)) {
+      alert('沒有 ERP 事件的複製權限')
+      return
+    }
     if (!canCreateEvent) {
       alert('沒有新增事件的權限')
+      return
+    }
+    if (isErpSalesDeliveryEvent(event) && (!event.sourceId?.trim() || !erpSalesDeliveryPrimaryEventId(event))) {
+      alert('此 ERP 事件的銷貨關聯不完整，請先重新整理後再複製。')
       return
     }
     lockEventEditorTouch()
@@ -3625,6 +3887,8 @@ export default function CalendarPage() {
     resetAttachmentUploadState()
     setDeletedAttachments([])
     setEditingEventId(null)
+    setEditingEventSnapshot(null)
+    setCopySourceEvent(event)
     setRecurrenceEditMode(null)
     setRecurrenceEditCandidate(null)
     setShowTitleIconPicker(false)
@@ -3644,6 +3908,10 @@ export default function CalendarPage() {
   }
 
   function startEditEvent(event: CalendarEvent, scope: RecurrenceEditScope) {
+    if (!canEditOrCopyErpEvent(employeeId, event)) {
+      alert('沒有 ERP 事件的編輯權限')
+      return
+    }
     const rootEvent = events.find((item) => item.id === recurrenceRootId(event)) ?? event
     const sourceDate = recurrenceSourceDate(event)
     const formDate = scope === 'all' ? rootEvent.date : sourceDate
@@ -3683,6 +3951,8 @@ export default function CalendarPage() {
     resetAttachmentUploadState()
     setDeletedAttachments([])
     setEditingEventId(rootEvent.id)
+    setEditingEventSnapshot(rootEvent)
+    setCopySourceEvent(null)
     setRecurrenceEditMode(isRepeatingEvent(rootEvent) ? { scope, source: event } : null)
     setRecurrenceEditCandidate(null)
     setShowTitleIconPicker(false)
@@ -3704,7 +3974,9 @@ export default function CalendarPage() {
       queryClient.refetchQueries({ queryKey: ['calendarEvents'], type: 'active' }),
       queryClient.invalidateQueries({ queryKey: ['calendarCalendars'] }),
       queryClient.invalidateQueries({ queryKey: ['calendarEventsSearchIndex'] }),
-      queryClient.invalidateQueries({ queryKey: ['calendarActivityLogs'] })
+      queryClient.invalidateQueries({ queryKey: ['calendarActivityLogs'] }),
+      queryClient.invalidateQueries({ queryKey: ['erp-sales-delivery-relation-index'] }),
+      queryClient.invalidateQueries({ queryKey: ['erp-sales-delivery-related-events'] })
     ])
   }
 
@@ -3797,13 +4069,15 @@ export default function CalendarPage() {
         ...notificationSettings,
         updatedAt: new Date().toISOString()
       }
-      const token = await user.getIdToken()
+      const token = await getFirebaseIdToken(user)
       const controller = new AbortController()
       const timeout = window.setTimeout(() => controller.abort(), 12000)
       try {
+        const appCheckHeaders = await getAppCheckHeaders(true)
         const res = await fetch('/api/save-calendar-notification-settings', {
           method: 'POST',
           headers: {
+            ...appCheckHeaders,
             'Content-Type': 'application/json',
             Authorization: `Bearer ${token}`
           },
@@ -3869,7 +4143,7 @@ export default function CalendarPage() {
     setPasswordError('')
     setPasswordSuccess('')
     try {
-      const token = await auth.currentUser.getIdToken()
+      const token = await getFirebaseIdToken(auth.currentUser)
       const response = await fetch(import.meta.env.VITE_CHANGE_PASSWORD_API_URL || 'https://sch.city-painter.com/api/change-password', {
         method: 'POST',
         headers: {
@@ -3899,7 +4173,7 @@ export default function CalendarPage() {
 
   function markActivityNotificationsSeen() {
     const latest = visibleActivityLogs[0]?.createdAt ?? new Date().toISOString()
-    localStorage.setItem(ACTIVITY_NOTIFICATION_SEEN_KEY, latest)
+    writeBrowserValue(ACTIVITY_NOTIFICATION_SEEN_KEY, latest)
     setLastSeenActivityAt(latest)
     void setLocalBadge(0)
   }
@@ -4129,7 +4403,7 @@ export default function CalendarPage() {
   ) {
     if (!user) throw new Error('尚未登入')
     const [token, appCheckHeaders] = await Promise.all([
-      user.getIdToken(),
+      getFirebaseIdToken(user),
       getAppCheckHeaders(),
     ])
     const response = await fetch('/api/upload-drive', {
@@ -4153,6 +4427,67 @@ export default function CalendarPage() {
     }
   }
 
+  async function syncRelatedSalesDeliveryEvent(
+    event: CalendarEvent,
+    payload: RelatedSalesDeliveryEventSyncInput,
+  ) {
+    if (!user) throw new Error('尚未登入')
+    const primaryEventId = erpSalesDeliveryPrimaryEventId(event)
+    const sourceId = event.sourceId?.trim() || ''
+    if (!primaryEventId || primaryEventId === event.id || !sourceId) {
+      throw new Error('附屬事件未綁定有效的 ERP 主事件')
+    }
+    const relationEvents = await queryClient.ensureQueryData({
+      queryKey: ['erp-sales-delivery-related-events', sourceId],
+      queryFn: () => fetchRelatedSalesDeliveryEvents(sourceId),
+      staleTime: 2 * 60 * 1000,
+    })
+    const primaryEvent = relationEvents.find((item) => item.id === primaryEventId)
+    if (!primaryEvent) throw new Error('ERP 主事件已不存在或無法檢視，請重新整理後再試')
+    if (!isPrimaryErpSalesDeliveryEvent(primaryEvent) || primaryEvent.sourceId !== event.sourceId) {
+      throw new Error('附屬事件與 ERP 主事件的銷貨關聯不一致，已停止同步')
+    }
+    const [token, appCheckHeaders] = await Promise.all([
+      getFirebaseIdToken(user),
+      getAppCheckHeaders(),
+    ])
+    const expectedRelatedFields = relatedSalesDeliveryEventSyncFields(event)
+    const expectedPrimaryFields = relatedSalesDeliveryEventSyncFields(primaryEvent)
+    const relatedNextFields = relatedSalesDeliveryEventSyncFields(payload)
+    const primaryNextFields = primarySyncFieldsForRelatedEdit(
+      expectedPrimaryFields,
+      expectedRelatedFields,
+      relatedNextFields,
+    )
+    const response = await fetch('/api/upload-drive', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+        ...appCheckHeaders,
+      },
+      body: JSON.stringify({
+        action: RELATED_SALES_DELIVERY_EVENT_SYNC_ACTION,
+        requestId: createClientId(),
+        relatedEventId: event.id,
+        primaryEventId,
+        calendarTitle: titleWithoutKnownIcon(primaryEvent.title, titleIconOptions).trim(),
+        expected: {
+          related: expectedRelatedFields,
+          primary: expectedPrimaryFields,
+        },
+        events: {
+          related: relatedNextFields,
+          primary: primaryNextFields,
+        },
+      }),
+    })
+    const result = await response.json().catch(() => null) as { error?: string } | null
+    if (!response.ok) {
+      throw new Error(result?.error || `關聯事件同步失敗（HTTP ${response.status}）`)
+    }
+  }
+
   async function saveEvent() {
     const requiredAssignees = requiredAssigneeIds(eventForm.assigneeIds)
     if ((!eventForm.calendarIds.length && !requiredAssignees.length) || !eventForm.title.trim() || !eventForm.date) {
@@ -4160,21 +4495,30 @@ export default function CalendarPage() {
       return
     }
     const normalizedEndDate = dayjs(eventForm.endDate).isBefore(dayjs(eventForm.date), 'day') ? eventForm.date : eventForm.endDate
-    const editingEvent = editingEventId ? events.find((event) => event.id === editingEventId) : null
+    const editingEvent = editingEventId
+      ? events.find((event) => event.id === editingEventId)
+        ?? (editingEventSnapshot?.id === editingEventId ? editingEventSnapshot : null)
+      : null
+    if (!canEditOrCopyErpEvent(employeeId, editingEvent ?? copySourceEvent)) {
+      alert('沒有 ERP 事件的編輯或複製權限')
+      return
+    }
     if (editingEvent && isHrReadonlyEvent(editingEvent)) {
       alert('此事件來自 HR 後台，請至 HR 後台編輯')
       return
     }
     if (editingEvent?.source === 'erpSalesDelivery') {
-      if (eventForm.allDay) {
+      if (eventForm.allDay && isPrimaryErpSalesDeliveryEvent(editingEvent)) {
         alert('銷貨配送事件必須指定開始與結束時間')
         return
       }
-      const startAt = dayjs(`${eventForm.date} ${eventForm.startTime}`)
-      const endAt = dayjs(`${normalizedEndDate} ${eventForm.endTime}`)
-      if (!startAt.isValid() || !endAt.isValid() || !endAt.isAfter(startAt)) {
-        alert('收貨結束時間必須晚於開始時間')
-        return
+      if (!eventForm.allDay) {
+        const startAt = dayjs(`${eventForm.date} ${eventForm.startTime}`)
+        const endAt = dayjs(`${normalizedEndDate} ${eventForm.endTime}`)
+        if (!startAt.isValid() || !endAt.isValid() || !endAt.isAfter(startAt)) {
+          alert('收貨結束時間必須晚於開始時間')
+          return
+        }
       }
       if (!currentTitleText.trim()) {
         alert('行事曆標題不可只有圖示')
@@ -4234,11 +4578,54 @@ export default function CalendarPage() {
         location: eventForm.location.trim(),
         url: eventForm.url.trim(),
         attachments: [...eventForm.attachments, ...uploadedAttachments],
+        ...(copySourceEvent ? relatedErpSalesDeliveryFields(copySourceEvent) : {}),
         updatedAt: now
+      }
+      if (editingEvent && isRelatedErpSalesDeliveryEvent(editingEvent)) {
+        const confirmationChanges = eventChangeList(editingEvent, payload).filter((change) => (
+          RELATED_SALES_DELIVERY_INDEPENDENT_FIELDS.has(change.field)
+          || RELATED_SALES_DELIVERY_SHARED_FIELDS.has(change.field)
+        ))
+        const independentChanges = confirmationChanges.filter((change) => RELATED_SALES_DELIVERY_INDEPENDENT_FIELDS.has(change.field))
+        const addressChanges = confirmationChanges.filter((change) => change.field === 'location')
+        const sharedChanges = confirmationChanges.filter((change) => (
+          change.field !== 'location' && RELATED_SALES_DELIVERY_SHARED_FIELDS.has(change.field)
+        ))
+        const formatChanges = (changes: typeof confirmationChanges) => changes.length > 0
+          ? changes.map((change) => `${change.label}：「${change.before}」→「${change.after}」`).join('\n')
+          : '無'
+        const confirmationMessage = [
+          '此為附屬事件，確認後才會儲存。',
+          '',
+          '僅修改此事件的名稱、日期與時間：',
+          formatChanges(independentChanges),
+          '',
+          '地址會同步所有關聯事件與 ERP 銷貨單，並清除舊郵遞區號：',
+          formatChanges(addressChanges),
+          '',
+          '其他共用變更會同步主事件與附屬事件：',
+          formatChanges(sharedChanges),
+          '',
+          '確定儲存？',
+        ].join('\n')
+        if (!confirm(confirmationMessage)) {
+          setSaving(false)
+          return
+        }
+        await syncRelatedSalesDeliveryEvent(editingEvent, payload)
+        await refreshCalendarData()
+        dismissActiveKeyboard()
+        setShowEventModal(false)
+        setEditingEventSnapshot(null)
+        setCopySourceEvent(null)
+        resetAttachmentUploadState()
+        setDeletedAttachments([])
+        setRecurrenceEditMode(null)
+        setSaving(false)
+        return
       }
 
       let savedEventId = editingEventId
-      const savedViewEvents: CalendarEvent[] = []
       const optimisticPatches: CalendarEvent[] = []
       let backgroundSave: () => Promise<void> = async () => undefined
       if (editingEventId) {
@@ -4263,7 +4650,6 @@ export default function CalendarPage() {
             createdAt: now
           }
           savedEventId = createdRef.id
-          savedViewEvents.push(createdEvent)
           optimisticPatches.push(rootPatch, createdEvent)
           backgroundSave = async () => {
             await updateDoc(doc(db, 'calendarEvents', editingEventId), {
@@ -4304,7 +4690,6 @@ export default function CalendarPage() {
             createdAt: now
           }
           savedEventId = createdRef.id
-          savedViewEvents.push(createdEvent)
           optimisticPatches.push(rootPatch, createdEvent)
           backgroundSave = async () => {
             await updateDoc(doc(db, 'calendarEvents', editingEventId), {
@@ -4333,11 +4718,10 @@ export default function CalendarPage() {
             createdBy: editingEvent?.createdBy ?? user?.uid ?? '',
             createdAt: editingEvent?.createdAt ?? now
           }
-          savedViewEvents.push(updatedEvent)
           optimisticPatches.push(updatedEvent)
           const changes = editingEvent ? eventChangeList(editingEvent, payload) : []
           backgroundSave = async () => {
-            if (editingEvent?.source === 'erpSalesDelivery') {
+            if (editingEvent && isPrimaryErpSalesDeliveryEvent(editingEvent)) {
               await syncSalesDeliveryEventFields(editingEvent, payload, currentTitleText.trim())
               const eventOnlyPayload = withoutSalesDeliveryEventSyncFields(payload)
               if (Object.keys(eventOnlyPayload).length > 0) {
@@ -4370,26 +4754,55 @@ export default function CalendarPage() {
           createdAt: now
         }
         savedEventId = createdRef.id
-        savedViewEvents.push(createdEvent)
         optimisticPatches.push(createdEvent)
         backgroundSave = async () => {
           const { id: _id, ...createdData } = createdEvent
           await setDoc(createdRef, createdData)
           await writeActivityLog({
-            action: 'create',
+            action: copySourceEvent ? 'copy' : 'create',
             eventId: createdRef.id,
+            ...(copySourceEvent ? { sourceEventId: copySourceEvent.id } : {}),
             eventTitle: payload.title,
             calendarId: payload.calendarId,
             departmentId: payload.departmentId,
             assigneeIds: payload.assigneeIds,
-            date: payload.date
+            date: payload.date,
+            ...(copySourceEvent ? {
+              changes: [{
+                field: 'date',
+                label: '日期',
+                before: copySourceEvent.date,
+                after: payload.date,
+              }],
+            } : {}),
           })
         }
+      }
+
+      const shouldAwaitPrimaryAddressSync = Boolean(
+        editingEvent
+        && isPrimaryErpSalesDeliveryEvent(editingEvent)
+        && (editingEvent.location ?? '').trim() !== payload.location,
+      )
+      if (shouldAwaitPrimaryAddressSync) {
+        await backgroundSave()
+        await refreshCalendarData()
+        dismissActiveKeyboard()
+        setShowEventModal(false)
+        setEditingEventSnapshot(null)
+        setCopySourceEvent(null)
+        resetAttachmentUploadState()
+        setDeletedAttachments([])
+        setRecurrenceEditMode(null)
+        setSaving(false)
+        return
       }
 
       optimisticallyPatchCalendarEvents(optimisticPatches)
       dismissActiveKeyboard()
       setShowEventModal(false)
+      setEditingEventSnapshot(null)
+      setCopySourceEvent(null)
       resetAttachmentUploadState()
       setDeletedAttachments([])
       setRecurrenceEditMode(null)
@@ -4397,7 +4810,6 @@ export default function CalendarPage() {
       void (async () => {
         try {
           await backgroundSave()
-          await Promise.all(savedViewEvents.map((event) => syncCalendarEventViews(event)))
           await refreshCalendarData()
           if (savedEventId) {
             syncEventAttachmentsInBackground(savedEventId, [], removedAttachments)
@@ -4422,7 +4834,7 @@ export default function CalendarPage() {
     context: { uploadKind?: 'comment', commentId?: string, clientUploadId?: string } = {}
   ) {
     if (!user) throw new Error('登入已失效，請重新登入')
-    const token = await user.getIdToken()
+    const token = await getFirebaseIdToken(user)
     const appCheckHeaders = await getAppCheckHeaders()
     const attachments: NonNullable<CalendarEvent['attachments']> = []
     try {
@@ -4468,9 +4880,10 @@ export default function CalendarPage() {
     commentId: string,
     text: string,
     pendingAttachmentCount: number,
+    attachments: EventAttachment[] = [],
   ) {
     if (!user) throw new Error('登入已失效，請重新登入')
-    const [token, appCheckHeaders] = await Promise.all([user.getIdToken(), getAppCheckHeaders()])
+    const [token, appCheckHeaders] = await Promise.all([getFirebaseIdToken(user), getAppCheckHeaders()])
     const response = await fetch('/api/upload-drive', {
       method: 'POST',
       headers: {
@@ -4484,6 +4897,7 @@ export default function CalendarPage() {
         commentId,
         text,
         pendingAttachmentCount,
+        attachments,
       }),
     })
     const result = await response.json().catch(() => ({})) as { ok?: boolean, error?: ApiErrorPayload }
@@ -4494,7 +4908,7 @@ export default function CalendarPage() {
 
   async function fetchSalesCenterAttachments(eventId: string) {
     if (!user) throw new Error('登入已失效，請重新登入')
-    const token = await user.getIdToken()
+    const token = await getFirebaseIdToken(user)
     const appCheckHeaders = await getAppCheckHeaders()
     const response = await fetch('/api/upload-drive', {
       method: 'POST',
@@ -4516,14 +4930,48 @@ export default function CalendarPage() {
     return result.attachments
   }
 
+  async function fetchErpSalesDeliveryRelationIndex() {
+    const events = await fetchCalendarData<CalendarEvent>('source')
+    return events.reduce<Record<string, number>>((index, event) => {
+      const sourceId = event.sourceId?.trim() || ''
+      if (!sourceId || !isRelatedErpSalesDeliveryEvent(event) || !eventAllowedForViewer(event)) return index
+      index[sourceId] = (index[sourceId] ?? 0) + 1
+      return index
+    }, {})
+  }
+
+  async function fetchRelatedSalesDeliveryEvents(sourceId: string) {
+    const events = await fetchCalendarData<CalendarEvent>('source', { sourceId })
+    return events
+      .filter((event) => (
+        isErpSalesDeliveryEvent(event)
+        && event.sourceId === sourceId
+        && eventAllowedForViewer(event)
+      ))
+      .sort((a, b) => {
+        const roleOrder = Number(isRelatedErpSalesDeliveryEvent(a)) - Number(isRelatedErpSalesDeliveryEvent(b))
+        if (roleOrder !== 0) return roleOrder
+        return `${a.date} ${a.startTime}`.localeCompare(`${b.date} ${b.startTime}`)
+      })
+  }
+
   async function fetchProductionLineStatus(eventId: string) {
     if (!user) throw new Error('登入已失效，請重新登入')
     return fetchSalesOperationalStatus(user, eventId)
   }
 
-  async function completeOrderFulfillment(eventId: string, attachmentIds: string[]) {
+  async function invalidateSalesCenterAttachments(eventId: string) {
+    if (!user?.uid) return
+    await queryClient.invalidateQueries({
+      queryKey: ['sales-center-attachments', user.uid, eventId],
+      exact: true,
+      refetchType: 'active',
+    })
+  }
+
+  async function completeOrderFulfillment(retry: ProductionLineRetry) {
     if (!user) throw new Error('登入已失效，請重新登入')
-    const token = await user.getIdToken()
+    const token = await getFirebaseIdToken(user)
     const appCheckHeaders = await getAppCheckHeaders()
     const response = await fetch('/api/upload-drive', {
       method: 'POST',
@@ -4532,7 +4980,14 @@ export default function CalendarPage() {
         'Content-Type': 'application/json',
         ...appCheckHeaders
       },
-      body: JSON.stringify({ action: 'complete-order-fulfillment', eventId, attachmentIds })
+      body: JSON.stringify({
+        action: 'complete-order-fulfillment',
+        eventId: retry.fulfillmentSourceEventId || retry.eventId,
+        attachmentIds: retry.attachmentIds,
+        ...(retry.fulfillmentOrders?.length ? { orders: retry.fulfillmentOrders, batchId: retry.fulfillmentRequestId } : {}),
+        expectedShippingMethod: retry.shippingMethod,
+        expectedOrderStatus: retry.orderStatus,
+      })
     })
     const result = await response.json().catch(() => null) as {
       ok?: boolean
@@ -4556,9 +5011,30 @@ export default function CalendarPage() {
       lineSent: sent,
       lineSkipped: skipped,
       lineWarning: result.result.lineWarning || result.result.warning || pendingWarning,
-      paymentPrompt
+      paymentPrompt,
+      orders: result.result.orders,
     } satisfies OrderFulfillmentResult
   }
+
+  useEffect(() => {
+    const eventId = combinedPaymentEventIds[0]
+    if (!eventId || fulfillmentPaymentModal || fulfillmentPaymentSaving) return
+    let active = true
+    void fetchProductionLineStatus(eventId).then((status) => {
+      if (!active) return
+      if (status.paymentPrompt) {
+        setFulfillmentPaymentModal({ ...status.paymentPrompt, eventId, batchSalesNo: status.salesNo, idempotencyKey: createClientId() })
+        setFulfillmentPaymentAmount(status.paymentPrompt.required ? String(status.paymentPrompt.currentOrderUnpaidAmount) : '')
+        setFulfillmentPaymentError('')
+      }
+      setCombinedPaymentEventIds((ids) => ids.filter((id) => id !== eventId))
+    }).catch((error) => {
+      if (!active) return
+      setProductionLineNotice({ variant: 'error', message: error instanceof Error ? error.message : '請開啟各訂單確認收款狀態' })
+      setCombinedPaymentEventIds((ids) => ids.filter((id) => id !== eventId))
+    })
+    return () => { active = false }
+  }, [combinedPaymentEventIds, fulfillmentPaymentModal, fulfillmentPaymentSaving])
 
   function openFulfillmentPaymentPrompt(eventId: string, prompt: FulfillmentPaymentPrompt | undefined) {
     if (!prompt) return
@@ -4589,7 +5065,7 @@ export default function CalendarPage() {
     setFulfillmentPaymentSaving(true)
     setFulfillmentPaymentError('')
     try {
-      const token = await user.getIdToken()
+      const token = await getFirebaseIdToken(user)
       const appCheckHeaders = await getAppCheckHeaders()
       const response = await fetch('/api/upload-drive', {
         method: 'POST',
@@ -4644,8 +5120,17 @@ export default function CalendarPage() {
 
   async function applyFulfillmentResult(eventId: string, result: OrderFulfillmentResult) {
     const sourceEvent = events.find((event) => event.id === eventId)
-      ?? (selectedEvent?.id === eventId ? selectedEvent : null)
+      ?? (selectedOperationalEvent?.id === eventId ? selectedOperationalEvent : null)
     const updatedAt = new Date().toISOString()
+    if (result.orders?.length) {
+      optimisticallyPatchCalendarEvents(result.orders.flatMap((order) => {
+        const event = events.find((item) => item.id === order.eventId)
+        return event ? [{ ...event, orderStatus: order.orderStatus, updatedAt }] : []
+      }))
+      setCombinedPaymentEventIds((ids) => [...new Set([...ids, ...result.orders!.map((order) => order.eventId)])])
+      await refreshCalendarData()
+      return
+    }
     await updateDoc(doc(db, 'calendarEvents', eventId), {
       orderStatus: result.orderStatus,
       ...(result.shippingMethod ? { sourceShippingMethod: result.shippingMethod } : {}),
@@ -4659,7 +5144,6 @@ export default function CalendarPage() {
         updatedAt
       }
       optimisticallyPatchCalendarEvents([nextEvent])
-      await syncCalendarEventViews(nextEvent).catch(() => undefined)
     }
     setProductionLineStatus((current) => current ? {
       ...current,
@@ -4677,6 +5161,9 @@ export default function CalendarPage() {
       mode: retry.mode,
       attachmentIds: retry.attachmentIds,
       status,
+      shippingMethod: retry.shippingMethod,
+      orderStatus: retry.orderStatus,
+      ...(retry.fulfillmentOrders?.length ? { fulfillmentOrders: retry.fulfillmentOrders, fulfillmentRequestId: retry.fulfillmentRequestId, fulfillmentSourceEventId: retry.fulfillmentSourceEventId || retry.eventId } : {}),
       ...(message ? { message } : {}),
       updatedAt: new Date().toISOString()
     }
@@ -4693,11 +5180,13 @@ export default function CalendarPage() {
     eventId: string,
     attachments: EventAttachment[],
     completionMode: BackgroundAttachmentCompletionMode,
+    serverManaged = true,
+    batch?: { fulfillmentOrders?: CombinedDeliveryOrder[]; fulfillmentRequestId?: string },
   ) {
     const attachmentIds = attachments.map((attachment) => attachment.path).filter(Boolean)
     if (attachmentIds.length !== attachments.length) throw new Error('照片背景處理結果不完整')
     const sourceEvent = events.find((item) => item.id === eventId)
-      ?? (selectedEvent?.id === eventId ? selectedEvent : null)
+      ?? (selectedOperationalEvent?.id === eventId ? selectedOperationalEvent : null)
     if (sourceEvent) {
       const existing = sourceEvent.attachments ?? []
       const additions = attachments.filter((attachment) => {
@@ -4712,35 +5201,58 @@ export default function CalendarPage() {
         updatedAt: new Date().toISOString(),
       }
       optimisticallyPatchCalendarEvents([nextEvent])
-      void syncCalendarEventViews(nextEvent).catch(() => undefined)
     }
 
-    const retry: ProductionLineRetry | null = completionMode === 'fulfillment'
-      ? { eventId, attachmentIds, mode: completionMode }
+    const latestStatus = completionMode === 'fulfillment'
+      ? await fetchProductionLineStatus(eventId)
+      : null
+    if (selectedOperationalEvent?.id === eventId && latestStatus) setProductionLineStatus(latestStatus)
+    const retry: ProductionLineRetry | null = latestStatus
+      ? { ...fulfillmentRetryForStatus(eventId, attachmentIds, latestStatus), ...(batch?.fulfillmentOrders?.length ? batch : {}) }
       : null
     if (!retry) {
       if (completionMode === 'production') await clearProductionLineRetry(eventId).catch(() => undefined)
       await refreshCalendarData()
       return
     }
-    if (!import.meta.env.DEV) {
+    if (serverManaged) {
       setProductionLineRetry(null)
       setProductionLineNotice(null)
+      const eventSnapshot = await getCalendarEventSnapshot(eventId)
+      const storedRetry = eventSnapshot.data()?.productionLineRetry as CalendarEvent['productionLineRetry']
+      if (
+        storedRetry?.mode === 'fulfillment'
+        && (storedRetry.status === 'pending' || storedRetry.status === 'failed')
+        && latestStatus
+      ) {
+        await updateDoc(doc(db, 'calendarEvents', eventId), {
+          'productionLineRetry.shippingMethod': latestStatus.shippingMethod || '',
+          'productionLineRetry.orderStatus': latestStatus.orderStatus || '',
+        })
+      }
+      if (batch?.fulfillmentOrders?.length && latestStatus?.orderStatus === '已送達') setCombinedPaymentEventIds((ids) => [...new Set([...ids, ...batch.fulfillmentOrders!.map((order) => order.eventId)])])
       await refreshCalendarData()
       return
     }
     setProductionLineRetry(retry)
     try {
-      const result = await completeOrderFulfillment(eventId, retry.attachmentIds)
+      const result = await completeOrderFulfillment(retry)
       await applyFulfillmentResult(eventId, result)
       const warning = result.lineWarning
       setProductionLineNotice(warning ? { variant: 'error', message: warning } : null)
-      if (warning) await persistProductionLineRetry(retry, 'failed', warning)
+      if (warning) {
+        await persistProductionLineRetry({
+          ...retry,
+          shippingMethod: result.shippingMethod || retry.shippingMethod,
+          orderStatus: result.orderStatus,
+        }, 'failed', warning)
+      }
       else await clearProductionLineRetry(eventId)
     } catch (error) {
       const message = error instanceof Error ? error.message : '照片已保留，但後續處理失敗'
       setProductionLineNotice({ variant: 'error', message })
-      await persistProductionLineRetry(retry, 'failed', message).catch(() => undefined)
+      if (batch?.fulfillmentOrders?.length) await persistProductionLineRetry(retry, 'failed', message)
+      else await persistProductionLineRetry(retry, 'failed', message).catch(() => undefined)
     } finally {
       void refreshCalendarData().catch(() => undefined)
     }
@@ -4750,7 +5262,30 @@ export default function CalendarPage() {
     if (!productionLineRetry || productionLineRetrying) return
     setProductionLineRetrying(true)
     try {
-      const result = await completeOrderFulfillment(productionLineRetry.eventId, productionLineRetry.attachmentIds)
+      const liveStatus = await fetchProductionLineStatus(productionLineRetry.eventId)
+      setProductionLineStatus(liveStatus)
+      const decision = fulfillmentRetryDecision({
+        ...productionLineRetry,
+        status: 'failed',
+      }, liveStatus)
+      if (decision.action === 'clear') {
+        await clearProductionLineRetry(productionLineRetry.eventId)
+        setProductionLineNotice({
+          variant: 'muted',
+          message: '訂單的出貨方式或狀態已變更，已取消過期的完成重試。',
+        })
+        return
+      }
+      if (decision.action !== 'allow') {
+        setProductionLineNotice({
+          variant: 'error',
+          message: decision.reason === 'permission'
+            ? '您目前沒有完成這張訂單的權限。'
+            : '無法確認訂單最新狀態，未執行完成重試。',
+        })
+        return
+      }
+      const result = await completeOrderFulfillment(productionLineRetry)
       await applyFulfillmentResult(productionLineRetry.eventId, result)
       const warning = result.lineWarning
       setProductionLineNotice({
@@ -4758,12 +5293,34 @@ export default function CalendarPage() {
         message: warning || result.message
       })
       if (warning) {
-        await persistProductionLineRetry(productionLineRetry, 'failed', warning)
+        await persistProductionLineRetry({
+          ...productionLineRetry,
+          shippingMethod: result.shippingMethod || productionLineRetry.shippingMethod,
+          orderStatus: result.orderStatus,
+        }, 'failed', warning)
       } else {
         await clearProductionLineRetry(productionLineRetry.eventId)
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : '訂單完成重試失敗'
+      try {
+        const liveStatus = await fetchProductionLineStatus(productionLineRetry.eventId)
+        setProductionLineStatus(liveStatus)
+        const latestDecision = fulfillmentRetryDecision({
+          ...productionLineRetry,
+          status: 'failed',
+        }, liveStatus)
+        if (latestDecision.action === 'clear') {
+          await clearProductionLineRetry(productionLineRetry.eventId)
+          setProductionLineNotice({
+            variant: 'muted',
+            message: '訂單的出貨方式或狀態已變更，已取消過期的完成重試。',
+          })
+          return
+        }
+      } catch (statusError) {
+        console.warn('[calendar] 訂單完成重試失敗後狀態核對失敗', statusError)
+      }
       setProductionLineNotice({
         variant: 'error',
         message
@@ -4794,12 +5351,27 @@ export default function CalendarPage() {
   function closeEventModal() {
     discardAttachmentUploadState()
     dismissActiveKeyboard()
+    setEditingEventSnapshot(null)
+    setCopySourceEvent(null)
     setShowEventModal(false)
   }
+
+  useEffect(() => {
+    if (!showEventModal || showRepeatPicker) return
+    function closeEventEditorWithEscape(event: KeyboardEvent) {
+      if (event.key !== 'Escape' || event.isComposing) return
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      closeEventModal()
+    }
+    document.addEventListener('keydown', closeEventEditorWithEscape, true)
+    return () => document.removeEventListener('keydown', closeEventEditorWithEscape, true)
+  }, [showEventModal, showRepeatPicker, closeEventModal])
 
   function handleAttachmentFileChange(event: ChangeEvent<HTMLInputElement>) {
     const files = Array.from(event.target.files ?? [])
     event.target.value = ''
+    if (salesDeliveryAttachmentReadonly) return
     if (!files.length) return
 
     const uploadItems = files.map((file) => ({
@@ -4866,22 +5438,16 @@ export default function CalendarPage() {
     commentId: string,
     attachment: EventAttachment,
   ) {
-    const commentRef = doc(db, 'calendarEvents', eventId, 'comments', commentId)
-    await runTransaction(db, async (transaction) => {
-      const snapshot = await transaction.get(commentRef)
-      if (!snapshot.exists()) throw new Error('找不到附件對應的留言')
-      const data = snapshot.data()
-      const attachments = Array.isArray(data.attachments) ? data.attachments as EventAttachment[] : []
-      const alreadyAttached = attachments.some((item) => (
-        (attachment.uploadJobId && item.uploadJobId === attachment.uploadJobId)
-        || item.path === attachment.path
-      ))
-      transaction.update(commentRef, {
-        attachments: alreadyAttached ? attachments : [...attachments, attachment],
-        pendingAttachmentCount: Math.max(0, (Number(data.pendingAttachmentCount) || 0) - (alreadyAttached ? 0 : 1)),
-        updatedAt: serverTimestamp(),
-      })
+    if (!user) throw new Error('尚未登入')
+    const [token, appCheckHeaders] = await Promise.all([getFirebaseIdToken(user), getAppCheckHeaders(true)])
+    const response = await fetch('/api/upload-drive', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, ...appCheckHeaders },
+      body: JSON.stringify({ action: 'commit-development-comment-attachment', eventId, commentId, fileId: attachment.path }),
+      signal: AbortSignal.timeout(30_000),
     })
+    const result = await response.json().catch(() => null) as { error?: string } | null
+    if (!response.ok) throw new Error(result?.error || '留言附件儲存失敗')
   }
 
   async function processCommentBackgroundUploads(rows: DurableBackgroundAttachmentUpload[]) {
@@ -4894,19 +5460,13 @@ export default function CalendarPage() {
       groups.set(key, [...(groups.get(key) ?? []), row])
     })
     await Promise.all(Array.from(groups.values()).map(async (group) => {
-      const cloudSafeIds = new Set(group.filter((row) => row.cloudSafe).map((row) => row.id))
-      const showCloudSafeNotice = () => {
-        if (cloudSafeIds.size !== group.length) return
-        setDetailAttachmentUploadNotice({
-          id: Date.now(),
-          message: group.length > 1 ? `${group.length} 張照片上傳成功` : '上傳成功',
-        })
-      }
+      const markCloudSafe = createCloudSafeBatchNotice(group)
       try {
         await runWithConcurrency(group, 3, async (row) => {
           let cloudSafeReached = row.cloudSafe
           try {
             const commentId = row.commentId as string
+            const cloudUpload = shouldUseCalendarCloudUpload(import.meta.env.DEV, import.meta.env.VITE_CALENDAR_BACKGROUND_UPLOAD, row.jobId)
             const file = durableBackgroundAttachmentFile(row)
             const capture = row.capture ?? await extractPhotoCaptureMetadata(file)
             const result = await startBackgroundAttachmentUpload({
@@ -4917,7 +5477,7 @@ export default function CalendarPage() {
               commentId,
               durableUpload: row,
               capture,
-              ...(import.meta.env.DEV ? {
+              ...(!cloudUpload ? {
                 localFallback: async (fallbackFile, clientUploadId) => {
                   const [attachment] = await uploadEventAttachments(row.eventId, [fallbackFile], {
                     uploadKind: 'comment',
@@ -4933,11 +5493,15 @@ export default function CalendarPage() {
               ))),
               onCloudSafe: () => {
                 cloudSafeReached = true
-                cloudSafeIds.add(row.id)
                 setCommentBackgroundUploads((items) => items.map((item) => (
                   item.id === row.id ? { ...item, cloudSafe: true } : item
                 )))
-                showCloudSafeNotice()
+                if (markCloudSafe(row.id)) {
+                  setDetailAttachmentUploadNotice({
+                    id: Date.now(),
+                    message: group.length > 1 ? `${group.length} 張照片上傳成功` : '照片上傳成功',
+                  })
+                }
               },
               onProgress: (status, ratio) => setCommentBackgroundUploads((items) => items.map((item) => (
                 item.id === row.id
@@ -4945,7 +5509,7 @@ export default function CalendarPage() {
                   : item
               ))),
             })
-            if (import.meta.env.DEV) {
+            if (!cloudUpload) {
               await commitDevelopmentCommentAttachment(row.eventId, commentId, result.attachment)
             }
             setCommentBackgroundUploads((items) => items.map((item) => (
@@ -4982,7 +5546,6 @@ export default function CalendarPage() {
             )))
           }
         })
-        showCloudSafeNotice()
       } finally {
         group.forEach((row) => backgroundAttachmentRecoveryIdsRef.current.delete(`durable:${row.id}`))
       }
@@ -4999,13 +5562,17 @@ export default function CalendarPage() {
     })
     await Promise.all(Array.from(groups.values()).map(async (group) => {
       const completed: { id: string, attachment: EventAttachment }[] = []
+      const cloudUpload = shouldUseCalendarCloudUpload(import.meta.env.DEV, import.meta.env.VITE_CALENDAR_BACKGROUND_UPLOAD, group.find((row) => row.jobId)?.jobId)
+      const markCloudSafe = createCloudSafeBatchNotice(group)
       try {
-        const latestStatus = await fetchProductionLineStatus(group[0].eventId)
-        if (selectedEvent?.id === group[0].eventId) {
+        const latestStatus = group[0].completionMode === 'fulfillment'
+          ? await fetchProductionLineStatus(group[0].eventId)
+          : null
+        if (latestStatus && selectedOperationalEvent?.id === group[0].eventId) {
           setProductionLineStatus(latestStatus)
-          openFulfillmentPaymentPrompt(group[0].eventId, latestStatus.paymentPrompt)
+          if (!group[0].fulfillmentOrders?.length) openFulfillmentPaymentPrompt(group[0].eventId, latestStatus.paymentPrompt)
         }
-        if (group[0].completionMode === 'fulfillment') {
+        if (group[0].completionMode === 'fulfillment' && latestStatus) {
           if (!['外送', '施工', '活動'].includes(latestStatus.shippingMethod || '')) {
             throw new Error('此事件目前不是外送、施工或活動訂單')
           }
@@ -5013,17 +5580,20 @@ export default function CalendarPage() {
         }
 
         await runWithConcurrency(group, 3, async (row) => {
+          let cloudSafeReached = row.cloudSafe
           try {
             const file = durableBackgroundAttachmentFile(row)
-            const capture = row.capture ?? await extractPhotoCaptureMetadata(file)
+            const extractedCapture = await extractPhotoCaptureMetadata(file)
+            const capture = mergePhotoCaptureMetadata(extractedCapture, row.capture)
+            const durableUpload = await updateDurableBackgroundAttachmentUpload(row.id, { capture }).catch(() => row)
             const result = await startBackgroundAttachmentUpload({
               eventId: row.eventId,
               file,
               completionMode: row.completionMode,
-              durableUpload: row,
+              durableUpload,
               capture,
-              ...(import.meta.env.DEV ? {
-                // 本機沒有 Storage 觸發器，原檔仍先保存至 IndexedDB，再由既有 API 背景上傳。
+              ...(!cloudUpload ? {
+                // 未啟用雲端工作時保留既有本機傳輸，已有工作則必須沿用原工作。
                 localFallback: async (fallbackFile, clientUploadId) => {
                   const [attachment] = await uploadEventAttachments(row.eventId, [fallbackFile], { clientUploadId })
                   if (!attachment) throw new Error('本機照片上傳失敗')
@@ -5033,9 +5603,18 @@ export default function CalendarPage() {
               onJobCreated: (jobId) => setDetailBackgroundUploads((items) => items.map((item) => (
                 item.id === row.id ? { ...item, jobId } : item
               ))),
-              onCloudSafe: () => setDetailBackgroundUploads((items) => items.map((item) => (
-                item.id === row.id ? { ...item, cloudSafe: true } : item
-              ))),
+              onCloudSafe: () => {
+                cloudSafeReached = true
+                setDetailBackgroundUploads((items) => items.map((item) => (
+                  item.id === row.id ? { ...item, cloudSafe: true } : item
+                )))
+                if (markCloudSafe(row.id)) {
+                  setDetailAttachmentUploadNotice({
+                    id: Date.now(),
+                    message: group.length > 1 ? `${group.length} 張照片上傳成功` : '照片上傳成功',
+                  })
+                }
+              },
               onProgress: (status, ratio) => setDetailBackgroundUploads((items) => items.map((item) => (
                 item.id === row.id
                   ? { ...item, status, progress: ratio ?? item.progress, error: undefined }
@@ -5057,6 +5636,12 @@ export default function CalendarPage() {
             completed.push({ id: row.id, attachment: result.attachment })
           } catch (error) {
             const message = error instanceof Error ? error.message : '照片背景上傳失敗'
+            if (cloudSafeReached && message.includes('仍在背景處理')) {
+              setDetailBackgroundUploads((items) => items.map((item) => (
+                item.id === row.id ? { ...item, status: 'finalizing', cloudSafe: true, error: undefined } : item
+              )))
+              return
+            }
             await updateDurableBackgroundAttachmentUpload(row.id, {
               status: 'failed',
               error: message,
@@ -5068,19 +5653,27 @@ export default function CalendarPage() {
         })
 
         if (completed.length === 0) return
+        if (group[0].fulfillmentOrders?.length && completed.length !== group[0].fulfillmentBatchSize) {
+          throw new Error('本次配達照片尚未全部確認，請重試整批回報以確認配達結果。')
+        }
         const completedAttachments = completed.map((item) => item.attachment)
-        if (import.meta.env.DEV) {
+        if (!cloudUpload) {
           const attachmentIds = completedAttachments.map((attachment) => attachment.path).filter(Boolean)
           const updatedAt = new Date().toISOString()
           await updateDoc(doc(db, 'calendarEvents', group[0].eventId), {
             attachments: arrayUnion(...completedAttachments),
-            productionLineRetry: {
-              mode: 'fulfillment',
-              attachmentIds,
-              status: 'pending',
-              message: '照片已保留，訂單完成尚待確認。',
-              updatedAt,
-            },
+            ...(latestStatus && group[0].completionMode === 'fulfillment' ? {
+              productionLineRetry: {
+                mode: 'fulfillment',
+                attachmentIds,
+                status: 'pending',
+                shippingMethod: latestStatus.shippingMethod || '',
+                orderStatus: latestStatus.orderStatus || '',
+                ...(group[0].fulfillmentOrders?.length ? { fulfillmentOrders: group[0].fulfillmentOrders, fulfillmentRequestId: group[0].fulfillmentRequestId, fulfillmentSourceEventId: group[0].eventId } : {}),
+                message: '照片已保留，訂單完成尚待確認。',
+                updatedAt,
+              },
+            } : {}),
             updatedAt,
           })
         }
@@ -5088,28 +5681,26 @@ export default function CalendarPage() {
           group[0].eventId,
           completedAttachments,
           group[0].completionMode,
+          cloudUpload,
+          group[0],
         )
+        await invalidateSalesCenterAttachments(group[0].eventId)
         await Promise.all(completedAttachments
           .map(attachmentPreviewUrl)
           .filter(Boolean)
           .map(preloadSalesAttachmentPreview))
         const completedIds = new Set(completed.map((item) => item.id))
+        if (group[0].fulfillmentOrders?.length) await removeDurableBackgroundAttachmentBatch(Array.from(completedIds))
         setDetailBackgroundUploads((items) => items.filter((item) => {
           if (!completedIds.has(item.id)) return true
           URL.revokeObjectURL(item.previewUrl)
           return false
         }))
-        setDetailAttachmentUploadNotice({
-          id: Date.now(),
-          message: completedIds.size > 1 ? `${completedIds.size} 張照片上傳成功` : '上傳成功',
-        })
-        void Promise.allSettled(
-          Array.from(completedIds).map((id) => removeDurableBackgroundAttachmentUpload(id)),
-        ).then((results) => {
-          if (results.some((result) => result.status === 'rejected')) {
-            console.warn('[calendar] 已完成照片的本機佇列清理失敗，稍後會自動重試')
-          }
-        })
+        if (!group[0].fulfillmentOrders?.length) {
+          void Promise.allSettled(Array.from(completedIds).map((id) => removeDurableBackgroundAttachmentUpload(id))).then((results) => {
+            if (results.some((result) => result.status === 'rejected')) console.warn('[calendar] 已完成照片的本機佇列清理失敗，稍後會自動重試')
+          })
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : '照片背景上傳失敗'
         await Promise.all(group.map((row) => updateDurableBackgroundAttachmentUpload(row.id, {
@@ -5128,11 +5719,34 @@ export default function CalendarPage() {
     }))
   }
 
-  function queueFulfillmentBackgroundUploads(eventSnapshot: CalendarEvent, files: File[]) {
-    void (async () => {
+  function queueDetailBackgroundUploads(
+    eventSnapshot: CalendarEvent,
+    files: File[],
+    deviceLocation?: PhotoLocation,
+    completionMode: BackgroundAttachmentCompletionMode = 'fulfillment',
+    batch?: { fulfillmentOrders: CombinedDeliveryOrder[]; fulfillmentRequestId: string },
+    requireWholeBatch = false,
+  ) {
+    return (async () => {
       if (!user?.uid) return
       const persistedRows: DurableBackgroundAttachmentUpload[] = []
       const fulfillmentBatchId = createClientId()
+      const fallbackCapture: PhotoCaptureMetadata | undefined = deviceLocation
+        ? { capturedAtSource: 'unknown', location: deviceLocation }
+        : undefined
+      if (batch || requireWholeBatch) {
+        const rows = await persistDurableBackgroundAttachmentBatch(files.map((file) => ({
+          id: createClientId(), uploaderUid: user.uid, eventId: eventSnapshot.id, completionMode,
+          fulfillmentBatchId, fulfillmentBatchSize: files.length, ...batch, file, capture: fallbackCapture,
+        })))
+        setDetailBackgroundUploads((items) => [...items, ...rows.map((row) => ({
+          id: row.id, eventId: row.eventId, fulfillmentRequestId: row.fulfillmentRequestId,
+          name: row.name, previewUrl: URL.createObjectURL(row.blob), status: row.status,
+          progress: 0, cloudSafe: false, createdAt: row.createdAt,
+        }))])
+        void processDurableBackgroundUploads(rows)
+        return
+      }
       for (const file of files) {
         const id = createClientId()
         const previewUrl = URL.createObjectURL(file)
@@ -5152,10 +5766,14 @@ export default function CalendarPage() {
             id,
             uploaderUid: user.uid,
             eventId: eventSnapshot.id,
-            completionMode: 'fulfillment',
-            fulfillmentBatchId,
-            fulfillmentBatchSize: files.length,
+            completionMode,
+            ...(completionMode === 'fulfillment' ? {
+              fulfillmentBatchId,
+              fulfillmentBatchSize: files.length,
+              ...(batch || {}),
+            } : {}),
             file,
+            capture: fallbackCapture,
           })
           persistedRows.push(row)
         } catch (error) {
@@ -5169,7 +5787,7 @@ export default function CalendarPage() {
       }
       if (persistedRows.length > 0) {
         const normalizedRows = await Promise.all(persistedRows.map((row) => (
-          row.fulfillmentBatchSize === persistedRows.length
+          completionMode !== 'fulfillment' || row.fulfillmentBatchSize === persistedRows.length
             ? Promise.resolve(row)
             : updateDurableBackgroundAttachmentUpload(row.id, {
                 fulfillmentBatchSize: persistedRows.length,
@@ -5180,12 +5798,109 @@ export default function CalendarPage() {
     })()
   }
 
+  async function retryCombinedBackgroundUploads(requestId: string) {
+    if (!user) return
+    try {
+      const rows = (await loadDurableBackgroundAttachmentUploads(user.uid)).filter((row) => row.fulfillmentRequestId === requestId)
+      await processDurableBackgroundUploads(rows)
+    } catch (error) {
+      setProductionLineNotice({ variant: 'error', message: error instanceof Error ? error.message : '配達回報恢復失敗' })
+    }
+  }
+
+  async function fetchCombinedDeliveryStatuses(candidates: CalendarEvent[]): Promise<DeliverySelectionResult> {
+    if (!user) throw new Error('登入已失效，請重新登入')
+    const result: DeliverySelectionResult = { statuses: {}, errors: {} }
+    const [token, appCheckHeaders] = await Promise.all([getFirebaseIdToken(user), getAppCheckHeaders()])
+    for (let offset = 0; offset < candidates.length; offset += 20) {
+      const group = candidates.slice(offset, offset + 20)
+      const response = await fetch('/api/upload-drive', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...appCheckHeaders },
+        body: JSON.stringify({ action: 'fulfillment-selection-status', eventIds: group.map((event) => event.id) }),
+      })
+      const payload = await response.json().catch(() => null)
+      if (!response.ok || payload?.ok !== true || !Array.isArray(payload.statuses)) throw new Error(apiErrorMessage(payload?.error, '訂單確認失敗'))
+      for (const row of payload.statuses) {
+        const event = group.find((candidate) => candidate.id === row.eventId && candidate.sourceId === row.salesId)
+        if (event && typeof row.status?.canCompleteOrder === 'boolean' && typeof row.status?.shippingMethod === 'string' && typeof row.status?.orderStatus === 'string') {
+          result.statuses[event.id] = row.status
+        }
+      }
+      for (const row of Array.isArray(payload.errors) ? payload.errors : []) {
+        if (group.some((event) => event.id === row.eventId)) result.errors[row.eventId] = String(row.message || '訂單確認失敗')
+      }
+    }
+    return result
+  }
+
+  function loadCombinedDeliveryStatuses(candidates: CalendarEvent[]) {
+    return combinedDeliveryStatusCache.load(candidates, fetchCombinedDeliveryStatuses)
+  }
+
+  function prefetchCombinedDelivery(source: CalendarEvent) {
+    if (source.sourceShippingMethod !== '外送' || source.sourceEventRole === 'related') return
+    void loadCombinedDeliveryStatuses(combinedDeliveryCandidates(source, visibleEvents).filter((event) => !isCalendarEventCompleted(event)))
+  }
+
+  function openCombinedDelivery(source: CalendarEvent, files: File[] = []) {
+    prefetchCombinedDelivery(source)
+    setCombinedDelivery({ events: combinedDeliveryCandidates(source, visibleEvents), files, requestId: createClientId() })
+    setSelectedDeliveryGroupKey(null)
+  }
+
+  async function previewCombinedDelivery(orders: CombinedDeliveryOrder[]) {
+    if (!user || !combinedDelivery) throw new Error('登入或配達資料已失效')
+    if (orders.length === 1) {
+      const status = await fetchProductionLineStatus(orders[0].eventId)
+      if (!status.canCompleteOrder || status.shippingMethod !== '外送' || status.orderStatus !== orders[0].expectedOrderStatus) throw new Error('訂單狀態已變更，請重新開啟配達回報')
+      return [productionLineBindingDescription(status)]
+    }
+    const response = await fetch('/api/upload-drive', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${await getFirebaseIdToken(user)}`, 'Content-Type': 'application/json', ...await getAppCheckHeaders() },
+      body: JSON.stringify({ action: 'complete-order-fulfillment', preflight: true, eventId: combinedDelivery.events[0].id, orders, batchId: combinedDelivery.requestId }),
+    })
+    const payload = await response.json().catch(() => null)
+    if (!response.ok || payload?.ok !== true) throw new Error(apiErrorMessage(payload?.error, '配達資料確認失敗'))
+    const notifications = payload.result?.notificationGroups
+    const notices = Array.isArray(notifications)
+      ? notifications.map((notification: { displayName?: string; orders?: { salesNo: string }[] }) => `${notification.displayName || '已綁定的 LINE 通知對象'}：${notification.orders?.map((order) => order.salesNo).join('、') || ''}`)
+      : []
+    const warnings = Array.isArray(payload.result?.warnings)
+      ? payload.result.warnings.map((warning: { salesNo?: string; message: string }) => `${warning.salesNo || ''} ${warning.message}`.trim())
+      : []
+    return [...notices, ...warnings, ...(notices.length ? [] : ['本次沒有可發送的 LINE 通知對象，將保留配達紀錄。'])]
+  }
+
+  async function submitCombinedDelivery(selected: CalendarEvent[], files: File[], orders: CombinedDeliveryOrder[]) {
+    if (!combinedDelivery || combinedDeliverySubmittingRef.current) return
+    combinedDeliverySubmittingRef.current = true
+    try {
+      await previewCombinedDelivery(orders)
+      const source = selected[0]
+      const location = isTouchDevice ? await requestDevicePhotoLocationForEvent(source.id) : null
+      if (location?.warning) setDetailAttachmentUploadNotice({ id: Date.now(), message: location.warning })
+      const batch = orders.length > 1 ? { fulfillmentOrders: orders, fulfillmentRequestId: combinedDelivery.requestId } : undefined
+      openEventDetail(source)
+      await queueDetailBackgroundUploads(source, files, location?.location, 'fulfillment', batch, true)
+      setCombinedDelivery(null)
+    } finally {
+      combinedDeliverySubmittingRef.current = false
+    }
+  }
+
   async function handleDetailAttachmentFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const selectedEvent = selectedOperationalEvent
     const files = Array.from(event.target.files ?? [])
     event.target.value = ''
     if (!files.length || !selectedEvent) return
     if (!canUploadDetailAttachment(selectedEvent, productionLineStatus) || isHrReadonlyEvent(selectedEvent)) {
       alert('沒有此事件的附件上傳權限')
+      return
+    }
+    if (fulfillmentShippingMethod(selectedEvent, productionLineStatus) === '外送' && !isCalendarEventCompleted(selectedEvent)) {
+      openCombinedDelivery(selectedEvent, files)
       return
     }
     let fulfillmentEvent = isErpOrderFulfillmentEvent(selectedEvent, productionLineStatus)
@@ -5198,12 +5913,6 @@ export default function CalendarPage() {
       alert('外送／施工／活動完成只能上傳照片')
       return
     }
-    // 只切換事件詳情的完成照片，事件編輯器、留言及其他附件仍沿用原流程。
-    if (fulfillmentEvent) {
-      queueFulfillmentBackgroundUploads(selectedEvent, files)
-      return
-    }
-
     let uploadedAttachments: NonNullable<CalendarEvent['attachments']> = []
     let firestoreUpdated = false
     let completedOrderStatus = ''
@@ -5211,6 +5920,19 @@ export default function CalendarPage() {
     let lineAttachmentIds: string[] = []
     setDetailAttachmentUploading(true)
     try {
+      // 選檔完成後才要求定位，避免 iOS 同時開啟定位授權與照片選擇器。
+      const deviceLocationResult = fulfillmentEvent && isTouchDevice
+        ? await requestDevicePhotoLocationForEvent(selectedEvent.id)
+        : null
+      if (deviceLocationResult?.warning) {
+        setDetailAttachmentUploadNotice({ id: Date.now(), message: deviceLocationResult.warning })
+      }
+      // 完工照片需保持整批完成語意，一般照片不觸發訂單完成。
+      if (fulfillmentEvent) {
+        queueDetailBackgroundUploads(selectedEvent, files, deviceLocationResult?.location)
+        return
+      }
+
       if (selectedEvent.source === 'erpSalesDelivery') {
         latestProductionLineStatus = await fetchProductionLineStatus(selectedEvent.id)
         setProductionLineStatus(latestProductionLineStatus)
@@ -5226,25 +5948,34 @@ export default function CalendarPage() {
       }
       if (fulfillmentEvent) {
         setDetailAttachmentUploading(false)
-        queueFulfillmentBackgroundUploads(selectedEvent, files)
+        queueDetailBackgroundUploads(selectedEvent, files, deviceLocationResult?.location)
         return
       }
-      uploadedAttachments = await uploadEventAttachments(selectedEvent.id, files)
+      const photoFiles = files.filter(canUseBackgroundImageUpload)
+      const directFiles = files.filter((file) => !canUseBackgroundImageUpload(file))
+      if (photoFiles.length) {
+        queueDetailBackgroundUploads(selectedEvent, photoFiles, deviceLocationResult?.location, 'none')
+      }
+      if (!directFiles.length) {
+        setDetailAttachmentUploading(false)
+        return
+      }
+      uploadedAttachments = await uploadEventAttachments(selectedEvent.id, directFiles)
       if (!uploadedAttachments.length) throw new Error('附件上傳失敗')
       const nextAttachments = [...(selectedEvent.attachments ?? []), ...uploadedAttachments]
       const updatedAt = new Date().toISOString()
       lineAttachmentIds = uploadedAttachments
         .filter((attachment) => attachment.lineOriginalUrl && attachment.linePreviewUrl && attachment.path)
         .map((attachment) => attachment.path)
-      const pendingRetry: ProductionLineRetry | null = lineAttachmentIds.length > 0 && fulfillmentEvent ? {
-          eventId: selectedEvent.id,
-          attachmentIds: lineAttachmentIds,
-          mode: 'fulfillment'
-        } : null
+      const pendingRetry: ProductionLineRetry | null = lineAttachmentIds.length > 0 && fulfillmentEvent && latestProductionLineStatus
+        ? fulfillmentRetryForStatus(selectedEvent.id, lineAttachmentIds, latestProductionLineStatus)
+        : null
       const pendingRetryMetadata: CalendarEvent['productionLineRetry'] = pendingRetry ? {
         mode: pendingRetry.mode,
         attachmentIds: pendingRetry.attachmentIds,
         status: 'pending',
+        shippingMethod: pendingRetry.shippingMethod,
+        orderStatus: pendingRetry.orderStatus,
         message: '照片已保留，訂單完成尚待確認。',
         updatedAt
       } : undefined
@@ -5259,7 +5990,8 @@ export default function CalendarPage() {
         if (lineAttachmentIds.length !== uploadedAttachments.length) {
           throw new Error('外送／施工／活動照片處理不完整，請稍後重試')
         }
-        const result = await completeOrderFulfillment(selectedEvent.id, lineAttachmentIds)
+        if (!pendingRetry) throw new Error('無法建立訂單完成狀態快照')
+        const result = await completeOrderFulfillment(pendingRetry)
         completedOrderStatus = result.orderStatus
         completedShippingMethod = result.shippingMethod || selectedEvent.sourceShippingMethod || ''
         const nextEvent: CalendarEvent = {
@@ -5282,26 +6014,23 @@ export default function CalendarPage() {
           await persistProductionLineRetry({
             eventId: selectedEvent.id,
             attachmentIds: lineAttachmentIds,
-            mode: 'fulfillment'
+            mode: 'fulfillment',
+            shippingMethod: result.shippingMethod || pendingRetry?.shippingMethod || '',
+            orderStatus: result.orderStatus,
           }, 'failed', result.lineWarning)
         } else {
           await clearProductionLineRetry(selectedEvent.id)
         }
       }
       setDetailAttachmentUploading(false)
-      setDetailAttachmentUploadNotice({
-        id: Date.now(),
-        message: uploadedAttachments.length > 1 ? `${uploadedAttachments.length} 個附件上傳成功` : '上傳成功',
-      })
+      if (!photoFiles.length) {
+        setDetailAttachmentUploadNotice({
+          id: Date.now(),
+          message: uploadedAttachments.length > 1 ? `${uploadedAttachments.length} 個附件上傳成功` : '上傳成功',
+        })
+      }
       void (async () => {
         try {
-          await syncCalendarEventViews({
-            ...selectedEvent,
-            attachments: nextAttachments,
-            ...(completedOrderStatus ? { orderStatus: completedOrderStatus } : {}),
-            ...(completedShippingMethod ? { sourceShippingMethod: completedShippingMethod } : {}),
-            updatedAt
-          })
           await refreshCalendarData()
         } catch {
           await refreshCalendarData().catch(() => undefined)
@@ -5322,11 +6051,14 @@ export default function CalendarPage() {
         await persistProductionLineRetry({
           eventId: selectedEvent.id,
           attachmentIds: lineAttachmentIds,
-          mode: 'fulfillment'
+          mode: 'fulfillment',
+          shippingMethod: latestProductionLineStatus?.shippingMethod || selectedEvent.sourceShippingMethod || '',
+          orderStatus: latestProductionLineStatus?.orderStatus || selectedEvent.orderStatus || '',
         }, 'failed', `照片已保留，但訂單完成失敗：${message}`).catch(() => undefined)
       } else {
         alert(message)
       }
+    } finally {
       setDetailAttachmentUploading(false)
     }
   }
@@ -5386,12 +6118,15 @@ export default function CalendarPage() {
     const commentRef = doc(collection(db, 'calendarEvents', threadId, 'comments'))
     let uploadedAttachments: EventAttachment[] = []
     const durableRows: DurableBackgroundAttachmentUpload[] = []
-    const useBackgroundPhotoUpload = pendingItems.length > 0
-      && pendingItems.every((item) => canUseBackgroundImageUpload(item.file))
+    const photoItems = pendingItems.filter((item) => canUseBackgroundImageUpload(item.file))
+    const directFiles = pendingItems.filter((item) => !canUseBackgroundImageUpload(item.file)).map((item) => item.file)
+    const useBackgroundPhotoUpload = photoItems.length > 0
+    let commentCreated = false
+    let commentShellRequested = false
     setCommentSending(true)
     try {
       if (useBackgroundPhotoUpload) {
-        for (const item of pendingItems) {
+        for (const item of photoItems) {
           durableRows.push(await persistDurableBackgroundAttachmentUpload({
             id: item.id,
             uploaderUid: user.uid,
@@ -5402,7 +6137,16 @@ export default function CalendarPage() {
             file: item.file,
           }))
         }
-        await createBackgroundCommentShell(threadId, commentRef.id, text, durableRows.length)
+        if (directFiles.length) {
+          uploadedAttachments = await uploadEventAttachments(threadId, directFiles, {
+            uploadKind: 'comment',
+            commentId: commentRef.id,
+          })
+        }
+        commentShellRequested = true
+        await createBackgroundCommentShell(threadId, commentRef.id, text, durableRows.length, uploadedAttachments)
+        setEventCommentsReloadKey(value => value + 1)
+        commentCreated = true
         setCommentBackgroundUploads((items) => [
           ...items,
           ...durableRows.map((row) => ({
@@ -5431,20 +6175,28 @@ export default function CalendarPage() {
           commentId: commentRef.id
         })
       }
-      await setDoc(commentRef, {
-        authorUid: user.uid,
-        authorEmployeeId: employeeId,
-        authorName: currentActorName(),
-        text,
-        attachments: uploadedAttachments,
-        createdAt: serverTimestamp()
-      })
+      await createBackgroundCommentShell(threadId, commentRef.id, text, 0, uploadedAttachments)
+      setEventCommentsReloadKey(value => value + 1)
       if (activeCommentThreadIdRef.current === threadId) {
         setCommentDraft('')
         setCommentFiles([])
         window.setTimeout(() => commentThreadEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }), 80)
       }
     } catch (error) {
+      if (commentShellRequested && !commentCreated) {
+        const existingComments = await fetchCalendarData<CalendarEventComment>('comments', { eventId: threadId }).catch(() => null)
+        commentCreated = existingComments?.some(comment => comment.id === commentRef.id) === true
+        if (!commentCreated) {
+          console.warn('[calendar] 留言建立結果待確認，保留照片佇列與已上傳附件', error)
+          alert('留言建立結果尚待確認，照片已保留於此裝置，請稍後確認留言狀態。')
+          return
+        }
+      }
+      if (commentCreated) {
+        void processCommentBackgroundUploads(durableRows)
+        console.warn('[calendar] 留言已建立，照片佇列繼續處理', error)
+        return
+      }
       if (uploadedAttachments.length) await deleteRemovedEventAttachments(uploadedAttachments, threadId).catch(() => 0)
       if (durableRows.length) {
         await Promise.allSettled(durableRows.map((row) => removeDurableBackgroundAttachmentUpload(row.id)))
@@ -5464,7 +6216,8 @@ export default function CalendarPage() {
 
     setDeletingCommentId(comment.id)
     try {
-      await deleteDoc(doc(db, 'calendarEvents', threadId, 'comments', comment.id))
+      await createCalendarActivity({ action: 'delete', commentId: comment.id }, 'comments', { eventId: threadId })
+      setEventCommentsReloadKey(value => value + 1)
       const deleteFailures = await deleteRemovedEventAttachments(comment.attachments, threadId)
       const localUploads = commentBackgroundUploads.filter((upload) => upload.commentId === comment.id)
       await Promise.allSettled(localUploads.map((upload) => removeDurableBackgroundAttachmentUpload(upload.id)))
@@ -5483,7 +6236,9 @@ export default function CalendarPage() {
   }
 
   async function toggleDetailTodo(todoId: string, done: boolean) {
-    if (!selectedEvent || !canManageCalendarEvent(selectedEvent)) return
+    const selectedEvent = selectedOperationalEvent
+    if (!canEditOrCopyErpEvent(employeeId, selectedEvent)) return
+    if (!selectedEvent || isRelatedErpSalesDeliveryEvent(selectedEvent) || !canManageCalendarEvent(selectedEvent)) return
     const sourceEvent = events.find((event) => event.id === recurrenceRootId(selectedEvent)) ?? selectedEvent
     const nextTodos = (sourceEvent.todos ?? selectedEvent.todos ?? []).map((todo) => (
       todo.id === todoId ? { ...todo, done } : todo
@@ -5497,7 +6252,6 @@ export default function CalendarPage() {
         todos: nextTodos,
         updatedAt
       })
-      await syncCalendarEventViews(nextEvent)
       await refreshCalendarData()
     } catch {
       alert('待辦清單更新失敗，請稍後再試')
@@ -5540,6 +6294,7 @@ export default function CalendarPage() {
   }
 
   function removeExistingAttachment(file: EventAttachment) {
+    if (editingSalesDeliveryEvent) return
     setEventForm((form) => ({
       ...form,
       attachments: form.attachments.filter((attachment) => attachment.path !== file.path)
@@ -5552,6 +6307,7 @@ export default function CalendarPage() {
   }
 
   function removeUploadedAttachment(upload: AttachmentUpload) {
+    if (editingSalesDeliveryEvent) return
     canceledAttachmentUploadIdsRef.current.add(upload.id)
     setAttachmentUploads((items) => items.filter((item) => item.id !== upload.id))
     if (upload.attachment) {
@@ -5566,7 +6322,7 @@ export default function CalendarPage() {
       .filter(Boolean)))
     if (!driveFileIds.length) return 0
     if (!user) return driveFileIds.length
-    const token = await user.getIdToken()
+    const token = await getFirebaseIdToken(user)
     const appCheckHeaders = await getAppCheckHeaders()
 
     const results = await Promise.allSettled(driveFileIds.map(async (fileId) => {
@@ -5590,12 +6346,16 @@ export default function CalendarPage() {
 
   async function deleteEventViaApi(event: CalendarEvent, scope: RecurrenceEditScope, rootId: string, sourceDate: string) {
     if (!user) throw new Error('尚未登入')
-    const token = await user.getIdToken()
+    const [token, appCheckHeaders] = await Promise.all([
+      getFirebaseIdToken(user),
+      getAppCheckHeaders(),
+    ])
     const response = await fetch('/api/delete-calendar-event', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`
+        Authorization: `Bearer ${token}`,
+        ...appCheckHeaders,
       },
       body: JSON.stringify({
         eventId: event.id,
@@ -5611,11 +6371,15 @@ export default function CalendarPage() {
   }
 
   async function deleteEvent(event: CalendarEvent) {
+    if (isPrimaryErpSalesDeliveryEvent(event)) {
+      alert('ERP 建立的主事件不可在行事曆刪除；請刪除銷貨單或更改取件方式。')
+      return
+    }
     if (isHrReadonlyEvent(event)) {
       alert('此事件來自 HR 後台，請至 HR 後台刪除')
       return
     }
-    if (!canManageCalendarEvent(event)) {
+    if (!canManageCalendarEvent(event) || !canEditOrCopyErpEvent(employeeId, event)) {
       alert('沒有此事件的刪除權限')
       return
     }
@@ -5627,6 +6391,16 @@ export default function CalendarPage() {
   }
 
   async function applyDeleteEvent(event: CalendarEvent, scope: RecurrenceEditScope) {
+    if (!canManageCalendarEvent(event) || !canEditOrCopyErpEvent(employeeId, event)) {
+      alert('沒有此事件的刪除權限')
+      setRecurrenceDeleteCandidate(null)
+      return
+    }
+    if (isPrimaryErpSalesDeliveryEvent(event)) {
+      alert('ERP 建立的主事件不可在行事曆刪除；請刪除銷貨單或更改取件方式。')
+      setRecurrenceDeleteCandidate(null)
+      return
+    }
     if (!confirm('確定刪除此事件？')) return
     setRecurrenceDeleteCandidate(null)
     try {
@@ -5658,7 +6432,7 @@ export default function CalendarPage() {
   }
 
   function eventDragAllowed(event: CalendarEvent) {
-    return canManageCalendarEvent(event)
+    return canEditOrCopyErpEvent(employeeId, event) && !isRelatedErpSalesDeliveryEvent(event) && canManageCalendarEvent(event)
   }
 
   function clearEventDragState() {
@@ -5952,7 +6726,7 @@ export default function CalendarPage() {
   }
 
   function handleDayListSwipeStart(event: ReactTouchEvent<HTMLElement>) {
-    if (!dayListDate || event.touches.length !== 1) return
+    if ((!dayListDate && !showRelatedEventsPanel) || event.touches.length !== 1) return
     const touch = event.changedTouches[0] ?? event.touches[0]
     if (!touch) return
     const target = event.target
@@ -5992,7 +6766,8 @@ export default function CalendarPage() {
     setDayListSwipeOffset(0)
     if (shouldClose) {
       event.preventDefault()
-      setDayListDate(null)
+      if (showRelatedEventsPanel) setShowRelatedEventsPanel(false)
+      else setDayListDate(null)
     }
   }
 
@@ -6001,7 +6776,7 @@ export default function CalendarPage() {
     const touch = event.changedTouches[0] ?? event.touches[0]
     if (!touch) return
     const target = event.target
-    if (target instanceof Element && target.closest('button, input, select, textarea, a, .event-comment-composer')) {
+    if (target instanceof Element && target.closest('button, input, select, textarea, a, .event-comment-composer, .event-detail-title')) {
       eventDetailSwipeRef.current = null
       return
     }
@@ -6071,7 +6846,7 @@ export default function CalendarPage() {
           ...nextDateRange,
           updatedAt
         }
-        if (sourceEvent.source === 'erpSalesDelivery') {
+        if (isPrimaryErpSalesDeliveryEvent(sourceEvent)) {
           await syncSalesDeliveryEventFields(
             sourceEvent,
             movedEvent,
@@ -6084,7 +6859,6 @@ export default function CalendarPage() {
           })
         }
         const followUpResults = await Promise.allSettled([
-          syncCalendarEventViews(movedEvent),
           writeActivityLog({
             action: 'move',
             eventId: sourceEvent.id,
@@ -6132,18 +6906,46 @@ export default function CalendarPage() {
     }
   }
 
-  function renderEventSummary(event: CalendarEvent, options: { enableTouchDrag?: boolean } = {}) {
+  function renderDayListTime(event: CalendarEvent, calendarDate?: string) {
+    if (event.allDay) return <b>全天</b>
+    const daySegment = calendarDate
+      ? eventDaySegmentForCalendarDate(event, calendarDate)
+      : 'single'
+    if (daySegment === 'middle') return <b>持續中</b>
+    if (daySegment === 'start') return <b aria-label={`開始時間 ${event.startTime}`}>{event.startTime}</b>
+    if (daySegment === 'end') return <b aria-label={`結束時間 ${event.endTime}`}>{event.endTime}</b>
+    return (
+      <>
+        <b>{event.startTime}</b>
+        <small>{event.endTime}</small>
+      </>
+    )
+  }
+
+  function renderEventSummary(event: CalendarEvent, options: { enableTouchDrag?: boolean; calendarDate?: string } = {}) {
     const rangeText = eventEndDate(event) === event.date ? event.date : `${event.date} - ${eventEndDate(event)}`
     const isTimeline = options.enableTouchDrag
     const secondaryText = eventListSecondaryText(event)
     return (
       <button
-        className={`${isTimeline ? 'day-list-event' : 'panel-event'} ${event.done ? 'done' : ''}`}
+        className={`${isTimeline ? 'day-list-event' : 'panel-event'} ${isCalendarEventCompleted(event) ? 'done' : ''}`}
         key={event.id}
         style={{ '--event-color': eventCalendarColor(event) } as CSSProperties}
+        draggable={Boolean(isTimeline && !isTouchDevice && !shouldUseMobileEventListFlow() && eventDragAllowed(event))}
+        onDragStart={isTimeline ? (dragEvent) => startNativeEventDrag(dragEvent, event) : undefined}
+        onDragEnd={isTimeline ? clearEventDragState : undefined}
         onPointerDown={(pointerEvent) => {
-          if (options.enableTouchDrag) beginDayListTouchDrag(pointerEvent, event)
+          if (!isTimeline) return
+          lastEventPointerTypeRef.current = pointerEvent.pointerType
+          if (isTouchDragPointer(pointerEvent)) {
+            beginDayListTouchDrag(pointerEvent, event)
+            return
+          }
+          beginPointerEventDrag(pointerEvent, event)
         }}
+        onPointerMove={isTimeline ? movePointerEventDrag : undefined}
+        onPointerUp={isTimeline ? endPointerEventDrag : undefined}
+        onPointerCancel={isTimeline ? clearEventDragState : undefined}
         onClick={() => {
           if (suppressEventClickRef.current) return
           openEventDetail(event)
@@ -6152,14 +6954,7 @@ export default function CalendarPage() {
         {isTimeline ? (
           <>
             <span className="day-list-time">
-              {event.allDay ? (
-                <b>全天</b>
-              ) : (
-                <>
-                  <b>{event.startTime}</b>
-                  <small>{event.endTime}</small>
-                </>
-              )}
+              {renderDayListTime(event, options.calendarDate)}
             </span>
             <span className="day-list-content">
               <strong>{eventDisplayTitle(event)}</strong>
@@ -6189,10 +6984,10 @@ export default function CalendarPage() {
     return completedCount > 0 ? `已完成 ${completedCount}/${item.events.length}` : `${item.events.length} 筆訂單`
   }
 
-  function renderDayDisplayItem(item: CalendarDayDisplayItem) {
+  function renderDayDisplayItem(item: CalendarDayDisplayItem, date: string) {
     const event = item.primaryEvent
     if (!item.isDeliveryGroup) {
-      return renderEventSummary(event, { enableTouchDrag: true })
+      return renderEventSummary(event, { enableTouchDrag: true, calendarDate: date })
     }
     return (
       <button
@@ -6202,14 +6997,7 @@ export default function CalendarPage() {
         onClick={() => openDeliveryGroup(item)}
       >
         <span className="day-list-time">
-          {event.allDay ? (
-            <b>全天</b>
-          ) : (
-            <>
-              <b>{event.startTime}</b>
-              <small>{event.endTime}</small>
-            </>
-          )}
+          {renderDayListTime(event, date)}
         </span>
         <span className="day-list-content">
           <strong>{deliveryGroupDisplayTitle(item)}</strong>
@@ -6251,7 +7039,7 @@ export default function CalendarPage() {
               const event = item.primaryEvent
               return (
               <button
-                className={`event-pill ${event.allDay ? 'all-day' : 'timed'} ${selectedEventId === event.id || selectedDeliveryGroupKey === item.key ? 'active' : ''}`}
+                className={`event-pill ${event.allDay ? 'all-day' : 'timed'} ${item.events.every(isCalendarEventCompleted) ? 'done' : ''} ${selectedEventId === event.id || selectedDeliveryGroupKey === item.key ? 'active' : ''}`}
                 style={{ '--event-color': eventCalendarColor(event) } as CSSProperties}
                 key={item.key}
                 draggable={activeMonth && !item.isDeliveryGroup && !isTouchDevice && !shouldUseMobileEventListFlow() && eventDragAllowed(event)}
@@ -6291,7 +7079,7 @@ export default function CalendarPage() {
                 tabIndex={activeMonth ? 0 : -1}
               >
                 <span>{item.isDeliveryGroup ? deliveryGroupDisplayTitle(item) : eventDisplayTitle(event)}</span>
-                {!event.allDay && <small>{eventTimeForCalendarDate(event, date)}</small>}
+                {!event.allDay && <small>{eventTimeLabelForCalendarDate(event, date)}</small>}
               </button>
               )
             })}
@@ -6356,7 +7144,7 @@ export default function CalendarPage() {
               const event = item.primaryEvent
               return (
               <button
-                className={`week-event ${event.allDay ? 'all-day' : 'timed'} ${event.done ? 'done' : ''} ${selectedEventId === event.id || selectedDeliveryGroupKey === item.key ? 'active' : ''}`}
+                className={`week-event ${event.allDay ? 'all-day' : 'timed'} ${item.events.every(isCalendarEventCompleted) ? 'done' : ''} ${selectedEventId === event.id || selectedDeliveryGroupKey === item.key ? 'active' : ''}`}
                 style={{ '--event-color': eventCalendarColor(event) } as CSSProperties}
                 key={item.key}
                 draggable={activeWeek && !item.isDeliveryGroup && !isTouchDevice && !shouldUseMobileEventListFlow() && eventDragAllowed(event)}
@@ -6398,7 +7186,7 @@ export default function CalendarPage() {
                 tabIndex={activeWeek ? 0 : -1}
               >
                 <i />
-                <span>{event.allDay ? '整天' : event.startTime}</span>
+                <span>{event.allDay ? '整天' : eventTimeLabelForCalendarDate(event, date)}</span>
                 <b>{item.isDeliveryGroup ? deliveryGroupDisplayTitle(item) : eventDisplayTitle(event)}</b>
               </button>
               )
@@ -6422,25 +7210,54 @@ export default function CalendarPage() {
     ) return
 
     setSalesFormOpenError('')
-    const prepared = salesFormRedirectPrefetchRef.current
-    const preparedUrl = prepared?.salesId === salesId && Date.now() - prepared.createdAt < 90_000
+    const prepared = salesFormRedirectPrefetchesRef.current.get(salesId)
+    const preparedUrl = prepared && Date.now() - prepared.createdAt < SALES_FORM_REDIRECT_REUSE_MS
       ? prepared.redirectUrl
       : ''
-    const salesFormWindow = window.open(preparedUrl || 'about:blank', '_blank')
+    const salesFormWindow = window.open(
+      preparedUrl || 'about:blank',
+      SALES_FORM_POPUP_NAME,
+      SALES_FORM_POPUP_FEATURES,
+    )
     if (!salesFormWindow) {
       setSalesFormOpenError('瀏覽器阻擋了新分頁，請允許彈出式視窗後再試。')
       return
     }
     clickEvent.preventDefault()
     salesFormWindow.opener = null
+    if (!preparedUrl) {
+      try {
+        salesFormWindow.document.title = '正在開啟銷貨單'
+        salesFormWindow.document.body.style.cssText = 'margin:0;min-height:100vh;display:grid;place-items:center;background:#f8fafc;color:#475467;font:600 16px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif'
+        salesFormWindow.document.body.textContent = '正在開啟銷貨單…'
+      } catch {
+        // 跨站導覽已提前開始時不再改寫等待畫面。
+      }
+    }
 
     try {
       const redirectUrl = preparedUrl || await prepareSalesFormRedirect(salesId)
-      salesFormRedirectPrefetchRef.current = null
+      salesFormRedirectPrefetchesRef.current.delete(salesId)
       if (!preparedUrl) salesFormWindow.location.replace(redirectUrl)
     } catch (error) {
       salesFormWindow.close()
-      setSalesFormOpenError(error instanceof Error ? error.message : '開啟銷貨單失敗，請稍後再試。')
+      setSalesFormOpenError(firebaseRequestErrorMessage(error, '開啟銷貨單失敗，請稍後再試。'))
+    }
+  }
+
+  function handleManagerChatClick(
+    clickEvent: ReactMouseEvent<HTMLAnchorElement>,
+    chatUrl: string,
+  ) {
+    if (!window.matchMedia?.('(max-width: 768px)').matches) return
+    clickEvent.preventDefault()
+    try {
+      window.location.assign(chatUrl)
+    } catch (error) {
+      setProductionLineNotice({
+        variant: 'error',
+        message: error instanceof Error ? error.message : '開啟聊天室失敗',
+      })
     }
   }
 
@@ -6453,9 +7270,15 @@ export default function CalendarPage() {
     const eventRepeatLabel = repeatLabel(selectedEvent.repeat, selectedEvent.date, selectedEvent.repeatCustom)
     const locationText = selectedEvent.location?.trim()
     const canManageEvent = canManageCalendarEvent(selectedEvent)
-    const orderFulfillmentEvent = isErpOrderFulfillmentEvent(selectedEvent, productionLineStatus)
-    const canUploadAttachment = canUploadDetailAttachment(selectedEvent, productionLineStatus)
+    const canEditOrCopyEvent = canManageEvent && canEditOrCopyErpEvent(employeeId, selectedEvent)
+    const canDeleteEvent = canManageEvent && canEditOrCopyErpEvent(employeeId, selectedEvent) && !isPrimaryErpSalesDeliveryEvent(selectedEvent)
+    const orderFulfillmentEvent = Boolean(selectedOperationalEvent && isErpOrderFulfillmentEvent(selectedOperationalEvent, productionLineStatus))
+    const canUploadAttachment = Boolean(selectedOperationalEvent && (!isRelatedErpSalesDeliveryEvent(selectedOperationalEvent) || isErpSalesWorkScheduleEvent(selectedOperationalEvent))
+      && canUploadDetailAttachment(selectedOperationalEvent, productionLineStatus))
     const visibilityTitleRows = eventDetailVisibilityTitleRows(selectedEvent)
+    const relationBadgeLabel = isRelatedErpSalesDeliveryEvent(selectedEvent)
+      ? '附屬事件'
+      : hasRelatedSalesDeliveryEvents ? '主事件' : ''
     return (
       <aside
         className={`event-detail-panel${eventDetailSwipeOffset > 0 ? ' swiping' : ''}${canManageEvent ? ' has-management-footer' : ''}`}
@@ -6476,6 +7299,8 @@ export default function CalendarPage() {
                 <button
                   type="button"
                   className="event-detail-upload-btn"
+                  onPointerDown={() => { if (selectedOperationalEvent) prefetchCombinedDelivery(selectedOperationalEvent) }}
+                  onFocus={() => { if (selectedOperationalEvent) prefetchCombinedDelivery(selectedOperationalEvent) }}
                   onClick={() => detailAttachmentInputRef.current?.click()}
                   disabled={detailAttachmentUploading}
                   aria-label={orderFulfillmentEvent ? '上傳外送、施工或活動完成照片' : '上傳檔案或照片'}
@@ -6495,7 +7320,7 @@ export default function CalendarPage() {
                 />
               </>
             )}
-            {canManageEvent && (
+            {(canEditOrCopyEvent || canDeleteEvent) && (
               <div className="event-detail-action-wrap">
                 <button
                   onClick={() => setShowEventActionMenu((open) => !open)}
@@ -6506,6 +7331,7 @@ export default function CalendarPage() {
                 </button>
                 {showEventActionMenu && (
                   <div className="event-detail-action-menu">
+                    {canEditOrCopyEvent && (<>
                     <button
                       type="button"
                       onClick={() => {
@@ -6524,16 +7350,19 @@ export default function CalendarPage() {
                     >
                       複製
                     </button>
-                    <button
-                      type="button"
-                      className="danger"
-                      onClick={() => {
-                        setShowEventActionMenu(false)
-                        deleteEvent(selectedEvent)
-                      }}
-                    >
-                      刪除
-                    </button>
+                    </>)}
+                    {canDeleteEvent && (
+                      <button
+                        type="button"
+                        className="danger"
+                        onClick={() => {
+                          setShowEventActionMenu(false)
+                          deleteEvent(selectedEvent)
+                        }}
+                      >
+                        刪除
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
@@ -6554,10 +7383,22 @@ export default function CalendarPage() {
         </div>
 
         <div className="event-detail-body">
-          <div className="event-detail-avatar" style={{ background: eventCalendarColor(selectedEvent) }}>
-            {calendarName}
+          <div className="event-detail-badges">
+            <div className="event-detail-avatar" style={{ background: eventCalendarColor(selectedEvent) }}>
+              {calendarName}
+            </div>
+            {relationBadgeLabel && (
+              <button
+                type="button"
+                className="event-detail-related-badge"
+                onClick={() => setShowRelatedEventsPanel(true)}
+                aria-label={`開啟${relationBadgeLabel}的關聯事件清單`}
+              >
+                {relationBadgeLabel}
+              </button>
+            )}
           </div>
-          <h2>{eventDisplayTitle(selectedEvent)}</h2>
+          <h2 className="event-detail-title">{eventDisplayTitle(selectedEvent)}</h2>
           {visibilityTitleRows.length > 0 && (
             <div className="event-detail-visibility-titles" aria-label="可見對象與替代標題">
               {visibilityTitleRows.map((row) => (
@@ -6580,21 +7421,43 @@ export default function CalendarPage() {
             </div>
           </div>
 
-          {selectedEvent.source === 'erpSalesDelivery' && orderFulfillmentEvent && (
+          {isErpSalesDeliveryEvent(selectedEvent) && (
             <div className="event-detail-line-delivery">
               <div className="event-detail-fulfillment-status">
                 <strong>{productionLineStatus?.orderStatus || selectedEvent.orderStatus || '狀態讀取中'}</strong>
-                <small>
-                  {productionLineStatus
-                    ? productionLineBindingDescription(productionLineStatus)
-                    : productionLineStatusLoading
-                      ? '官方 LINE：正在確認綁定狀態...'
-                      : '官方 LINE：目前無法取得綁定資料'}
-                </small>
+                {(!productionLineStatus?.bound || (productionLineStatus.managerChats || []).length > 0) && (
+                  <small className="event-detail-line-summary">
+                    <span>{productionLineStatus?.bound
+                      ? '官方 LINE：'
+                      : productionLineStatus
+                        ? productionLineBindingDescription(productionLineStatus)
+                        : productionLineStatusLoading
+                          ? '官方 LINE：正在確認綁定狀態...'
+                          : '官方 LINE：目前無法取得綁定資料'}</span>
+                    {(productionLineStatus?.managerChats || []).map((chat, index) => (
+                    <span className="event-detail-manager-chat-entry" key={chat.url}>
+                      {index > 0 && ' · '}
+                      <a
+                        className="event-detail-manager-chat-link"
+                        href={chat.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        title="開啟官方 LINE 聊天室"
+                        onClick={(event) => handleManagerChatClick(event, chat.url)}
+                      >
+                        {chat.name}
+                      </a>
+                    </span>
+                    ))}
+                  </small>
+                )}
                 {productionLineStatusError && <small className="error" role="status">{productionLineStatusError}</small>}
-                <small>上傳照片後會同步完成訂單、客戶附件與 LINE 通知。</small>
+                {teardownPrimaryEventQuery.isError && <small className="error" role="status">排程共用資訊讀取失敗，請稍後重試。</small>}
+                {orderFulfillmentEvent && <small>{isErpSalesWorkScheduleEvent(selectedEvent) || fulfillmentShippingMethod(selectedEvent, productionLineStatus) === '施工'
+                  ? '上傳照片後會記錄本次完成並同步客戶附件；全部施工完成後才完成訂單與通知，撤場另外追蹤。'
+                  : '上傳照片後會同步完成訂單、客戶附件與 LINE 通知。'}</small>}
               </div>
-              {productionLineNotice && (
+              {orderFulfillmentEvent && productionLineNotice && (
                 <div className={`event-detail-line-notice ${productionLineNotice.variant}`}>
                   <span>{productionLineNotice.message}</span>
                   {productionLineRetry && (
@@ -6720,8 +7583,8 @@ export default function CalendarPage() {
                         </span>
                         <button
                           type="button"
-                          onClick={() => removeFailedDetailBackgroundUpload(upload.id)}
-                          aria-label={`移除失敗照片：${upload.name}`}
+                          onClick={() => upload.fulfillmentRequestId ? void retryCombinedBackgroundUploads(upload.fulfillmentRequestId) : removeFailedDetailBackgroundUpload(upload.id)}
+                          aria-label={upload.fulfillmentRequestId ? '重試整批配達回報' : `移除失敗照片：${upload.name}`}
                           style={{
                             position: 'absolute',
                             inset: 'auto 4px 4px',
@@ -6733,7 +7596,7 @@ export default function CalendarPage() {
                             fontWeight: 800,
                           }}
                         >
-                          移除
+                          {upload.fulfillmentRequestId ? '重試整批回報' : '移除'}
                         </button>
                       </div>
                     )
@@ -6768,25 +7631,21 @@ export default function CalendarPage() {
                   const previewUrl = attachmentPreviewUrl(attachment)
                   const attachmentName = attachment.originalName || attachment.name
                   return previewUrl ? (
-                    <button
-                      type="button"
+                    <AttachmentThumbnail
+                      eventId={selectedEvent.source === 'erpSalesDelivery' && attachment.linePreviewUrl?.includes('scope=sales-attachment') ? undefined : selectedEvent.id}
                       className="event-detail-attachment-thumb"
-                      onClick={() => setEnlargedEventAttachment(attachment)}
-                      aria-label={`全螢幕開啟圖片：${attachmentName}`}
-                      title={attachmentName}
+                      attachment={{ ...attachment, name: attachmentName }}
+                      onOpen={() => setEnlargedEventAttachment(attachment)}
+                      onReload={selectedEvent.source === 'erpSalesDelivery'
+                        ? () => { void salesCenterAttachmentsQuery.refetch() }
+                        : undefined}
                       key={attachment.path || attachment.url}
-                    >
-                      <img
-                        src={previewUrl}
-                        alt={attachmentName}
-                        loading={attachmentIndex < 3 ? 'eager' : 'lazy'}
-                        fetchPriority={attachmentIndex < 3 ? 'high' : 'auto'}
-                        decoding="async"
-                        referrerPolicy="no-referrer"
-                      />
-                    </button>
+                      loading={attachmentIndex < 3 ? 'eager' : 'lazy'}
+                      fetchPriority={attachmentIndex < 3 ? 'high' : 'auto'}
+                    />
                   ) : (
-                    <a
+                    <CalendarAttachmentFile
+                      eventId={selectedEvent.id}
                       className="event-detail-attachment-file"
                       href={attachment.url}
                       target="_blank"
@@ -6796,7 +7655,7 @@ export default function CalendarPage() {
                     >
                       <span>附件</span>
                       <b>{attachmentName}</b>
-                    </a>
+                    </CalendarAttachmentFile>
                   )
                 })}
                 </div>
@@ -6811,7 +7670,8 @@ export default function CalendarPage() {
                   <input
                     type="checkbox"
                     checked={todo.done}
-                    disabled={!canManageEvent}
+                    disabled={!selectedOperationalEvent || !canEditOrCopyErpEvent(employeeId, selectedOperationalEvent)
+                      || !canManageCalendarEvent(selectedOperationalEvent) || isRelatedErpSalesDeliveryEvent(selectedOperationalEvent)}
                     onChange={(event) => toggleDetailTodo(todo.id, event.target.checked)}
                   />
                   <span>{todo.text}</span>
@@ -6877,18 +7737,19 @@ export default function CalendarPage() {
                             <div className="event-comment-attachments">
                               {comment.attachments.map((attachment) => {
                                 const previewUrl = attachmentPreviewUrl(attachment)
+                                const attachmentName = attachment.originalName || attachment.name
                                 return previewUrl ? (
-                                  <button
-                                    type="button"
+                                  <AttachmentThumbnail
+                      eventId={selectedEvent.source === 'erpSalesDelivery' && attachment.linePreviewUrl?.includes('scope=sales-attachment') ? undefined : selectedEvent.id}
                                     className="event-comment-image"
-                                    onClick={() => setEnlargedEventAttachment(attachment)}
+                                    attachment={{ ...attachment, name: attachmentName }}
+                                    onOpen={() => setEnlargedEventAttachment(attachment)}
                                     key={attachment.path || attachment.url}
-                                    aria-label={`全螢幕開啟圖片：${attachment.originalName || attachment.name}`}
-                                  >
-                                    <img src={previewUrl} alt={attachment.originalName || attachment.name} loading="lazy" referrerPolicy="no-referrer" />
-                                  </button>
+                                    loading="lazy"
+                                  />
                                 ) : (
-                                  <a
+                                  <CalendarAttachmentFile
+                                    eventId={selectedEvent.id}
                                     className="event-comment-file"
                                     href={attachment.url}
                                     target="_blank"
@@ -6900,7 +7761,7 @@ export default function CalendarPage() {
                                       <b>{attachment.originalName || attachment.name}</b>
                                       {attachment.size && <small>{Math.ceil(attachment.size / 1024)} KB</small>}
                                     </div>
-                                  </a>
+                                  </CalendarAttachmentFile>
                                 )
                               })}
                               {localCommentUploads.map((upload) => (
@@ -6992,14 +7853,67 @@ export default function CalendarPage() {
           </div>
         </div>
 
-        {canManageEvent && (
-          <div className="event-detail-footer">
-            <button onClick={() => openEditEvent(selectedEvent)}>編輯</button>
-            <button onClick={() => openCopyEvent(selectedEvent)}>複製</button>
-            <button className="danger" onClick={() => deleteEvent(selectedEvent)}>刪除</button>
-          </div>
-        )}
       </aside>
+    )
+  }
+
+  function renderRelatedEventsPanel() {
+    if (!showRelatedEventsPanel || !selectedEvent || !isErpSalesDeliveryEvent(selectedEvent)) return null
+    return (
+      <div className="modal-overlay related-events-overlay" onClick={() => setShowRelatedEventsPanel(false)}>
+        <aside
+          className={`tt-floating-panel tt-day-list-panel related-events-modal${dayListSwipeOffset > 0 ? ' swiping' : ''}`}
+          style={{ '--day-list-swipe-offset': `${dayListSwipeOffset}px` } as CSSProperties}
+          onTouchStart={handleDayListSwipeStart}
+          onTouchMove={handleDayListSwipeMove}
+          onTouchEnd={handleDayListSwipeEnd}
+          onTouchCancel={handleDayListSwipeEnd}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="panel-head">
+            <h2>關聯事件</h2>
+            <button type="button" onClick={() => setShowRelatedEventsPanel(false)} aria-label="關閉關聯事件清單">×</button>
+          </div>
+          {!relatedSalesDeliveryEventsQuery.isLoading && !relatedSalesDeliveryEventsQuery.isError && relatedSalesDeliveryEvents.length > 0 && (
+            <p className="panel-hint related-events-count">共 {relatedSalesDeliveryEvents.length} 筆</p>
+          )}
+          <div className="panel-list related-events-list">
+            {relatedSalesDeliveryEventsQuery.isLoading ? (
+              <p className="panel-hint" role="status">正在讀取關聯事件...</p>
+            ) : relatedSalesDeliveryEventsQuery.isError ? (
+              <div className="related-events-error" role="alert">
+                <span>關聯事件讀取失敗</span>
+                <button type="button" onClick={() => void relatedSalesDeliveryEventsQuery.refetch()}>重新載入</button>
+              </div>
+            ) : relatedSalesDeliveryEvents.length > 0 ? relatedSalesDeliveryEvents.map((event) => {
+              const related = isRelatedErpSalesDeliveryEvent(event)
+              return (
+                <button
+                  type="button"
+                  className={`day-list-event${event.id === selectedEvent.id ? ' active' : ''}`}
+                  style={{ '--event-color': eventCalendarColor(event) } as CSSProperties}
+                  onClick={() => {
+                    setShowRelatedEventsPanel(false)
+                    openEventDetail(event)
+                  }}
+                  key={event.id}
+                >
+                  <span className="day-list-time">
+                    {renderDayListTime(event, event.date)}
+                  </span>
+                  <span className="day-list-content">
+                    <strong>{eventDisplayTitle(event)}</strong>
+                    <small>{related ? '附屬事件' : '主事件'} · {formatChineseDate(event.date)}</small>
+                  </span>
+                  <span className="day-list-owner">{eventOwnerLabel(event)}</span>
+                </button>
+              )
+            }) : (
+              <p className="panel-hint">目前沒有其他關聯事件</p>
+            )}
+          </div>
+        </aside>
+      </div>
     )
   }
 
@@ -7022,7 +7936,7 @@ export default function CalendarPage() {
         </div>
         <p className="panel-hint">共 {dayEvents.length} 筆</p>
         <div className="panel-list">
-          {dayItems.map(renderDayDisplayItem)}
+          {dayItems.map((item) => renderDayDisplayItem(item, dayListDate))}
           {dayEvents.length === 0 && <p className="panel-empty">這天沒有事件</p>}
         </div>
         {canCreateEvent && (
@@ -7057,7 +7971,7 @@ export default function CalendarPage() {
           {selectedDeliveryGroup.events.map((event, index) => (
             <button
               type="button"
-              className={`delivery-group-order ${event.done || deliveryGroupCompletedCount([event]) > 0 ? 'done' : ''}`}
+              className={`delivery-group-order ${isCalendarEventCompleted(event) ? 'done' : ''}`}
               key={event.id}
               onClick={() => openEventDetail(event)}
             >
@@ -7066,10 +7980,14 @@ export default function CalendarPage() {
                 <strong>{event.sourceSalesNo || `訂單 ${index + 1}`}</strong>
                 <small>{eventListSecondaryText(event) || '無訂單備註'}</small>
               </span>
-              <span className="delivery-group-order-status">{event.orderStatus || (event.done ? '已完成' : '未設定')}</span>
+              <span className="delivery-group-order-status">{event.orderStatus || (isCalendarEventCompleted(event) ? '已完成' : '未設定')}</span>
             </button>
           ))}
         </div>
+        {selectedDeliveryGroup.events.some((event) => event.sourceShippingMethod === '外送' && !isCalendarEventCompleted(event)) && <div className="delivery-group-report-footer"><button type="button" className="delivery-group-report-button" onClick={() => {
+          const source = selectedDeliveryGroup.events.find((event) => event.sourceShippingMethod === '外送' && !isCalendarEventCompleted(event))
+          if (source) openCombinedDelivery(source)
+        }}>合併配達回報</button></div>}
       </aside>
     )
   }
@@ -7109,14 +8027,22 @@ export default function CalendarPage() {
           {visibleActivityLogs.slice(0, 30).map((log) => {
             const unread = Boolean(log.createdAt && log.createdAt > lastSeenActivityAt)
             const assignedToMe = canReceiveActivityLog(log)
+            const canOpenEvent = Boolean(log.eventId && log.action !== 'delete')
             return (
-              <article className={`activity-log ${log.action}${unread ? ' unread' : ''}${assignedToMe ? ' assigned-to-me' : ''}`} key={log.id}>
+              <button
+                type="button"
+                className={`activity-log ${log.action}${unread ? ' unread' : ''}${assignedToMe ? ' assigned-to-me' : ''}`}
+                key={log.id}
+                disabled={!canOpenEvent || openingActivityEventId === log.eventId}
+                aria-label={canOpenEvent ? `開啟事件：${textDisplayTitle(log.eventTitle)}` : undefined}
+                onClick={() => void openActivityLogEvent(log)}
+              >
                 <span style={{ background: activityLogColor(log) }} />
                 <div>
                   <strong>{activityLogText(log)}</strong>
                   <small>{dayjs(log.createdAt).format('M/D HH:mm')} · {visibleCalendarMap.get(log.calendarId)?.name || departmentName(log.departmentId)}</small>
                 </div>
-              </article>
+              </button>
             )
           })}
           {visibleActivityLogs.length === 0 && <p className="panel-empty">目前沒有新的事件紀錄</p>}
@@ -7178,6 +8104,7 @@ export default function CalendarPage() {
             <h2 id="fulfillment-payment-title">{paymentRequired ? '確認現金收款' : '確認收款狀態'}</h2>
           </div>
           <div className="modal-body fulfillment-payment-body">
+            {fulfillmentPaymentModal.batchSalesNo && <p>銷售單號：{fulfillmentPaymentModal.batchSalesNo}</p>}
             {customerLabel && <p>{customerLabel}</p>}
             <div className="fulfillment-payment-total">
               {paymentRequired ? <>
@@ -7244,6 +8171,7 @@ export default function CalendarPage() {
     const canShowPrevious = attachmentIndex > 0
     const canShowNext = attachmentIndex >= 0 && attachmentIndex < eventDetailImageAttachments.length - 1
     const attachmentName = enlargedEventAttachment.originalName || enlargedEventAttachment.name
+    const uploadLabel = attachmentUploadLabel(enlargedEventAttachment)
     const showAttachmentAt = (index: number) => {
       const attachment = eventDetailImageAttachments[index]
       if (attachment) setEnlargedEventAttachment(attachment)
@@ -7262,14 +8190,8 @@ export default function CalendarPage() {
         }}
       >
         <div className="event-attachment-lightbox">
-          <div className="event-attachment-lightbox-header">
-            <div className="event-attachment-lightbox-title">
-              <strong title={attachmentName}>{attachmentName}</strong>
-              {attachmentIndex >= 0 && <span>{attachmentIndex + 1} / {eventDetailImageAttachments.length}</span>}
-            </div>
-            <button type="button" onClick={() => setEnlargedEventAttachment(null)} aria-label="關閉圖片預覽">×</button>
-          </div>
           <ZoomableAttachmentImage
+            eventId={selectedEvent?.id}
             key={attachmentKey}
             src={attachmentFullImageUrl(enlargedEventAttachment)}
             previewSrc={attachmentPreviewUrl(enlargedEventAttachment)}
@@ -7283,6 +8205,13 @@ export default function CalendarPage() {
             onNext={() => showAttachmentAt(attachmentIndex + 1)}
             canPrevious={canShowPrevious}
             canNext={canShowNext}
+            header={{
+              title: attachmentName,
+              countLabel: attachmentIndex >= 0
+                ? `${attachmentIndex + 1} / ${eventDetailImageAttachments.length}`
+                : undefined,
+              metadataLabel: uploadLabel,
+            }}
           />
         </div>
       </div>
@@ -7846,7 +8775,9 @@ export default function CalendarPage() {
       {renderTitleIconSettingsModal()}
       {renderDayListPanel()}
       {renderDeliveryGroupPanel()}
+      {combinedDelivery && <CombinedDeliveryDialog key={combinedDeliveryScope} events={combinedDeliveryEvents} initialFiles={combinedDelivery.files} initialStatuses={combinedDeliveryStatusCache.read(combinedDeliveryEvents)} loadStatuses={loadCombinedDeliveryStatuses} preview={previewCombinedDelivery} submit={submitCombinedDelivery} close={() => { if (!combinedDeliverySubmittingRef.current) setCombinedDelivery(null) }} />}
       {renderEventDetailPanel()}
+      {renderRelatedEventsPanel()}
       {renderFulfillmentPaymentPrompt()}
       {renderEventAttachmentLightbox()}
 
@@ -8052,7 +8983,7 @@ export default function CalendarPage() {
                     <input
                       type="checkbox"
                       checked={!!eventForm.allDay}
-                      disabled={editingSalesDeliveryEvent && !eventForm.allDay}
+                      disabled={editingSalesDeliveryEvent && !editingRelatedSalesDeliveryEvent && !eventForm.allDay}
                       onChange={(event) => setEventForm((form) => ({ ...form, allDay: event.target.checked }))}
                     />
                     整天
@@ -8068,7 +8999,13 @@ export default function CalendarPage() {
                 </div>
               </div>
 
-              <div className="event-editor-list">
+              {relatedSalesDeliveryDraft && (
+                <div className="sales-delivery-related-editor-notice">
+                  此為銷貨單附屬事件。名稱、日期與時間只修改此事件；地址會同步所有關聯事件及 ERP 銷貨單，其他共用欄位會同步主事件與附屬事件。重複、備註、待辦與附件沿用主事件，無法在此修改。
+                </div>
+              )}
+              <fieldset className="event-editor-list">
+                {!salesDeliveryEditor && (
                 <div className="event-editor-row">
                   <EventRowIcon name="calendar" />
                   <details className="event-picker-row">
@@ -8087,6 +9024,7 @@ export default function CalendarPage() {
                     </div>
                   </details>
                 </div>
+                )}
                 <div className="event-editor-row assignee">
                   <EventRowIcon name="person" />
                   <details className="event-picker-row">
@@ -8264,16 +9202,19 @@ export default function CalendarPage() {
                     {REMINDER_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                   </select>
                 </div>
+                {!salesDeliveryEditor && (
                 <div className="event-editor-row">
                   <EventRowIcon name="repeat" />
                   <button
                     type="button"
                     className={`event-static-row event-repeat-button ${eventForm.repeat && eventForm.repeat !== 'none' ? 'selected' : ''}`}
                     onClick={() => setShowRepeatPicker(true)}
+                    disabled={relatedSalesDeliveryDraft}
                   >
                     {selectedRepeatText}
                   </button>
                 </div>
+                )}
                 <div className="event-editor-row">
                   <EventRowIcon name="link" />
                   <input type="url" value={eventForm.url} onChange={(event) => setEventForm((form) => ({ ...form, url: event.target.value }))} placeholder="網址" />
@@ -8285,43 +9226,57 @@ export default function CalendarPage() {
                 <div className="event-editor-row attachment">
                   <EventRowIcon name="paperclip" />
                   <div>
-                    <label className="attachment-picker">
-                      <input type="file" multiple onChange={handleAttachmentFileChange} />
-                      上傳檔案
-                    </label>
+                    {salesDeliveryAttachmentReadonly ? (
+                      <small className="sales-delivery-attachment-notice">
+                        {relatedSalesDeliveryDraft
+                          ? '附件沿用 ERP 主事件附件中心，附屬事件不另外新增或刪除附件。'
+                          : '完成照片請從事件詳情上傳；如需刪除，請至 ERP 附件中心處理。'}
+                      </small>
+                    ) : (
+                      <label className="attachment-picker">
+                        <input type="file" multiple onChange={handleAttachmentFileChange} />
+                        上傳檔案
+                      </label>
+                    )}
                     {[...eventForm.attachments.map((file) => file.name), ...attachmentUploads.map((file) => file.name)].length > 0 && (
-                      <div className="attachment-list">
+                      <div className={`attachment-list${salesDeliveryAttachmentReadonly ? ' readonly' : ''}`}>
                         {eventForm.attachments.map((file) => (
                           <span key={file.path || file.url}>
                             <span>{file.name}</span>
-                            <button type="button" aria-label={`刪除 ${file.name}`} onClick={() => removeExistingAttachment(file)}>×</button>
+                            {!salesDeliveryAttachmentReadonly && (
+                              <button type="button" aria-label={`刪除 ${file.name}`} onClick={() => removeExistingAttachment(file)}>×</button>
+                            )}
                           </span>
                         ))}
                         {attachmentUploads.map((file) => (
                           <span key={file.id} className={`attachment-upload ${file.status}`}>
                             <span>{file.name}</span>
                             <small>{file.status === 'uploading' ? '上傳中' : file.status === 'failed' ? '失敗' : '完成'}</small>
-                            <button type="button" aria-label={`刪除 ${file.name}`} onClick={() => removeUploadedAttachment(file)}>×</button>
+                            {!salesDeliveryAttachmentReadonly && (
+                              <button type="button" aria-label={`刪除 ${file.name}`} onClick={() => removeUploadedAttachment(file)}>×</button>
+                            )}
                           </span>
                         ))}
                       </div>
                     )}
                   </div>
                 </div>
-                <div className="event-editor-row note">
-                  <EventRowIcon name="note" />
-                  <textarea
-                    ref={noteTextareaRef}
-                    rows={1}
-                    value={eventForm.note}
-                    onChange={(event) => {
-                      event.currentTarget.style.height = 'auto'
-                      event.currentTarget.style.height = `${event.currentTarget.scrollHeight}px`
-                      setEventForm((form) => ({ ...form, note: event.target.value }))
-                    }}
-                    placeholder="備註"
-                  />
-                </div>
+                {!salesDeliverySystemNoteReadonly && (
+                  <div className="event-editor-row note">
+                    <EventRowIcon name="note" />
+                    <textarea
+                      ref={noteTextareaRef}
+                      rows={1}
+                      value={eventForm.note}
+                      onChange={(event) => {
+                        event.currentTarget.style.height = 'auto'
+                        event.currentTarget.style.height = `${event.currentTarget.scrollHeight}px`
+                        setEventForm((form) => ({ ...form, note: event.target.value }))
+                      }}
+                      placeholder="備註"
+                    />
+                  </div>
+                )}
                 <div className="event-editor-row">
                   <EventRowIcon name="check" />
                   <details className="event-picker-row todo-picker">
@@ -8331,16 +9286,16 @@ export default function CalendarPage() {
                     <div className="todo-editor-list">
                       {eventForm.todos.map((todo) => (
                         <div className="todo-editor-item" key={todo.id}>
-                          <input type="checkbox" checked={todo.done} onChange={(event) => updateTodoItem(todo.id, { done: event.target.checked })} aria-label="待辦完成" />
-                          <input value={todo.text} onChange={(event) => updateTodoItem(todo.id, { text: event.target.value })} placeholder="新增待辦" />
-                          <button type="button" onClick={() => removeTodoItem(todo.id)} aria-label="刪除待辦">×</button>
+                          <input type="checkbox" checked={todo.done} disabled={relatedSalesDeliveryDraft} onChange={(event) => updateTodoItem(todo.id, { done: event.target.checked })} aria-label="待辦完成" />
+                          <input value={todo.text} disabled={relatedSalesDeliveryDraft} onChange={(event) => updateTodoItem(todo.id, { text: event.target.value })} placeholder="新增待辦" />
+                          <button type="button" disabled={relatedSalesDeliveryDraft} onClick={() => removeTodoItem(todo.id)} aria-label="刪除待辦">×</button>
                         </div>
                       ))}
-                      <button className="todo-add-btn" type="button" onClick={addTodoItem}>新增待辦</button>
+                      <button className="todo-add-btn" type="button" disabled={relatedSalesDeliveryDraft} onClick={addTodoItem}>新增待辦</button>
                     </div>
                   </details>
                 </div>
-              </div>
+              </fieldset>
             </div>
           </div>
         </div>

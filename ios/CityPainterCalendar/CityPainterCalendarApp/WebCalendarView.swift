@@ -9,6 +9,7 @@ struct WebCalendarView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
+        configuration.userContentController.add(context.coordinator, name: "cityPainterWidgetAuth")
         configuration.allowsInlineMediaPlayback = true
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
 
@@ -25,7 +26,20 @@ struct WebCalendarView: UIViewRepresentable {
 
     func updateUIView(_ webView: WKWebView, context: Context) {}
 
-    final class Coordinator: NSObject, WKUIDelegate {
+    final class Coordinator: NSObject, WKUIDelegate, WKScriptMessageHandler {
+        private let widgetAuth = WidgetAuthBridge()
+
+        func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+            guard message.name == "cityPainterWidgetAuth", message.frameInfo.isMainFrame,
+                  message.frameInfo.securityOrigin.protocol == "https",
+                  message.frameInfo.securityOrigin.host == WidgetConfig.appURL.host,
+                  message.frameInfo.securityOrigin.port == 0 || message.frameInfo.securityOrigin.port == 443,
+                  message.webView?.url?.scheme == "https",
+                  message.webView?.url?.host == WidgetConfig.appURL.host,
+                  let body = message.body as? [String: String] else { return }
+            widgetAuth.receive(body)
+        }
+
         func webView(
             _ webView: WKWebView,
             createWebViewWith configuration: WKWebViewConfiguration,

@@ -1,4 +1,4 @@
-import { auth } from './firebase'
+import { auth, getFirebaseIdToken, getAppCheckHeaders } from './firebase'
 
 const VAPID_PUBLIC_KEY = import.meta.env.VITE_WEB_PUSH_PUBLIC_KEY || ''
 const VAPID_KEY_CACHE_KEY = 'cityPainterCalendarVapidPublicKey'
@@ -87,11 +87,13 @@ export async function ensurePushSubscription(meta: PushUserMeta): Promise<boolea
     })
   }
 
-  const token = await user.getIdToken()
+  const token = await getFirebaseIdToken(user)
+  const appCheckHeaders = await getAppCheckHeaders(true)
   const res = await fetch('/api/register-calendar-push', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
+      ...appCheckHeaders,
       Authorization: `Bearer ${token}`,
     },
     body: JSON.stringify({

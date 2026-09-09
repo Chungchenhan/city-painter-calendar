@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { User } from 'firebase/auth'
 import { doc, onSnapshot } from 'firebase/firestore'
-import { db, refreshFirebaseSession } from '../lib/firebase'
+import { db } from '../lib/firebase'
+import { createForegroundRequest } from '../lib/foregroundRequest'
 import { readLocalQueryCache, removeLocalQueryCache, writeLocalQueryCache } from '../lib/localQueryCache'
 import {
   fetchSalesOperationalStatus,
@@ -102,7 +103,6 @@ export function useSalesOperationalStatus({
     error: '',
   }))
   const activeKeyRef = useRef(key)
-  const revalidateInFlightRef = useRef<{ key: string, request: Promise<void> } | null>(null)
   activeKeyRef.current = key
 
   const rawStatus = !key ? null : keyedStatus.key === key ? keyedStatus.status : cachedStatus
@@ -210,34 +210,25 @@ export function useSalesOperationalStatus({
       },
     ) : () => undefined
 
-    const revalidate = (refreshSession = false): Promise<void> => {
-      if (!active) return Promise.resolve()
-      if (revalidateInFlightRef.current?.key === key) {
-        const inFlightRequest = revalidateInFlightRef.current.request
-        return refreshSession ? inFlightRequest.then(() => revalidate(true)) : inFlightRequest
-      }
-      let request: Promise<void> | null = null
-      request = (async () => {
-        try {
-          if (refreshSession) await refreshFirebaseSession()
-          const nextStatus = await fetchSalesOperationalStatus(user, eventId)
-          if (!active || activeKeyRef.current !== key) return
-          listenerErrors.api = ''
-          commitStatus(nextStatus)
-          setRequestState((current) => ({ key, loading: false, error: current.key === key ? current.error : '' }))
-          updateError()
-        } catch (refreshError) {
-          if (!active || activeKeyRef.current !== key) return
-          listenerErrors.api = refreshError instanceof Error ? refreshError.message : '訂單狀態更新失敗'
-          setRequestState((current) => ({ key, loading: false, error: current.key === key ? current.error : '' }))
-          updateError()
-        } finally {
-          if (request && revalidateInFlightRef.current?.request === request) revalidateInFlightRef.current = null
-        }
-      })()
-      revalidateInFlightRef.current = { key, request }
-      return request
-    }
+    const statusRequest = createForegroundRequest({
+      load: (signal) => fetchSalesOperationalStatus(user, eventId, signal),
+      onSuccess: (nextStatus) => {
+        if (!active || activeKeyRef.current !== key) return
+        listenerErrors.api = ''
+        commitStatus(nextStatus)
+        setRequestState((current) => ({ key, loading: false, error: current.key === key ? current.error : '' }))
+        updateError()
+      },
+      onError: (refreshError) => {
+        if (!active || activeKeyRef.current !== key) return
+        listenerErrors.api = refreshError instanceof Error ? refreshError.message : '訂單狀態更新失敗'
+        setRequestState((current) => ({ key, loading: false, error: current.key === key ? current.error : '' }))
+        updateError()
+      },
+    })
+    const revalidate = () => document.visibilityState === 'hidden'
+      ? Promise.resolve()
+      : statusRequest.run()
 
     let revisionSignature = ''
     const stopRevisionListener = onSnapshot(
@@ -262,20 +253,25 @@ export function useSalesOperationalStatus({
       },
     )
 
-    const handleFocus = () => void revalidate(true)
+    const handleFocus = () => void revalidate()
     const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') void revalidate(true)
+      if (document.visibilityState === 'hidden') statusRequest.cancel()
+      else void revalidate()
     }
+    const handleReconnect = () => void revalidate()
     window.addEventListener('focus', handleFocus)
+    window.addEventListener('online', handleReconnect)
     document.addEventListener('visibilitychange', handleVisibilityChange)
     void revalidate()
 
     return () => {
       active = false
+      statusRequest.dispose()
       stopLineListener()
       stopPaymentListener()
       stopRevisionListener()
       window.removeEventListener('focus', handleFocus)
+      window.removeEventListener('online', handleReconnect)
       document.removeEventListener('visibilitychange', handleVisibilityChange)
     }
   }, [canViewPayment, commitStatus, eventId, key, uid, user])

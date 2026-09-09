@@ -1,9 +1,18 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent } from 'react'
 import { createPortal } from 'react-dom'
-import { auth, getAppCheckHeaders } from '../lib/firebase'
+import { auth, getAppCheckHeaders, getFirebaseIdToken } from '../lib/firebase'
 
-type ScannerPhase = 'idle' | 'processing' | 'success' | 'error'
+type ScannerPhase = 'idle' | 'processing' | 'success' | 'warning' | 'error'
 type ScannerControls = { stop: () => void }
+type ScanInputMode = 'camera' | 'photo'
+type QrPayloadType = 'raw-id' | 'url'
+
+type ScanContext = {
+  clientAttemptId: string
+  scanSessionId: string
+  inputMode: ScanInputMode
+  qrPayloadType: QrPayloadType
+}
 
 type OrderSummary = {
   id: string
@@ -28,6 +37,31 @@ type RelatedFulfillmentOrder = {
   recipientName: string
   recipientAddress: string
   sameAddress: boolean
+}
+
+type OutsourcedFileMoveStatus = {
+  jobId: string
+  status: string
+  terminal: boolean
+  outcome: 'processing' | 'success' | 'not_found' | 'error'
+  message: string
+}
+
+type OutsourcedFileMoveQueue = {
+  status: string
+  reason: string
+  jobId: string
+  message: string
+}
+
+class ErpLineApiError extends Error {
+  status: number
+
+  constructor(message: string, status: number) {
+    super(message)
+    this.name = 'ErpLineApiError'
+    this.status = status
+  }
 }
 
 const ERP_LINE_API_URL = 'https://erp.city-painter.com/api/line'
@@ -94,6 +128,35 @@ function apiErrorMessage(payload: Record<string, unknown>): string {
   return isRecord(payload.error) ? readText(payload.error, ['message', 'error']) : readText(payload, ['error'])
 }
 
+function outsourcedFileMoveQueue(payload: Record<string, unknown>): OutsourcedFileMoveQueue | null {
+  if (!isRecord(payload.outsourcedFileMove)) return null
+  return {
+    status: readText(payload.outsourcedFileMove, ['status']),
+    reason: readText(payload.outsourcedFileMove, ['reason']),
+    jobId: readText(payload.outsourcedFileMove, ['jobId']),
+    message: readText(payload.outsourcedFileMove, ['message'])
+  }
+}
+
+function orderStatusMessage(payload: Record<string, unknown>, fallback: string): string {
+  const combinedMessage = readText(payload, ['message']) || fallback
+  if (!isRecord(payload.outsourcedFileMove)) return combinedMessage
+  const moveMessage = readText(payload.outsourcedFileMove, ['message'])
+  if (!moveMessage || !combinedMessage.endsWith(moveMessage)) return combinedMessage
+  return combinedMessage.slice(0, -moveMessage.length).trim() || fallback
+}
+
+function outsourcedFileMoveStatus(payload: Record<string, unknown>, jobId: string): OutsourcedFileMoveStatus {
+  const outcome = readText(payload, ['outcome'])
+  return {
+    jobId: readText(payload, ['jobId']) || jobId,
+    status: readText(payload, ['status']) || 'pending',
+    terminal: payload.terminal === true,
+    outcome: outcome === 'success' || outcome === 'not_found' || outcome === 'error' ? outcome : 'processing',
+    message: readText(payload, ['message']) || '油性噴畫檔案仍在背景歸檔。'
+  }
+}
+
 function responseOrder(payload: Record<string, unknown>, salesId: string): OrderSummary {
   const nested = [payload.order, payload.sale, payload.sales, payload.record].find(isRecord)
   const source = nested ?? payload
@@ -141,6 +204,26 @@ function fulfillmentSchedule(order: RelatedFulfillmentOrder): string {
   return [order.deliveryDate, timeRange].filter(Boolean).join(' ') || '未設定'
 }
 
+function createScanIdentifier(): string {
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID()
+
+  const bytes = new Uint8Array(16)
+  crypto.getRandomValues(bytes)
+  bytes[6] = (bytes[6] & 0x0f) | 0x40
+  bytes[8] = (bytes[8] & 0x3f) | 0x80
+  const hex = Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
+
+function qrPayloadType(rawValue: string): QrPayloadType {
+  try {
+    new URL(rawValue.trim())
+    return 'url'
+  } catch {
+    return 'raw-id'
+  }
+}
+
 function parseSalesId(rawValue: string): string {
   const raw = rawValue.trim()
   if (!raw) throw new Error('QR Code 沒有包含銷貨單資料。')
@@ -162,16 +245,19 @@ function parseSalesId(rawValue: string): string {
   return salesId
 }
 
-async function scanOrder(salesId: string) {
+async function callErpLineApi(body: Record<string, unknown>, timeoutMs = 30_000, externalSignal?: AbortSignal) {
   const currentUser = auth.currentUser
   if (!currentUser) throw new Error('登入已失效，請重新登入。')
 
   const [token, appCheckHeaders] = await Promise.all([
-    currentUser.getIdToken(),
+    getFirebaseIdToken(currentUser),
     getAppCheckHeaders()
   ])
   const controller = new AbortController()
-  const timeout = window.setTimeout(() => controller.abort(), 30_000)
+  const abortFromExternal = () => controller.abort()
+  externalSignal?.addEventListener('abort', abortFromExternal, { once: true })
+  if (externalSignal?.aborted) controller.abort()
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs)
   try {
     const response = await fetch(erpLineApiUrl(), {
       method: 'POST',
@@ -180,21 +266,76 @@ async function scanOrder(salesId: string) {
         Authorization: `Bearer ${token}`,
         ...appCheckHeaders
       },
-      body: JSON.stringify({ action: 'scan-order-status', salesId }),
+      body: JSON.stringify(body),
       signal: controller.signal
     })
     const payload: unknown = await response.json().catch(() => null)
     const record = isRecord(payload) ? payload : {}
     if (!response.ok || record.ok === false) {
-      throw new Error(apiErrorMessage(record) || (response.status === 403 ? '您沒有更新銷貨單狀態的權限。' : '銷貨單狀態更新失敗，請稍後再試。'))
+      throw new ErpLineApiError(
+        apiErrorMessage(record) || (response.status === 403 ? '您沒有執行此操作的權限。' : 'ERP 操作失敗，請稍後再試。'),
+        response.status
+      )
     }
     return record
   } catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError') throw new Error('銷貨單狀態更新逾時，請確認網路後再試。')
+    if (error instanceof DOMException && error.name === 'AbortError') throw new Error('ERP 操作逾時，請確認網路後再試。')
     throw error
   } finally {
     window.clearTimeout(timeout)
+    externalSignal?.removeEventListener('abort', abortFromExternal)
   }
+}
+
+async function scanOrder(salesId: string, context: ScanContext, signal: AbortSignal) {
+  return callErpLineApi({
+    action: 'scan-order-status',
+    salesId,
+    clientAttemptId: context.clientAttemptId,
+    scanSessionId: context.scanSessionId,
+    inputMode: context.inputMode,
+    qrPayloadType: context.qrPayloadType
+  }, 30_000, signal)
+}
+
+function waitForNextMoveStatusPoll(delayMs: number, signal: AbortSignal) {
+  return new Promise<void>((resolve) => {
+    const timer = window.setTimeout(() => {
+      signal.removeEventListener('abort', cancel)
+      resolve()
+    }, delayMs)
+    const cancel = () => {
+      window.clearTimeout(timer)
+      resolve()
+    }
+    signal.addEventListener('abort', cancel, { once: true })
+  })
+}
+
+async function waitForOutsourcedFileMove(
+  salesId: string,
+  jobId: string,
+  signal: AbortSignal
+): Promise<OutsourcedFileMoveStatus | null> {
+  const deadline = Date.now() + 45_000
+  while (!signal.aborted && Date.now() < deadline) {
+    try {
+      const remainingMs = deadline - Date.now()
+      const payload = await callErpLineApi(
+        { action: 'outsourced-file-move-status', salesId, jobId },
+        Math.max(1, Math.min(15_000, remainingMs)),
+        signal
+      )
+      const status = outsourcedFileMoveStatus(payload, jobId)
+      if (status.terminal) return status
+    } catch (error) {
+      if (signal.aborted) return null
+      if (error instanceof ErpLineApiError && [400, 401, 403, 404].includes(error.status)) throw error
+      if (Date.now() >= deadline) return null
+    }
+    await waitForNextMoveStatusPoll(Math.min(2_000, Math.max(0, deadline - Date.now())), signal)
+  }
+  return null
 }
 
 async function decodeQrImage(file: File): Promise<string> {
@@ -209,6 +350,7 @@ async function decodeQrImage(file: File): Promise<string> {
 }
 
 export default function ErpOrderScanner({ onClose }: { onClose: () => void }) {
+  const [scanSessionId] = useState(createScanIdentifier)
   const [phase, setPhase] = useState<ScannerPhase>('idle')
   const [message, setMessage] = useState('請開啟相機，掃描銷貨單右上角的 QR Code。')
   const [order, setOrder] = useState<OrderSummary | null>(null)
@@ -222,6 +364,8 @@ export default function ErpOrderScanner({ onClose }: { onClose: () => void }) {
   const controlsRef = useRef<ScannerControls | null>(null)
   const cameraAttemptRef = useRef(0)
   const imageAttemptRef = useRef(0)
+  const moveStatusAttemptRef = useRef(0)
+  const activeOperationAbortRef = useRef<AbortController | null>(null)
   const processingRef = useRef(false)
   const processedRef = useRef(new Set<string>())
   const lastLiveScanRef = useRef('')
@@ -242,6 +386,9 @@ export default function ErpOrderScanner({ onClose }: { onClose: () => void }) {
   }, [])
 
   const closeScanner = useCallback(() => {
+    moveStatusAttemptRef.current += 1
+    activeOperationAbortRef.current?.abort()
+    activeOperationAbortRef.current = null
     stopCamera()
     onClose()
   }, [onClose, stopCamera])
@@ -251,24 +398,35 @@ export default function ErpOrderScanner({ onClose }: { onClose: () => void }) {
     setReminderOpen(false)
   }, [])
 
-  const processSalesId = useCallback(async (rawValue: string, continuousCamera = false) => {
+  const processSalesId = useCallback(async (rawValue: string, inputMode: ScanInputMode) => {
     if (processingRef.current || reminderOpenRef.current) return
+    const continuousCamera = inputMode === 'camera'
+    const context: ScanContext = {
+      clientAttemptId: createScanIdentifier(),
+      scanSessionId,
+      inputMode,
+      qrPayloadType: qrPayloadType(rawValue)
+    }
     let salesId = ''
+    let operationAttempt: number | null = null
+    let operationController: AbortController | null = null
     try {
       salesId = parseSalesId(rawValue)
       if (processedRef.current.has(salesId)) return
       processingRef.current = true
       processedRef.current.add(salesId)
+      operationAttempt = ++moveStatusAttemptRef.current
+      activeOperationAbortRef.current?.abort()
+      operationController = new AbortController()
+      activeOperationAbortRef.current = operationController
       setOrder(null)
       setPhase('processing')
       setMessage('正在更新銷貨單狀態...')
 
-      const payload = await scanOrder(salesId)
+      const payload = await scanOrder(salesId, context, operationController.signal)
+      if (operationAttempt !== moveStatusAttemptRef.current || operationController.signal.aborted) return
       const updatedOrder = responseOrder(payload, salesId)
       setOrder(updatedOrder)
-      setPhase('success')
-      const resultMessage = readText(payload, ['message']) || `訂單狀態已更新為「${updatedOrder.orderStatus}」。`
-      setMessage(continuousCamera ? `${resultMessage} 相機保持開啟，請繼續掃描下一張。` : resultMessage)
       const relatedOrders = relatedFulfillmentOrders(payload, processedRef.current)
       if (relatedOrders.length > 0) {
         reminderOpenRef.current = true
@@ -276,15 +434,55 @@ export default function ErpOrderScanner({ onClose }: { onClose: () => void }) {
         setReminderTruncated(payload.relatedFulfillmentOrdersTruncated === true)
         setReminderOpen(true)
       }
+      const moveQueue = outsourcedFileMoveQueue(payload)
+      const resultMessage = moveQueue?.jobId
+        ? orderStatusMessage(payload, `訂單狀態已更新為「${updatedOrder.orderStatus}」。`)
+        : readText(payload, ['message']) || `訂單狀態已更新為「${updatedOrder.orderStatus}」。`
+      let finalPhase: ScannerPhase = 'success'
+      let finalMessage = resultMessage
+      if (moveQueue?.jobId) {
+        setMessage(`${resultMessage}\n正在等待油性噴畫檔案歸檔結果…`)
+        try {
+          const moveStatus = await waitForOutsourcedFileMove(
+            salesId,
+            moveQueue.jobId,
+            operationController.signal
+          )
+          if (operationAttempt !== moveStatusAttemptRef.current || operationController.signal.aborted) return
+          if (moveStatus) {
+            finalPhase = moveStatus.outcome === 'success' ? 'success' : 'error'
+            finalMessage = `${resultMessage}\n${moveStatus.message}`
+          } else {
+            finalPhase = 'warning'
+            finalMessage = `${resultMessage}\n油性噴畫檔案仍在背景歸檔；若發生異常，LINE 助手會通知承辦人。`
+          }
+        } catch (moveStatusError) {
+          if (operationAttempt !== moveStatusAttemptRef.current || operationController.signal.aborted) return
+          console.error('查詢油性噴畫歸檔狀態失敗', moveStatusError)
+          finalPhase = 'warning'
+          finalMessage = `${resultMessage}\n暫時無法確認油性噴畫歸檔結果；若發生異常，LINE 助手會通知承辦人。`
+        }
+      } else if (moveQueue?.status === 'failed') {
+        finalPhase = 'error'
+      } else if (moveQueue?.status === 'skipped') {
+        finalPhase = 'warning'
+      }
+      setPhase(finalPhase)
+      setMessage(continuousCamera ? `${finalMessage}\n相機保持開啟，請繼續掃描下一張。` : finalMessage)
     } catch (error) {
+      if (operationAttempt !== null && (
+        operationAttempt !== moveStatusAttemptRef.current
+        || operationController?.signal.aborted
+      )) return
       if (salesId) processedRef.current.delete(salesId)
       setPhase('error')
       const errorMessage = error instanceof Error ? error.message : '掃描失敗，請稍後再試。'
       setMessage(continuousCamera ? `${errorMessage} 相機保持開啟，可繼續掃描。` : errorMessage)
     } finally {
+      if (activeOperationAbortRef.current === operationController) activeOperationAbortRef.current = null
       processingRef.current = false
     }
-  }, [])
+  }, [scanSessionId])
 
   useEffect(() => {
     void preloadErpOrderScanner().catch(() => undefined)
@@ -301,6 +499,9 @@ export default function ErpOrderScanner({ onClose }: { onClose: () => void }) {
       document.body.style.overflow = previousOverflow
       cameraAttemptRef.current += 1
       imageAttemptRef.current += 1
+      moveStatusAttemptRef.current += 1
+      activeOperationAbortRef.current?.abort()
+      activeOperationAbortRef.current = null
       try {
         controlsRef.current?.stop()
       } catch (error) {
@@ -342,7 +543,7 @@ export default function ErpOrderScanner({ onClose }: { onClose: () => void }) {
         const rawValue = result.getText()
         if (rawValue === lastLiveScanRef.current) return
         lastLiveScanRef.current = rawValue
-        void processSalesId(rawValue, true)
+        void processSalesId(rawValue, 'camera')
       })
       if (cameraAttempt !== cameraAttemptRef.current) {
         controls.stop()
@@ -379,7 +580,7 @@ export default function ErpOrderScanner({ onClose }: { onClose: () => void }) {
     try {
       const decodedText = await decodeQrImage(file)
       if (imageAttempt !== imageAttemptRef.current) return
-      await processSalesId(decodedText)
+      await processSalesId(decodedText, 'photo')
     } catch (error) {
       if (imageAttempt !== imageAttemptRef.current) return
       setPhase('error')
@@ -388,6 +589,7 @@ export default function ErpOrderScanner({ onClose }: { onClose: () => void }) {
   }
 
   const busy = cameraStarting || phase === 'processing'
+  const cameraButtonDisabled = cameraStarting || (phase === 'processing' && !cameraActive)
 
   return createPortal(
     <div className="erp-order-scanner" role="dialog" aria-modal="true" aria-label="銷貨單狀態掃描">
@@ -405,8 +607,9 @@ export default function ErpOrderScanner({ onClose }: { onClose: () => void }) {
         .erp-order-scanner-video.is-photo-mode { display: grid; place-items: center; background: #26312c; }
         .erp-order-scanner-video.is-photo-mode video, .erp-order-scanner-video.is-photo-mode .erp-order-scanner-frame { display: none; }
         .erp-order-scanner-photo-hint { padding: 24px; color: #fff; text-align: center; font-size: 16px; line-height: 1.6; }
-        .erp-order-scanner-message { min-height: 68px; display: grid; place-items: center; padding: 12px 16px; border-top: 1px solid #ddd; text-align: center; line-height: 1.5; }
+        .erp-order-scanner-message { min-height: 68px; display: grid; place-items: center; padding: 12px 16px; border-top: 1px solid #ddd; text-align: center; line-height: 1.5; white-space: pre-line; overflow-wrap: anywhere; }
         .erp-order-scanner-message.is-error { color: #a21d18; background: #fff3f2; }
+        .erp-order-scanner-message.is-warning { color: #765500; background: #fff7dc; font-weight: bold; }
         .erp-order-scanner-message.is-success { color: #086846; background: #edfff7; font-weight: bold; }
         .erp-order-scanner-actions { display: grid; gap: 10px; margin-top: 12px; }
         .erp-order-scanner-action { width: 100%; min-height: 48px; border: 1px solid #777; background: #fff; color: #18211d; font-size: 16px; }
@@ -454,11 +657,11 @@ export default function ErpOrderScanner({ onClose }: { onClose: () => void }) {
             <div className="erp-order-scanner-frame" />
             {!liveCameraSupported && <div className="erp-order-scanner-photo-hint">此裝置無法使用即時預覽<br />請拍照後辨識 QR Code</div>}
           </div>
-          <div className={`erp-order-scanner-message${phase === 'error' ? ' is-error' : phase === 'success' ? ' is-success' : ''}`} role={phase === 'error' ? 'alert' : 'status'}>{message}</div>
+          <div className={`erp-order-scanner-message${phase === 'error' ? ' is-error' : phase === 'warning' ? ' is-warning' : phase === 'success' ? ' is-success' : ''}`} role={phase === 'error' ? 'alert' : 'status'}>{message}</div>
         </section>
 
         <div className="erp-order-scanner-actions">
-          <button type="button" className="erp-order-scanner-action primary" onClick={() => void (cameraActive ? stopCamera() : startCamera())} disabled={busy}>
+          <button type="button" className="erp-order-scanner-action primary" onClick={() => void (cameraActive ? stopCamera() : startCamera())} disabled={cameraButtonDisabled}>
             {cameraStarting ? '相機啟動中...' : cameraActive ? '停止相機' : liveCameraSupported ? '開啟相機掃描' : '拍照掃描 QR Code'}
           </button>
           <input

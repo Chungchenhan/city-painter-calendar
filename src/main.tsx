@@ -1,3 +1,4 @@
+import { setupNativeWidgetAuth } from './lib/nativeWidgetAuth'
 import { lazy, StrictMode, Suspense, useEffect } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -9,7 +10,6 @@ import CalendarRoutePending from './components/shared/CalendarRoutePending'
 import CalendarStartupGate from './components/shared/CalendarStartupGate'
 import LoginPage from './pages/LoginPage'
 import { setupAppUpdateChecks } from './lib/appUpdate'
-import { setupFirebaseSessionRefresh } from './lib/firebase'
 import { setupVisualViewportVars } from './lib/visualViewport'
 import './styles.css'
 
@@ -25,8 +25,8 @@ if (import.meta.env.DEV && window.location.hostname === '127.0.0.1') {
   window.location.replace(`http://localhost:${window.location.port}${window.location.pathname}${window.location.search}${window.location.hash}`)
 }
 
+setupNativeWidgetAuth()
 setupAppUpdateChecks()
-setupFirebaseSessionRefresh()
 setupVisualViewportVars()
 
 if ('serviceWorker' in navigator) {

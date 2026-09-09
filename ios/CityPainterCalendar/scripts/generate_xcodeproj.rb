@@ -21,7 +21,7 @@ project.root_object.known_regions = ['zh-Hant', 'Base']
 project.build_configurations.each do |config|
   config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = DEPLOYMENT_TARGET
   config.build_settings['MARKETING_VERSION'] = '0.1.0'
-  config.build_settings['CURRENT_PROJECT_VERSION'] = '2'
+  config.build_settings['CURRENT_PROJECT_VERSION'] = '4'
   config.build_settings['SWIFT_VERSION'] = '5.0'
 end
 
@@ -36,6 +36,7 @@ def configure_target(target, bundle_id, plist)
     config.build_settings['SWIFT_VERSION'] = '5.0'
     config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = DEPLOYMENT_TARGET
     config.build_settings['CODE_SIGN_STYLE'] = 'Automatic'
+    config.build_settings['CODE_SIGN_ENTITLEMENTS'] = 'Shared/WidgetAuth.entitlements'
     config.build_settings['DEVELOPMENT_TEAM'] = DEVELOPMENT_TEAM
     config.build_settings['ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS'] = 'YES'
   end
@@ -65,7 +66,8 @@ end
 
 add_sources(app_group, app_target, [
   'CityPainterCalendarApp.swift',
-  'WebCalendarView.swift'
+  'WebCalendarView.swift',
+  'WidgetAuthBridge.swift'
 ])
 add_sources(widget_group, widget_target, [
   'CityPainterCalendarWidget.swift',
@@ -75,6 +77,9 @@ add_sources(widget_group, widget_target, [
 shared_ref = shared_group.new_file('WidgetConfig.swift')
 app_target.add_file_references([shared_ref])
 widget_target.add_file_references([shared_ref])
+credentials_ref = shared_group.new_file('WidgetCredentials.swift')
+app_target.add_file_references([credentials_ref])
+widget_target.add_file_references([credentials_ref])
 
 assets_ref = app_group.new_file('Assets.xcassets')
 app_target.resources_build_phase.add_file_reference(assets_ref)

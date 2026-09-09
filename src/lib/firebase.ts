@@ -1,8 +1,10 @@
 import { initializeApp } from 'firebase/app'
 import { getToken, initializeAppCheck, ReCaptchaEnterpriseProvider, type AppCheck } from 'firebase/app-check'
-import { getAuth } from 'firebase/auth'
+import { getAuth, type User } from 'firebase/auth'
 import { getFirestore, initializeFirestore, persistentLocalCache, persistentMultipleTabManager } from 'firebase/firestore'
 import { getStorage } from 'firebase/storage'
+import { ensureLocalQueryCacheSchema } from './localQueryCache'
+import { pruneDevicePhotoLocationCache } from './photoGeolocation'
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY || 'placeholder-dev',
@@ -12,6 +14,10 @@ const firebaseConfig = {
   messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || '000000000000',
   appId: import.meta.env.VITE_FIREBASE_APP_ID || '1:000000000000:web:0000000000000000'
 }
+
+// 必須先釋放舊查詢快取，避免 Firestore 啟動分頁同步時因額度不足中止。
+pruneDevicePhotoLocationCache()
+ensureLocalQueryCacheSchema()
 
 const app = initializeApp(firebaseConfig)
 export const auth = getAuth(app)
@@ -27,74 +33,53 @@ export const appCheck: AppCheck | null = appCheckSiteKey
     })
   : null
 
-let firebaseSessionRefreshPromise: Promise<void> | null = null
-let lastFirebaseSessionRefreshAt = 0
-
-function appCheckThrottleRetryDelay(error: unknown) {
-  const code = typeof error === 'object' && error !== null && 'code' in error
+function firebaseErrorCode(error: unknown) {
+  return typeof error === 'object' && error !== null && 'code' in error
     ? String(error.code)
     : ''
-  if (code !== 'appCheck/throttled' && code !== 'appCheck/initial-throttle') return 0
+}
 
+function isFirebaseNetworkError(error: unknown) {
+  const code = firebaseErrorCode(error)
+  if (code === 'auth/network-request-failed' || code.includes('fetch-network-error')) return true
   const message = error instanceof Error ? error.message : String(error)
-  const time = message.match(/(?:(\d+)d:)?(?:(\d+)h:)?(\d+)m:(\d+)s/i)
-  if (!time) return 1_250
-  const remainingMs = (
-    Number(time[1] || 0) * 86_400
-    + Number(time[2] || 0) * 3_600
-    + Number(time[3] || 0) * 60
-    + Number(time[4] || 0)
-  ) * 1_000
-  return Math.min(Math.max(remainingMs + 250, 500), 5_000)
+  return /network-request-failed|failed to fetch|load failed|networkerror/i.test(message)
 }
 
-async function refreshAppCheckToken() {
-  if (!appCheck) {
-    if (import.meta.env.DEV) return
-    throw new Error('網站安全驗證尚未啟用。')
+export function firebaseRequestErrorMessage(error: unknown, fallback: string) {
+  const code = firebaseErrorCode(error)
+  const message = error instanceof Error ? error.message : ''
+  if (/^(?:目前沒有網路連線|網路連線不穩定|登入已失效)/.test(message)) return message
+  if (isFirebaseNetworkError(error)) {
+    return navigator.onLine === false
+      ? '目前沒有網路連線，請恢復連線後再試。'
+      : '網路連線不穩定，請稍後再試。'
   }
+  if (['auth/id-token-expired', 'auth/invalid-user-token', 'auth/user-token-expired', 'auth/user-disabled'].includes(code)) {
+    return '登入已失效，請重新登入行事曆。'
+  }
+  return fallback
+}
 
+export async function getFirebaseIdToken(user: User) {
   try {
-    await getToken(appCheck, true)
+    return await user.getIdToken()
   } catch (error) {
-    const retryDelay = appCheckThrottleRetryDelay(error)
-    if (!retryDelay) throw error
-    await new Promise((resolve) => window.setTimeout(resolve, retryDelay))
-    await getToken(appCheck, true)
+    if (!isFirebaseNetworkError(error) || navigator.onLine === false) {
+      throw new Error(firebaseRequestErrorMessage(error, '登入驗證失敗，請重新登入行事曆。'))
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 400))
+    try {
+      return await user.getIdToken()
+    } catch (retryError) {
+      throw new Error(firebaseRequestErrorMessage(retryError, '登入驗證失敗，請重新登入行事曆。'))
+    }
   }
 }
 
-export function refreshFirebaseSession(): Promise<void> {
-  const currentUser = auth.currentUser
-  if (!currentUser) return Promise.resolve()
-  if (firebaseSessionRefreshPromise) return firebaseSessionRefreshPromise
-  if (Date.now() - lastFirebaseSessionRefreshAt < 5_000) return Promise.resolve()
-
-  firebaseSessionRefreshPromise = Promise.all([
-    currentUser.getIdToken(true),
-    refreshAppCheckToken(),
-  ]).then(() => {
-    lastFirebaseSessionRefreshAt = Date.now()
-  }).finally(() => {
-    firebaseSessionRefreshPromise = null
-  })
-  return firebaseSessionRefreshPromise
-}
-
-export function setupFirebaseSessionRefresh() {
-  const refresh = () => {
-    if (document.visibilityState !== 'visible') return
-    void refreshFirebaseSession().catch((error) => {
-      console.warn('[calendar] 前景驗證更新失敗', error)
-    })
-  }
-  window.addEventListener('focus', refresh)
-  document.addEventListener('visibilitychange', refresh)
-}
-
-export async function getAppCheckHeaders(): Promise<Record<string, string>> {
+export async function getAppCheckHeaders(required = false): Promise<Record<string, string>> {
   if (!appCheck) {
-    if (import.meta.env.DEV) return {}
+    if (import.meta.env.DEV && !required) return {}
     throw new Error('網站安全驗證尚未啟用。')
   }
   try {
@@ -103,8 +88,8 @@ export async function getAppCheckHeaders(): Promise<Record<string, string>> {
     return { 'X-Firebase-AppCheck': result.token }
   } catch (error) {
     // iOS WebView 連線本機網址時可能回傳 Unsupported；本機 API 另有登入與員工權限驗證。
-    if (import.meta.env.DEV) return {}
-    throw error
+    if (import.meta.env.DEV && !required) return {}
+    throw new Error(firebaseRequestErrorMessage(error, '網站安全驗證失敗，請稍後再試。'))
   }
 }
 

@@ -2,6 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+  <key>WidgetKeychainAccessGroup</key>
+  <string>$(AppIdentifierPrefix)com.citypainter.calendar.widgetauth</string>
   <key>CFBundleExecutable</key>
   <string>$(EXECUTABLE_NAME)</string>
   <key>CFBundleIdentifier</key>
@@ -23,9 +25,11 @@
   <key>CFBundleVersion</key>
   <string>$(CURRENT_PROJECT_VERSION)</string>
   <key>NSCameraUsageDescription</key>
-  <string>用於拍攝並辨識銷貨單 QR Code。</string>
+  <string>用於拍攝工作完成照片及辨識銷貨單 QR Code。</string>
   <key>NSPhotoLibraryUsageDescription</key>
-  <string>用於選取並辨識含有銷貨單 QR Code 的照片。</string>
+  <string>用於選取工作附件照片及辨識含有銷貨單 QR Code 的照片。</string>
+  <key>NSLocationWhenInUseUsageDescription</key>
+  <string>用於上傳工作完成照片時補充目前位置，協助記錄施工或交付地點；不允許定位仍可上傳照片。</string>
   <key>UILaunchScreen</key>
   <dict/>
   <key>UIApplicationSceneManifest</key>

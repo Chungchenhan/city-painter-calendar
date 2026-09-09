@@ -10,7 +10,9 @@
     "preview": "vite preview --host 127.0.0.1 --port 5175",
     "test:delivery-grouping": "node --experimental-strip-types scripts/delivery-event-grouping.test.ts",
     "test:employee-directory": "node scripts/employee-directory.test.ts",
-    "test:photo-metadata": "node --experimental-strip-types scripts/photo-metadata.test.ts"
+    "test:attachment-thumbnail": "node --experimental-strip-types scripts/attachment-thumbnail.test.ts",
+    "test:photo-metadata": "node --experimental-strip-types scripts/photo-metadata.test.ts",
+    "test:sales-delivery-attachments": "node --experimental-strip-types scripts/sales-delivery-attachment-ownership.test.ts"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.100.10",
@@ -23,8 +25,8 @@
     "googleapis": "^172.0.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
-    "react-router-dom": "^7.18.1",
-    "sharp": "^0.34.5",
+    "react-router-dom": "7.18.2",
+    "sharp": "0.35.4",
     "web-push": "^3.6.7"
   },
   "devDependencies": {
