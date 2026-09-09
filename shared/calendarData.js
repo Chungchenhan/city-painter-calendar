@@ -122,7 +122,12 @@ export async function handleCalendarData(req, res, { db, auth, appCheck }) {
         event = source.exists ? source.data() : data.scopeSnapshot
       }
       const allowed = kind === 'groups'
-        ? await canReadCalendarEvent(db, actor, { calendarId: doc.id })
+        ? await canReadCalendarEvent(db, actor, {
+          // 部門配色沿用部門事件的共享範圍，避免跨部門同仁退回預設色。
+          calendarId: doc.id.startsWith('departmentCalendar_') && data.departmentIds?.length === 1
+            && doc.id === `departmentCalendar_${data.departmentIds[0]}`
+            ? `department:${data.departmentIds[0]}` : doc.id,
+        })
         : await canReadCalendarEvent(db, actor, event)
       if (allowed) {
         const row = { ...data, id: doc.id }

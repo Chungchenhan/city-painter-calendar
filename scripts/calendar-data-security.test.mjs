@@ -12,7 +12,15 @@ function setup({ role = 'employee', disabled = false, invalidCheck = false } = {
   ])
   const ref = path => ({ path, id: path.split('/').at(-1), get: async () => snap(path), collection: name => collection(path + '/' + name) })
   const snap = path => ({ exists: values.has(path), id: path.split('/').at(-1), data: () => values.get(path), ref: ref(path), updateTime: { toMillis: () => 100 } })
-  const collection = name => ({ doc: id => ref(name + '/' + id) })
+  const collection = name => ({
+    doc: id => ref(name + '/' + id),
+    orderBy() { return this },
+    limit() { return this },
+    get: async () => {
+      const docs = [...values.keys()].filter(path => path.startsWith(name + '/') && path.split('/').length === 2).map(snap)
+      return { docs, size: docs.length }
+    },
+  })
   const db = { collection, runTransaction: async fn => fn({ get: async ref => snap(ref.path), create: (ref, data) => values.set(ref.path, data) }) }
   const services = { db, auth: { verifyIdToken: async () => ({ uid: 'u' }), getUser: async () => ({ disabled }) }, appCheck: { verifyToken: async () => { if (invalidCheck) throw new Error('bad') } } }
   const call = async (query, body, headers = {}) => {
@@ -22,6 +30,16 @@ function setup({ role = 'employee', disabled = false, invalidCheck = false } = {
   }
   return { call, values }
 }
+test('跨部門員工可讀原有黃色配色，管理部與私人行事曆仍受限制', async () => {
+  const context = setup()
+  context.values.set('departments/dept_event', { name: '活動部' })
+  context.values.set('calendarCalendars/departmentCalendar_dept_event', { name: '活動部', departmentIds: ['dept_event'], color: '#f6b100' })
+  context.values.set('calendarCalendars/departmentCalendar_dept_mgmt', { name: '管理部', departmentIds: ['dept_mgmt'], color: '#667085' })
+  context.values.set('calendarCalendars/private', { name: '私人', employeeIds: ['other'], color: '#ef6262' })
+  const response = await context.call({ kind: 'groups' })
+  assert.equal(response.code, 200)
+  assert.deepEqual(response.data.rows.map(row => [row.id, row.color]), [['departmentCalendar_dept_event', '#f6b100']])
+})
 test('員工可讀共享事件但不可讀管理部與hidden，管理者可讀', async () => {
   const employee = setup()
   assert.equal((await employee.call({ kind: 'event', eventId: 'public' })).code, 200)
