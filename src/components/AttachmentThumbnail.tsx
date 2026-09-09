@@ -4,6 +4,7 @@ import {
   attachmentThumbnailAttemptCount,
   attachmentThumbnailAttemptSourceIndex,
   attachmentThumbnailSources,
+  calendarAttachmentThumbnailAccess,
   cacheBustedAttachmentThumbnailUrl,
   type AttachmentThumbnailSource,
 } from '../lib/attachmentThumbnail'
@@ -27,8 +28,11 @@ export default function AttachmentThumbnail({
   onOpen,
   onReload,
 }: AttachmentThumbnailProps) {
-  const { links, error, retry } = useCalendarAttachmentAccess(eventId, eventId ? attachment.path || '' : '')
-  const sources = useMemo(() => eventId ? (links ? [links.linePreviewUrl, links.lineOriginalUrl] : []) : attachmentThumbnailSources(attachment), [
+  const access = calendarAttachmentThumbnailAccess(attachment)
+  const needsAuthorization = Boolean(eventId && access.requiresAuthorization)
+  const { links, error, retry } = useCalendarAttachmentAccess(needsAuthorization ? eventId : undefined, access.fileId)
+  const sources = useMemo(() => needsAuthorization ? (links ? [links.linePreviewUrl, links.lineOriginalUrl] : []) : eventId ? access.sources : attachmentThumbnailSources(attachment), [
+    needsAuthorization,
     eventId,
     links,
     attachment.lineOriginalUrl,
@@ -50,7 +54,8 @@ export default function AttachmentThumbnail({
   }, [sourceKey])
 
   const sourceIndex = attachmentThumbnailAttemptSourceIndex(attemptIndex, sources.length)
-  const failed = sourceIndex < 0 || attemptIndex >= attemptCount
+  const pending = Boolean(needsAuthorization && access.fileId && !links && !error)
+  const failed = !pending && (sourceIndex < 0 || attemptIndex >= attemptCount)
   const source = failed ? '' : sources[sourceIndex]
   const requestUrl = source && (attemptIndex > 0 || reloadVersion > 0)
     ? cacheBustedAttachmentThumbnailUrl(source, `${reloadVersion}-${attemptIndex}`)
@@ -58,11 +63,12 @@ export default function AttachmentThumbnail({
   const attachmentName = attachment.name || '圖片'
 
   function handleClick() {
+    if (pending) return
     if (!failed) {
       onOpen()
       return
     }
-    if (eventId) retry()
+    if (needsAuthorization && access.fileId) retry()
     onReload?.()
     setReloadVersion((value) => value + 1)
     setAttemptIndex(0)
@@ -73,10 +79,11 @@ export default function AttachmentThumbnail({
       type="button"
       className={`${className} attachment-thumbnail-button${failed ? ' failed' : ''}`}
       onClick={handleClick}
-      aria-label={failed ? `重新載入圖片：${attachmentName}` : `全螢幕開啟圖片：${attachmentName}`}
+      aria-busy={pending}
+      aria-label={pending ? `載入圖片：${attachmentName}` : failed ? `重新載入圖片：${attachmentName}` : `全螢幕開啟圖片：${attachmentName}`}
       title={failed ? `${attachmentName}（點擊重新載入）` : attachmentName}
     >
-      {!failed && (
+      {!failed && !pending && (
         <img
           key={requestUrl}
           className="attachment-thumbnail-image"
@@ -89,9 +96,14 @@ export default function AttachmentThumbnail({
           onError={() => setAttemptIndex((current) => current === attemptIndex ? current + 1 : current)}
         />
       )}
+      {pending && (
+        <span className="attachment-thumbnail-reload-state" role="status">
+          <b>載入圖片中</b>
+        </span>
+      )}
       {failed && (
         <span className="attachment-thumbnail-reload-state" role="status">
-          <b>{eventId && !links && !error ? '圖片授權中' : '圖片載入失敗'}</b>
+          <b>圖片載入失敗</b>
           <span>重新載入</span>
         </span>
       )}

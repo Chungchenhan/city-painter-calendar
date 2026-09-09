@@ -51,3 +51,19 @@ export function cacheBustedAttachmentThumbnailUrl(url: string, token: string) {
   const separator = base.includes('?') ? '&' : '?'
   return `${base}${separator}cpThumbnailRetry=${encodeURIComponent(token)}${hash}`
 }
+
+export function calendarAttachmentThumbnailAccess(attachment: AttachmentThumbnailSource) {
+  const sourceUrls = [attachment.linePreviewUrl, attachment.lineOriginalUrl, attachment.url]
+    .filter((value): value is string => Boolean(value))
+  const urls = sourceUrls.map((value) => {
+      try { return new URL(value, 'https://sch.city-painter.com') } catch { return null }
+    })
+  const salesUrls = urls.filter((url) => url?.pathname === '/api/upload-drive' && url.searchParams.get('scope') === 'sales-attachment')
+  if (salesUrls.length) return { fileId: '', requiresAuthorization: false, sources: sourceUrls.filter((_value, index) => salesUrls.includes(urls[index])) }
+  const driveUrls = urls.filter((url) => url && (url.hostname === 'drive.google.com' || url.pathname === '/api/upload-drive'))
+  const requiresAuthorization = attachment.provider === 'google-drive' || driveUrls.length > 0
+  const path = attachment.provider === 'google-drive' ? attachment.path || '' : ''
+  const candidates = [path, ...driveUrls.map((url) => url!.searchParams.get('fileId') || url!.pathname.match(/\/file\/d\/([^/]+)/)?.[1] || url!.searchParams.get('id') || '')]
+  const fileId = candidates.find((value) => /^[A-Za-z0-9_-]{10,200}$/.test(value)) || ''
+  return { fileId, requiresAuthorization, sources: requiresAuthorization ? [] : attachmentThumbnailSources(attachment) }
+}

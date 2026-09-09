@@ -7,8 +7,6 @@ import { createForegroundRequest } from '../lib/foregroundRequest'
 import { readLocalQueryCache, removeLocalQueryCache, writeLocalQueryCache } from '../lib/localQueryCache'
 import {
   fetchSalesOperationalStatus,
-  normalizeSalesLineStatusPatch,
-  normalizeSalesPaymentStatusPatch,
   splitSalesOperationalStatus,
   type SalesLineStatusPatch,
   type SalesOperationalStatus,
@@ -24,11 +22,6 @@ type KeyedRequestState = {
   key: string
   loading: boolean
   error: string
-}
-
-type StatusCache = {
-  lineStatus?: SalesLineStatusPatch
-  paymentStatus?: SalesPaymentStatusPatch
 }
 
 function cacheKeys(uid: string, eventId: string) {
@@ -61,22 +54,6 @@ function writeStatusCache(uid: string, eventId: string, status: SalesOperational
   const { lineStatus, paymentStatus } = splitSalesOperationalStatus(status)
   writeLocalQueryCache(keys.line, lineStatus)
   if (canViewPayment) writeLocalQueryCache(keys.payment, paymentStatus)
-}
-
-function writePatchCache(uid: string, eventId: string, patch: StatusCache) {
-  const keys = cacheKeys(uid, eventId)
-  if (patch.lineStatus) {
-    writeLocalQueryCache(keys.line, {
-      ...readLocalQueryCache<SalesLineStatusPatch>(keys.line),
-      ...patch.lineStatus,
-    })
-  }
-  if (patch.paymentStatus) {
-    writeLocalQueryCache(keys.payment, {
-      ...readLocalQueryCache<SalesPaymentStatusPatch>(keys.payment),
-      ...patch.paymentStatus,
-    })
-  }
 }
 
 export function useSalesOperationalStatus({
@@ -133,7 +110,7 @@ export function useSalesOperationalStatus({
   useEffect(() => {
     if (!key || !user) return
     let active = true
-    const listenerErrors = { line: '', payment: '', revision: '', api: '' }
+    const listenerErrors = { revision: '', api: '' }
     const keys = cacheKeys(uid, eventId)
     if (!canViewPayment) removeLocalQueryCache(keys.payment)
     const cached = readCachedStatus(uid, eventId, canViewPayment)
@@ -153,63 +130,7 @@ export function useSalesOperationalStatus({
       }))
     }
 
-    const mergePatch = (patch: StatusCache) => {
-      if (!active || activeKeyRef.current !== key) return
-      writePatchCache(uid, eventId, patch)
-      setKeyedStatus((current) => {
-        const currentStatus = current.key === key
-          ? current.status
-          : readCachedStatus(uid, eventId, canViewPayment)
-        const nextStatus = {
-          ...(currentStatus ?? {}),
-          ...(patch.lineStatus ?? {}),
-          ...(patch.paymentStatus ?? {}),
-        }
-        if (typeof nextStatus.eligible !== 'boolean' || typeof nextStatus.bound !== 'boolean') return current
-        const normalized = statusForAccess(nextStatus as SalesOperationalStatus, canViewPayment)
-        writeStatusCache(uid, eventId, normalized, canViewPayment)
-        return { key, status: normalized }
-      })
-      setRequestState((current) => ({
-        key,
-        loading: false,
-        error: current.key === key ? current.error : '',
-      }))
-    }
-
-    const stopLineListener = onSnapshot(
-      doc(db, 'calendarSalesLineStatuses', eventId),
-      (snapshot) => {
-        listenerErrors.line = ''
-        if (snapshot.exists()) {
-          const lineStatus = normalizeSalesLineStatusPatch(snapshot.data().lineStatus)
-          if (lineStatus) mergePatch({ lineStatus })
-        }
-        updateError()
-      },
-      (listenerError) => {
-        console.warn('[calendar] sales LINE status listener failed', listenerError)
-        listenerErrors.line = 'LINE 即時狀態無法連線'
-        updateError()
-      },
-    )
-    const stopPaymentListener = canViewPayment ? onSnapshot(
-      doc(db, 'calendarSalesPaymentStatuses', eventId),
-      (snapshot) => {
-        listenerErrors.payment = ''
-        if (snapshot.exists()) {
-          const paymentStatus = normalizeSalesPaymentStatusPatch(snapshot.data().paymentStatus)
-          if (paymentStatus) mergePatch({ paymentStatus })
-        }
-        updateError()
-      },
-      (listenerError) => {
-        console.warn('[calendar] sales payment status listener failed', listenerError)
-        listenerErrors.payment = '付款即時狀態無法連線'
-        updateError()
-      },
-    ) : () => undefined
-
+    // 狀態內容僅走逐事件授權 API；共用版本文件只負責通知重新讀取。
     const statusRequest = createForegroundRequest({
       load: (signal) => fetchSalesOperationalStatus(user, eventId, signal),
       onSuccess: (nextStatus) => {
@@ -234,8 +155,9 @@ export function useSalesOperationalStatus({
     const stopRevisionListener = onSnapshot(
       doc(db, 'calendarSalesStatusRevisions', 'global'),
       (snapshot) => {
-        if (!snapshot.exists()) return
         listenerErrors.revision = ''
+        updateError()
+        if (!snapshot.exists()) return
         const data = snapshot.data()
         const nextSignature = `${Number(data.lineVersion) || 0}:${Number(data.paymentVersion) || 0}`
         if (!revisionSignature) {
@@ -267,8 +189,6 @@ export function useSalesOperationalStatus({
     return () => {
       active = false
       statusRequest.dispose()
-      stopLineListener()
-      stopPaymentListener()
       stopRevisionListener()
       window.removeEventListener('focus', handleFocus)
       window.removeEventListener('online', handleReconnect)

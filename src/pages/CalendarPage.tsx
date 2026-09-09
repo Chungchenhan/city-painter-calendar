@@ -36,7 +36,7 @@ import { employeeNicknameTitle } from '../lib/employeeDirectory'
 import { compareDayEventsForCalendarDate, eventDaySegmentForCalendarDate, eventTimeLabelForCalendarDate } from '../lib/calendarEventSort'
 import { fulfillmentPaymentNotice, type FulfillmentCashPaymentResult } from '../lib/fulfillmentPaymentResult'
 import { fulfillmentRetryDecision } from '../lib/fulfillmentRetryLifecycle'
-import { attachmentThumbnailSources, isImageAttachment } from '../lib/attachmentThumbnail'
+import { attachmentThumbnailSources, calendarAttachmentThumbnailAccess, isImageAttachment } from '../lib/attachmentThumbnail'
 import { attachmentUploadLabel } from '../lib/attachmentUploadMetadata'
 import { resolveEventDetailAttachments } from '../lib/eventDetailAttachments'
 import {
@@ -78,6 +78,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { useCalendarActivityLogs, useCalendarEvents, useCalendarGroups, useCalendarSearchEvents } from '../hooks/useCalendarData'
 import { useDepartments, useEmployees, useShifts } from '../hooks/useHrData'
 import { useSalesOperationalStatus } from '../hooks/useSalesOperationalStatus'
+import { prefetchCalendarAttachmentLinks } from '../lib/calendarAttachmentAccess'
 import { fetchSalesOperationalStatus, type SalesOperationalStatus } from '../lib/salesOperationalStatus'
 import { dismissActiveKeyboard, isVisualViewportReducedByKeyboard } from '../lib/visualViewport'
 import type { CalendarActivityLog, CalendarEvent, CalendarEventComment, CalendarGroup, Employee, FulfillmentPaymentPrompt, UserNotificationSettings } from '../types'
@@ -207,7 +208,27 @@ function preloadSalesAttachmentPreview(source: string) {
     image.src = source
   })
   preloadedSalesAttachmentPreviews.set(source, promise)
+  while (preloadedSalesAttachmentPreviews.size > 200) {
+    preloadedSalesAttachmentPreviews.delete(preloadedSalesAttachmentPreviews.keys().next().value!)
+  }
   return promise
+}
+
+async function prefetchEventPhotos(event: CalendarEvent) {
+  const fileIds = (event.attachments || [])
+    .filter(attachment => Boolean(attachmentPreviewUrl(attachment)))
+    .map(attachment => calendarAttachmentThumbnailAccess(attachment).fileId)
+    .filter(fileId => /^[A-Za-z0-9_-]{10,200}$/.test(fileId))
+    .slice(0, 6)
+  if (!fileIds.length) return
+  try {
+    const links = await prefetchCalendarAttachmentLinks(recurrenceRootId(event), fileIds)
+    if (!shouldSkipSalesAttachmentPrefetch()) {
+      await Promise.all(links.slice(0, 3).map(link => preloadSalesAttachmentPreview(link.linePreviewUrl)))
+    }
+  } catch {
+    // 預載失敗由開啟附件時重試，不阻塞行事曆操作。
+  }
 }
 
 function loadCommentAttachmentPreview(source: string) {
@@ -1335,6 +1356,7 @@ export default function CalendarPage() {
   const [showRelatedEventsPanel, setShowRelatedEventsPanel] = useState(false)
   const [openingActivityEventId, setOpeningActivityEventId] = useState<string | null>(null)
   const [enlargedEventAttachment, setEnlargedEventAttachment] = useState<EventAttachment | null>(null)
+  const [enlargedAttachmentEventId, setEnlargedAttachmentEventId] = useState<string | undefined>()
   const [salesFormOpenError, setSalesFormOpenError] = useState('')
   const [monthDayEventRowLimit, setMonthDayEventRowLimit] = useState(DEFAULT_MONTH_DAY_EVENT_ROW_LIMIT)
   const [showEventActionMenu, setShowEventActionMenu] = useState(false)
@@ -1545,6 +1567,29 @@ export default function CalendarPage() {
     const rangeEnd = month.add(2, 'month').endOf('month').format('YYYY-MM-DD')
     return expandRecurringEvents(visibleSourceEvents, rangeStart, rangeEnd)
   }, [month, visibleSourceEvents])
+
+  useEffect(() => {
+    preloadedSalesAttachmentPreviews.clear()
+  }, [user?.uid])
+
+  useEffect(() => {
+    if (!user?.uid || eventsLoading || shouldSkipSalesAttachmentPrefetch()) return
+    const start = month.startOf('month').startOf('week').format('YYYY-MM-DD')
+    const end = month.endOf('month').endOf('week').format('YYYY-MM-DD')
+    const candidates = visibleEvents
+      .filter(event => event.date <= end && eventEndDate(event) >= start && event.attachments?.length)
+      .sort((a, b) => Math.abs(dayjs(a.date).diff(dayjs(), 'day')) - Math.abs(dayjs(b.date).diff(dayjs(), 'day')))
+      .slice(0, 24)
+    let cancelled = false
+    let next = 0
+    const run = async () => {
+      while (!cancelled && next < candidates.length) {
+        await prefetchEventPhotos(candidates[next++])
+      }
+    }
+    const timer = window.setTimeout(() => { void run(); void run() }, 300)
+    return () => { cancelled = true; window.clearTimeout(timer) }
+  }, [eventsLoading, month, user?.uid, visibleEvents])
 
   const visibleSearchEvents = useMemo(() => {
     const map = new Map<string, CalendarEvent>()
@@ -3757,6 +3802,7 @@ export default function CalendarPage() {
   }
 
   function openEventDetail(event: CalendarEvent, options: { preserveMonth?: boolean } = {}) {
+    void prefetchEventPhotos(event)
     prefetchCombinedDelivery(event)
     setDragActionMenu(null)
     eventDetailReturnDayListDateRef.current = dayListDate
@@ -5425,6 +5471,7 @@ export default function CalendarPage() {
   }
 
   function openPendingDetailAttachment(upload: DetailBackgroundUpload) {
+    setEnlargedAttachmentEventId(undefined)
     setEnlargedEventAttachment({
       name: upload.name,
       originalName: upload.name,
@@ -6932,6 +6979,8 @@ export default function CalendarPage() {
         className={`${isTimeline ? 'day-list-event' : 'panel-event'} ${isCalendarEventCompleted(event) ? 'done' : ''}`}
         key={event.id}
         style={{ '--event-color': eventCalendarColor(event) } as CSSProperties}
+        onPointerEnter={() => { void prefetchEventPhotos(event) }}
+        onFocus={() => { void prefetchEventPhotos(event) }}
         draggable={Boolean(isTimeline && !isTouchDevice && !shouldUseMobileEventListFlow() && eventDragAllowed(event))}
         onDragStart={isTimeline ? (dragEvent) => startNativeEventDrag(dragEvent, event) : undefined}
         onDragEnd={isTimeline ? clearEventDragState : undefined}
@@ -7043,6 +7092,8 @@ export default function CalendarPage() {
                 className={`event-pill ${event.allDay ? 'all-day' : 'timed'} ${item.events.every(isCalendarEventCompleted) ? 'done' : ''} ${selectedEventId === event.id || selectedDeliveryGroupKey === item.key ? 'active' : ''}`}
                 style={{ '--event-color': eventCalendarColor(event) } as CSSProperties}
                 key={item.key}
+                onPointerEnter={() => { void prefetchEventPhotos(event) }}
+                onFocus={() => { void prefetchEventPhotos(event) }}
                 draggable={activeMonth && !item.isDeliveryGroup && !isTouchDevice && !shouldUseMobileEventListFlow() && eventDragAllowed(event)}
                 onDragStart={(dragEvent) => activeMonth && !item.isDeliveryGroup && startNativeEventDrag(dragEvent, event)}
                 onDragEnd={clearEventDragState}
@@ -7633,10 +7684,10 @@ export default function CalendarPage() {
                   const attachmentName = attachment.originalName || attachment.name
                   return previewUrl ? (
                     <AttachmentThumbnail
-                      eventId={selectedEvent.source === 'erpSalesDelivery' && attachment.linePreviewUrl?.includes('scope=sales-attachment') ? undefined : selectedEvent.id}
+                      eventId={selectedEvent.source === 'erpSalesDelivery' && attachment.linePreviewUrl?.includes('scope=sales-attachment') ? undefined : recurrenceRootId(selectedEvent)}
                       className="event-detail-attachment-thumb"
                       attachment={{ ...attachment, name: attachmentName }}
-                      onOpen={() => setEnlargedEventAttachment(attachment)}
+                      onOpen={() => { setEnlargedAttachmentEventId(recurrenceRootId(selectedEvent)); setEnlargedEventAttachment(attachment) }}
                       onReload={selectedEvent.source === 'erpSalesDelivery'
                         ? () => { void salesCenterAttachmentsQuery.refetch() }
                         : undefined}
@@ -7646,7 +7697,7 @@ export default function CalendarPage() {
                     />
                   ) : (
                     <CalendarAttachmentFile
-                      eventId={selectedEvent.id}
+                      eventId={recurrenceRootId(selectedEvent)}
                       className="event-detail-attachment-file"
                       href={attachment.url}
                       target="_blank"
@@ -7741,16 +7792,16 @@ export default function CalendarPage() {
                                 const attachmentName = attachment.originalName || attachment.name
                                 return previewUrl ? (
                                   <AttachmentThumbnail
-                      eventId={selectedEvent.source === 'erpSalesDelivery' && attachment.linePreviewUrl?.includes('scope=sales-attachment') ? undefined : selectedEvent.id}
+                                    eventId={commentThreadId}
                                     className="event-comment-image"
                                     attachment={{ ...attachment, name: attachmentName }}
-                                    onOpen={() => setEnlargedEventAttachment(attachment)}
+                                    onOpen={() => { setEnlargedAttachmentEventId(commentThreadId); setEnlargedEventAttachment(attachment) }}
                                     key={attachment.path || attachment.url}
                                     loading="lazy"
                                   />
                                 ) : (
                                   <CalendarAttachmentFile
-                                    eventId={selectedEvent.id}
+                                    eventId={commentThreadId}
                                     className="event-comment-file"
                                     href={attachment.url}
                                     target="_blank"
@@ -8175,7 +8226,10 @@ export default function CalendarPage() {
     const uploadLabel = attachmentUploadLabel(enlargedEventAttachment)
     const showAttachmentAt = (index: number) => {
       const attachment = eventDetailImageAttachments[index]
-      if (attachment) setEnlargedEventAttachment(attachment)
+      if (attachment) {
+        setEnlargedAttachmentEventId(selectedEvent ? recurrenceRootId(selectedEvent) : undefined)
+        setEnlargedEventAttachment(attachment)
+      }
     }
     return (
       <div
@@ -8192,7 +8246,7 @@ export default function CalendarPage() {
       >
         <div className="event-attachment-lightbox">
           <ZoomableAttachmentImage
-            eventId={selectedEvent?.id}
+            eventId={enlargedAttachmentEventId}
             key={attachmentKey}
             src={attachmentFullImageUrl(enlargedEventAttachment)}
             previewSrc={attachmentPreviewUrl(enlargedEventAttachment)}

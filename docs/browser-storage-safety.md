@@ -30,3 +30,5 @@ npm run test:photo-metadata
 測試包含超額／封鎖、容量上限、舊 cache 清理、過期位置未再次讀取、受保護資料不變、雙請求並發、網址標記防循環與快取清理失敗可恢復。桌面及手機須另確認頁面正常顯示；單元測試不代表員工裝置已實測。
 
 2026-09-09：Query schema 更新 v4，所有查詢 key 以 Firebase Auth UID 隔離。Auth 尚未確定前不讀寫查詢快取；舊無 UID query cache 在原 allowlist 範圍淘汰。React Query events/groups/search/activity keys 同樣含 UID；原總預算、搜尋不持久化、上傳復原保護保持不變。新增跨 UID／未登入讀寫測試。
+
+2026-09-09：附件授權改用最多 512 筆記憶體快取，8 分鐘或伺服器到期前 30 秒取較早者，登出／UID 切換立即清除並拒絕舊請求結果，不寫 Web Storage。同事件批次最多 20 張、並行 2；月份背景預取最多 24 件事件，每件 6 張授權及 3 張縮圖，圖片預載記錄最多 200 筆。測試：`node --experimental-strip-types --test scripts/calendar-attachment-link-cache.test.ts`。

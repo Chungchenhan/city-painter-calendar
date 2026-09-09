@@ -28,11 +28,21 @@ export default function ZoomableAttachmentImage({
 }) {
   const fileId = eventId ? calendarDriveFileId(src) : ''
   const { links } = useCalendarAttachmentAccess(eventId, fileId)
+  const adjacentSources = [...new Set(preloadSources || [])].filter(source => source && source !== src).slice(0, 2)
+  const firstAdjacentFileId = eventId ? calendarDriveFileId(adjacentSources[0] || '') : ''
+  const secondAdjacentFileId = eventId ? calendarDriveFileId(adjacentSources[1] || '') : ''
+  const { links: firstAdjacentLinks } = useCalendarAttachmentAccess(eventId, firstAdjacentFileId)
+  const { links: secondAdjacentLinks } = useCalendarAttachmentAccess(eventId, secondAdjacentFileId)
+  // 相鄰照片沿用同帳號與事件的短效授權，不預載資料中殘留的舊 Drive 網址。
+  const authorizedPreloadSources = [
+    firstAdjacentFileId ? firstAdjacentLinks?.lineOriginalUrl : adjacentSources[0],
+    secondAdjacentFileId ? secondAdjacentLinks?.lineOriginalUrl : adjacentSources[1],
+  ].filter((source): source is string => Boolean(source))
   return (
     <AttachmentImageViewer
       src={fileId ? links?.lineOriginalUrl || '' : src}
       previewSrc={fileId ? links?.linePreviewUrl || '' : previewSrc}
-      preloadSources={fileId ? [] : preloadSources}
+      preloadSources={authorizedPreloadSources}
       alt={alt}
       onClose={onClose}
       onPrevious={onPrevious}
