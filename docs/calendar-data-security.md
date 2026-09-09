@@ -1,4 +1,4 @@
-# Calendar 資料存取保護（本機）
+# Calendar 資料存取保護
 
 2026-09-09：事件／行事曆／來源關聯／活動紀錄／留言統一經現有 `/api/widget-calendar?action=data` 讀取。每次驗證 Firebase Auth、撤銷／停用、在職與 App Check，事件依 `shared/calendarEventAccess.js` 過濾；保留非管理部跨部門共享與 visible 優先 hidden。非管理人員不回傳 HR 請假 note 或假別；以權威假單 employeeId 查員工目錄組成「姓名 請假」，清除 titleOverrides 防止替代標題繞過。API 不採用前端提供的員工 ID 或角色。
 
@@ -12,7 +12,7 @@
 
 管理部固定 `dept_mgmt`，已於本次以 Admin 唯讀確認 `departments.name == 管理部` 唯一文件；`calendarCalendars` 對應 `departmentCalendar_dept_mgmt`。新增／更名／合併部門需同步覆核 Rules 與 server policy，不能由前端顯示名稱決定授權。
 
-尚未部署 Rules、Functions、API 或前端；正式保護須協調同批發布並執行跨帳號 smoke test。
+2026-09-09 已協調發布 Rules、Functions、API 與前端，正式跨帳號 API 正負測試通過；一般 Chrome 既有登入已實測月份工作與去敏請假資料。App Check 拒絕時顯示明確錯誤、12 秒逾時與手動重試，不降級為無憑證請求。
 
 驗證：`node --test scripts/calendar-data-security.test.mjs`；`node --experimental-strip-types --test scripts/local-query-cache.test.ts`；`node --test scripts/browser-storage-safety.test.mjs`；`npx tsc -b --pretty false`。共用 Rules 的 emulator allow/deny 測試由 ERP 主專案執行。
 

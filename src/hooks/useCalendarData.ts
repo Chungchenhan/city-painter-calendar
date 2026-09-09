@@ -52,11 +52,17 @@ function cachedEventsInRange(startDate: string, endDate: string) {
   return sortEvents(cached.filter((event) => eventOverlapsRange(event, startDate, endDate)))
 }
 
+function retryCalendarData(failures: number, error: Error) {
+  if ('code' in error && String(error.code).startsWith('appCheck/')) return false
+  return failures < 2
+}
+
 export function useCalendarGroups() {
   const { user } = useAuth()
   return useQuery({
     queryKey: ['calendarCalendars', user?.uid],
     enabled: Boolean(user),
+    retry: retryCalendarData,
     queryFn: async () => {
       const rows = await fetchCalendarData<CalendarGroup>('groups')
       const sorted = rows.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'))
@@ -96,6 +102,7 @@ export function useCalendarEvents(activeMonth: string) {
   return useQuery<CalendarEvent[]>({
     queryKey: ['calendarEvents', user?.uid, startDate, endDate],
     enabled: Boolean(user),
+    retry: retryCalendarData,
     queryFn: async ({ signal }) => {
       const [rangeRows, repeatRows] = await Promise.all([
         fetchCalendarData<CalendarEvent>('events', { start: startDate, end: endDate }, Infinity, signal),
@@ -119,6 +126,7 @@ export function useCalendarSearchEvents(enabled: boolean) {
   return useQuery({
     queryKey: ['calendarEventsSearchIndex', user?.uid],
     enabled: enabled && Boolean(user),
+    retry: retryCalendarData,
     queryFn: async ({ signal }) => {
       const rows = sortEvents(await fetchCalendarData<CalendarEvent>('events', {}, Infinity, signal))
       writeLocalQueryCache(EVENT_SEARCH_CACHE_KEY, rows)
@@ -134,6 +142,7 @@ export function useCalendarActivityLogs(enabled = true) {
   return useQuery({
     queryKey: ['calendarActivityLogs', user?.uid],
     enabled: enabled && Boolean(user),
+    retry: retryCalendarData,
     queryFn: () => fetchCalendarData<CalendarActivityLog>('activity', {}, 40),
     refetchInterval: 60000,
     staleTime: 10000,

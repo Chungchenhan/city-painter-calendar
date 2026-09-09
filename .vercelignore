@@ -4,3 +4,9 @@ firebase-backups
 screenshots
 ios
 api/**/*.test.*
+**/.env*
+functions/node_modules
+tmp
+scripts/security
+shared/**/*.test.*
+functions/**/*.test.*

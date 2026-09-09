@@ -77,19 +77,34 @@ export async function getFirebaseIdToken(user: User) {
   }
 }
 
+let appCheckRequest: Promise<Awaited<ReturnType<typeof getToken>>> | null = null
+
 export async function getAppCheckHeaders(required = false): Promise<Record<string, string>> {
   if (!appCheck) {
     if (import.meta.env.DEV && !required) return {}
     throw new Error('網站安全驗證尚未啟用。')
   }
   try {
-    const result = await getToken(appCheck, false)
+    if (!appCheckRequest) {
+      let timer: ReturnType<typeof setTimeout>
+      appCheckRequest = Promise.race([
+        getToken(appCheck, false),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(Object.assign(new Error('網站安全驗證逾時，請檢查網路後重試。'), { code: 'appCheck/timeout' })), 12000)
+        }),
+      ]).finally(() => { clearTimeout(timer); appCheckRequest = null })
+    }
+    const result = await appCheckRequest
     if (!result.token) throw new Error('無法取得網站安全驗證。')
     return { 'X-Firebase-AppCheck': result.token }
   } catch (error) {
     // iOS WebView 連線本機網址時可能回傳 Unsupported；本機 API 另有登入與員工權限驗證。
     if (import.meta.env.DEV && !required) return {}
-    throw new Error(firebaseRequestErrorMessage(error, '網站安全驗證失敗，請稍後再試。'))
+    const code = firebaseErrorCode(error)
+    const fallback = code === 'appCheck/timeout'
+      ? '網站安全驗證逾時，請檢查網路後重試。'
+      : '網站安全驗證被拒絕，請重新載入網頁再試；若持續發生，請聯絡管理者。'
+    throw Object.assign(new Error(firebaseRequestErrorMessage(error, fallback)), { code: code || 'appCheck/failed' })
   }
 }
 

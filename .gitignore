@@ -8,3 +8,9 @@ dist
 .DS_Store
 .vercel
 *.tsbuildinfo
+
+/tmp/
+/firebase-backups/
+/firebase-migration-backups/
+/dev-dist/
+/screenshots/

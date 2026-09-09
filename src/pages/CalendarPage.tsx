@@ -1279,8 +1279,9 @@ export default function CalendarPage() {
   const isAdmin = role === 'admin'
   const [month, setMonth] = useState(dayjs().startOf('month'))
   const [backgroundDataReady, setBackgroundDataReady] = useState(false)
-  const { data: calendars = [], isLoading: calendarsLoading } = useCalendarGroups()
-  const { data: events = [], isLoading: eventsLoading, isFetching: eventsFetching } = useCalendarEvents(month.format('YYYY-MM'))
+  const { data: calendars = [], isLoading: calendarsLoading, error: calendarsError } = useCalendarGroups()
+  const { data: events = [], isLoading: eventsLoading, isFetching: eventsFetching, error: eventsError } = useCalendarEvents(month.format('YYYY-MM'))
+  const calendarDataError = eventsError || calendarsError
   const { data: activityLogs = [] } = useCalendarActivityLogs(backgroundDataReady)
   const { data: employees = [] } = useEmployees()
   const { data: departments = [] } = useDepartments()
@@ -8593,7 +8594,22 @@ export default function CalendarPage() {
         </div>
       )}
 
-      <div className="timetree-body">
+      <div className="timetree-body" style={calendarDataError ? { gridTemplateRows: 'auto minmax(0, 1fr)' } : undefined}>
+        {calendarDataError && (
+          <div role="alert" style={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 12, padding: '12px 16px', background: '#fff4e5', borderBottom: '1px solid #edc58a', color: '#713f12' }}>
+            <div style={{ flex: '1 1 220px', minWidth: 0 }}>
+              <strong>行事曆資料載入失敗</strong>
+              <div style={{ fontSize: 14, marginTop: 4, overflowWrap: 'anywhere' }}>{calendarDataError.message || '請檢查網路後重試。'}</div>
+            </div>
+            <button type="button" className="tt-today" style={{ minHeight: 44 }} disabled={unsafeActiveBackgroundUploads.length > 0} onClick={() => {
+              if ('code' in calendarDataError && String(calendarDataError.code).startsWith('appCheck/')) window.location.reload()
+              else {
+                void queryClient.resetQueries({ queryKey: ['calendarEvents'] })
+                void queryClient.resetQueries({ queryKey: ['calendarCalendars'] })
+              }
+            }}>重新載入重試</button>
+          </div>
+        )}
         <aside className="tt-left-rail">
           <button
             className={`rail-button ${allCalendarsSelected ? 'active' : ''}`}
